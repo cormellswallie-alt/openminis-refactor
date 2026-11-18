@@ -2,18 +2,12 @@ package com.openminis.app.ui.chat
 
 import com.openminis.app.data.db.MessageEntity
 import com.openminis.app.data.model.AgentContentPart
-import com.openminis.app.data.model.AgentToolDefinition
 import com.openminis.app.data.model.LLMMessage
 import com.openminis.app.data.model.LLMModel
-import com.openminis.app.data.model.LLMResponse
-import com.openminis.app.data.model.LLMStreamChunk
-import com.openminis.app.data.model.ThinkingLevel
 import com.openminis.app.provider.LLMProvider
 import com.openminis.app.provider.anthropic.AnthropicProvider
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.emptyFlow
+import com.openminis.app.provider.openai.OpenAIProvider
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -28,26 +22,8 @@ import org.junit.Test
  */
 class Phase1ExtractedModulesTest {
 
-    private class FakeNonOAuthProvider : LLMProvider {
-        override var model: LLMModel = LLMModel.gpt5_4
-        override suspend fun sendMessage(
-            messages: List<LLMMessage>,
-            systemPrompt: String?,
-            tools: List<AgentToolDefinition>?,
-            maxTokens: Int,
-            temperature: Double?,
-            thinkingLevel: ThinkingLevel,
-        ): LLMResponse = error("unused")
-
-        override fun sendMessageStream(
-            messages: List<LLMMessage>,
-            systemPrompt: String?,
-            tools: List<AgentToolDefinition>?,
-            maxTokens: Int,
-            temperature: Double?,
-            thinkingLevel: ThinkingLevel,
-        ): Flow<LLMStreamChunk> = emptyFlow()
-    }
+    private fun makeOpenAiProvider(): LLMProvider =
+        OpenAIProvider(apiKey = "sk-test", model = LLMModel.claudeHaiku45)
 
     @Test
     fun `ChatPayloadCodec escapeJson handles control chars and quotes`() {
@@ -142,12 +118,12 @@ class Phase1ExtractedModulesTest {
         assertNotNull(toolBlocks)
         val callBlock = toolBlocks!!.first { it.kind == "tool_use" }
         assertEquals("file body", callBlock.content)
-        assertEquals(ToolBlockStatus.COMPLETED, callBlock.toolStatus)
+        assertEquals(ToolBlockStatus.SUCCESS, callBlock.toolStatus)
     }
 
     @Test
     fun `ChatSystemPromptAssembler forProvider never throws on non-OAuth providers`() {
-        val openAiLike = FakeNonOAuthProvider()
+        val openAiLike = makeOpenAiProvider()
         assertEquals("Base prompt", ChatSystemPromptAssembler.forProvider(openAiLike, "Base prompt"))
         assertNull(ChatSystemPromptAssembler.forProvider(openAiLike, null))
 
