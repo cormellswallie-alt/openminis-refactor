@@ -336,15 +336,11 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             return false to lastReminderTokens
         }
         if (lastReminderTokens != null) {
-            return if (contextTokens < lastReminderTokens + PERSONA_REMINDER_REARM_TOKENS) {
-                false to lastReminderTokens
-            } else {
-                true to contextTokens
-            }
+            return (contextTokens >= lastReminderTokens + PERSONA_REMINDER_REARM_TOKENS) to lastReminderTokens
         }
         if (isPersonaReminderInTail(history)) {
             return false to contextTokens
         }
-        return true to contextTokens
+        return true to null
     }
 }

@@ -7,13 +7,64 @@ import org.junit.Assert.*
 import org.junit.Test
 import java.io.File
 import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
 class CrossPlatformBackupRestoreUnitTest {
 
+    private fun createSampleMinisbak(): File {
+        val f = File.createTempFile("cross_platform_test_", ".minisbak")
+        f.deleteOnExit()
+        val providerConfigJson = """
+            {
+              "instances": [
+                {
+                  "id": "inst-1",
+                  "label": "Custom Relay",
+                  "providerType": "openAI",
+                  "credentialType": "apiKey",
+                  "isEnabled": true,
+                  "createdAt": "2026-10-01T00:00:00Z"
+                }
+              ],
+              "modelEntries": [
+                {
+                  "uuid": "entry-1",
+                  "providerInstanceId": "inst-1",
+                  "baseModel": {
+                    "id": "test-gpt-custom",
+                    "displayName": "Test GPT Custom",
+                    "provider": "openAI"
+                  },
+                  "overrides": {
+                    "temperature": 0.7,
+                    "topP": 0.9,
+                    "customHeaders": {
+                      "X-Custom-Auth": "Token-ABC-123",
+                      "HTTP-Referer": "https://openminis.app"
+                    },
+                    "extraBodyParams": {
+                      "reasoning_effort": "high"
+                    }
+                  }
+                }
+              ],
+              "modelGroups": []
+            }
+        """.trimIndent()
+        ZipOutputStream(FileOutputStream(f)).use { zos ->
+            zos.putNextEntry(ZipEntry("data/provider_config.json"))
+            zos.write(providerConfigJson.toByteArray(Charsets.UTF_8))
+            zos.closeEntry()
+        }
+        return f
+    }
+
     @Test
     fun testRestoreBackupWithCustomModelOverrides() {
-        val backupFile = File("/tmp/cross_platform_test.minisbak")
+        val backupFile = createSampleMinisbak()
         assertTrue("Backup file must exist", backupFile.exists())
 
         var extractedJson: String? = null

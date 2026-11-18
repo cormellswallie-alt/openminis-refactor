@@ -151,7 +151,10 @@ object ModelSearch {
             return Result(all, all.sumOf { it.entries.size })
         }
         val matched = sections.mapNotNull { (key, entries) ->
-            val hit = if (score(label(key), query) > 0) entries else rank(entries, query)
+            // Only treat a provider/section label hit as a full-section match at
+            // SUBSTRING tier or higher — loose subsequence hits (e.g. "gpt" in
+            // "Gateway Proxy Tool") would otherwise dump an entire unrelated provider.
+            val hit = if (score(label(key), query) >= SUBSTRING) entries else rank(entries, query)
             if (hit.isEmpty()) null else Section(key, hit)
         }
         val total = matched.sumOf { it.entries.size }

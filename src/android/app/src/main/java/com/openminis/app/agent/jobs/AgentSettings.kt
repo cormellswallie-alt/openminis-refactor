@@ -52,6 +52,10 @@ object AgentSettings {
         cachedRaw = v
     }
 
+    internal fun setMaxConcurrentForTest(value: Int) {
+        cachedRaw = if (value <= 0) UNLIMITED else value
+    }
+
     /** True when the user chose "unlimited". */
     val isUnlimited: Boolean get() = cachedRaw <= 0
 

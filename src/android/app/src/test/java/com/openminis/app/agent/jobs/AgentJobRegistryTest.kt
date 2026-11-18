@@ -14,7 +14,11 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class AgentJobRegistryTest {
 
-    @Before fun reset() = AgentJobRegistry.resetForTest()
+    @Before
+    fun reset() {
+        AgentSettings.setMaxConcurrentForTest(0)
+        AgentJobRegistry.resetForTest()
+    }
 
     private fun child(parent: String = "P") = AgentJobRegistry.register(
         title = "t", origin = AgentJobOrigin.TOOL, trigger = AgentJobTrigger.Immediate,
@@ -23,6 +27,7 @@ class AgentJobRegistryTest {
 
     @Test
     fun `child job limit counts pending and running, not finished`() {
+        AgentSettings.setMaxConcurrentForTest(3)
         val a = child(); val b = child(); val c = child()
         assertFalse("3 live children must block a 4th", AgentJobRegistry.canStartChildJob)
         AgentJobRegistry.finish(a.id, AgentJobState.DONE, "ok")

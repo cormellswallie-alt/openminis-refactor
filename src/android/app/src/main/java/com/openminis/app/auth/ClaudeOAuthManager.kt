@@ -58,8 +58,12 @@ class ClaudeOAuthManager(context: Context, instanceId: String) : OAuthManager(co
          * builds without `provider-customization.properties` never crash outside
          * an actual Claude Code OAuth request.
          */
+        @Volatile
+        internal var testOverrideOAuthIdentifierPrompt: String? = null
+
         val configuredOAuthIdentifierPrompt: String?
-            get() = BuildConfig.ANTHROPIC_OAUTH_IDENTIFIER_PROMPT.takeIf { it.isNotEmpty() }
+            get() = testOverrideOAuthIdentifierPrompt?.takeIf { it.isNotEmpty() }
+                ?: BuildConfig.ANTHROPIC_OAUTH_IDENTIFIER_PROMPT.takeIf { it.isNotEmpty() }
 
         val ANTHROPIC_OAUTH_IDENTIFIER_PROMPT: String
             get() = configuredOAuthIdentifierPrompt ?: throw IllegalStateException(
