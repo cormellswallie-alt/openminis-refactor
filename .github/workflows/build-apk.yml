@@ -183,7 +183,14 @@ jobs:
           [ -z "$BT" ] && BT=release
           TASK="assemble$(echo "${BT:0:1}" | tr a-z A-Z)${BT:1}"
           echo "BUILD_TYPE=$BT" >> "$GITHUB_ENV"
-          ./gradlew ":app:$TASK" --stacktrace
+          if [ "$BT" = release ]; then
+            ./gradlew --stop
+            ./gradlew ":app:$TASK" --stacktrace --no-daemon --max-workers=2 \
+              -Dorg.gradle.jvmargs="-Xmx5g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8" \
+              -Pkotlin.compiler.execution.strategy=in-process
+          else
+            ./gradlew ":app:$TASK" --stacktrace
+          fi
 
       - name: Collect APK
         run: |
