@@ -1,0 +1,54 @@
+package com.openminis.app.auth
+
+import androidx.lifecycle.Lifecycle
+import java.io.File
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * [T-android-oauth-foreground-exchange] A loopback OAuth sign-in must exchange
+ * its code only once Minis is back in the foreground.
+ *
+ * Reported on a Pixel 6 (Android 17 beta): authorize Anthropic in the browser,
+ * the page says the tab can be closed, return to Minis — nothing. Logcat:
+ * `Unable to resolve host "claude.ai": No address associated with hostname`,
+ * 10 ms after the POST. `dumpsys netpolicy` for the app uid:
+ * `blocked=APP_BACKGROUND, allowed=FOREGROUND|TOP|…`. The callback server
+ * receives the redirect over loopback (never blocked) while the user is still
+ * in the Custom Tab, so the exchange fired from a background app whose network
+ * the OS refuses. OpenAI only seemed to work because a ~3 s retry sometimes
+ * outlasted the user's return; Anthropic had none.
+ *
+ * Wiring is pinned against source (the gate needs a real ProcessLifecycleOwner
+ * and the managers a browser), the foreground rule directly.
+ */
+class OAuthForegroundExchangeTest {
+
+    @Test
+    fun `only STARTED or RESUMED counts as foreground`() {
+        assertTrue(OAuthForegroundGate.isForeground(Lifecycle.State.STARTED))
+        assertTrue(OAuthForegroundGate.isForeground(Lifecycle.State.RESUMED))
+        // CREATED is what the process sits in while the Custom Tab is on top —
+        // exactly the state the OS blocks the network in.
+        assertFalse(OAuthForegroundGate.isForeground(Lifecycle.State.CREATED))
+        assertFalse(OAuthForegroundGate.isForeground(Lifecycle.State.INITIALIZED))
+    }
+
+    @Test
+    fun `the wait is bounded so a sign-in can never hang forever`() {
+        assertTrue(OAuthForegroundGate.MAX_WAIT_MS in 60_000L..30 * 60_000L)
+    }
+
+    // ── Every loopback exchange goes through the gate ─────────────────────
+
+    private fun src(path: String): String {
+        val f = File(path)
+        assertTrue("missing ${f.absolutePath}", f.exists())
+        return f.readText()
+    }
+
+    private fun code(s: String) = s.lineSequence()
+        .filterNot { val t = it.trimStart(); t.startsWith("//") || t.startsWith("*") || t.startsWith("/*") }
+        .joinToString("\n")
+}
