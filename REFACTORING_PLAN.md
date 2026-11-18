@@ -31,7 +31,7 @@
 - `RequestImageBudget` 管理发送前图片裁剪，`RequestPayloadRecovery` 管理请求负载诊断和溢出卸载。
 - `CompactionHistory` 管理压缩范围、历史重建、预热窗口裁剪和工具调用配对，兼容 v1 与 v2 压缩标记。
 - `CompactionSummary` 管理摘要输入、分段重试和超时策略。摘要和压缩范围测试直接调用生产代码。
-- 手动及自动压缩的生命周期、标记写入与撤销仍由 `ChatViewModel` 协调。
+- `CompactionCoordinator` 管理手动及自动压缩任务、取消、标记写入与回滚、撤销和分隔线投影。`ChatViewModel` 发布界面状态，并复用会话的模型回退逻辑。
 
 ---
 

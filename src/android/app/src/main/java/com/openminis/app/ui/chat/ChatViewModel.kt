@@ -3,7 +3,6 @@ package com.openminis.app.ui.chat
 import com.openminis.app.ui.chat.CompactionSummary.COMPACT_IDLE_TIMEOUT_MS
 import com.openminis.app.ui.chat.CompactionSummary.COMPACT_MAX_TOTAL_MS
 import com.openminis.app.ui.chat.CompactionSummary.MAX_COMPACT_LLM_CALLS
-import com.openminis.app.ui.chat.CompactionSummary.CompactIdleTimeoutException
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -1456,20 +1455,10 @@ class ChatViewModel(
      */
     private val compactCallsIssued = java.util.concurrent.atomic.AtomicInteger(0)
 
-    /**
-     * The running compaction's job, so the UI can offer a Cancel affordance.
-     * Cancelling routes through the same `finally` that clears the lock, so a
-     * user-cancelled compaction leaves no state behind.
-     */
-    private var compactJob: Job? = null
+    private val compactionCoordinator by lazy { CompactionCoordinator(chatRepository.dao, viewModelScope) }
 
     /** Cancel an in-flight compaction. No-op when nothing is running. */
-    fun cancelCompact() {
-        val job = compactJob ?: return
-        if (!job.isActive) return
-        AppLogger.info(TAG, "[Compact] cancelled by user")
-        job.cancel(CancellationException("compact cancelled by user"))
-    }
+    fun cancelCompact() = compactionCoordinator.cancel()
 
     /** Current auto-retry attempt number (0 = not retrying, 1..MAX = nth retry in flight). */
     private val _autoRetryAttempt = MutableStateFlow(0)
@@ -3126,7 +3115,7 @@ class ChatViewModel(
             )
             return
         }
-        val provider = currentProvider ?: run {
+        if (currentProvider == null) {
             appendSystemInfo("No provider configured. Cannot compact.", "compact")
             return
         }
@@ -3144,8 +3133,7 @@ class ChatViewModel(
             appendSystemInfo("Already compacted up to this point.", "compact")
             return
         }
-        val anchorIdx = range.last
-        val toCompact = history.subList(range.first, anchorIdx + 1)
+        val toCompact = history.subList(range.first, range.last + 1)
         // Past every precondition — from here the launch below owns the
         // onFinished callback.
         markStarted()
@@ -3173,445 +3161,104 @@ class ChatViewModel(
                 "idleTimeout=${COMPACT_IDLE_TIMEOUT_MS / 1000}s, " +
                 "maxTotal=${timeoutMs / 1000}s, callBudget=$MAX_COMPACT_LLM_CALLS",
         )
-        compactJob = viewModelScope.launch(Dispatchers.IO) {
-            // [T-android-compact-queued-drain] Only a SUCCESSFUL compact kicks
-            // the queued-prompt drain below; failure/cancel/empty-summary paths
-            // keep today's behavior (queued bubbles stay pending + cancellable).
-            var compactSucceeded = false
-            // [T-android-compact-failed-marker-rollback] Undo state for a
-            // compaction that persists its marker and then fails.
-            var rollbackMarkerId: String? = null
-            var previousMarker: CompactMarkerEntity? = null
-            val priorMarkerBeforeCompact: CompactMarkerEntity? = _cachedLatestMarker
-            // Distinguishes "we gave up on time" from other failures so the
-            // user-facing message can say so and invite a retry.
-            var timedOut = false
-            try {
-                val existing = _compactSummary.value
-                // Mirrors iOS `generateCompactSummaryWithSplitting` — when the
-                // joined transcript exceeds the model's context window, halve
-                // the message list and summarize each half independently, then
-                // merge. depth cap=3 prevents pathological recursion.
-                //
-                // [T-android-compact-runaway] withTimeout bounds the WHOLE run,
-                // including every split segment. Without it the only ceiling was
-                // the provider's 10-minute readTimeout multiplied by however
-                // many sequential segments the split produced.
-                // [T-android-compact-fallback] Retry the summary on the NEXT
-                // model when the current one refuses for a reason another model
-                // can satisfy (429 / 5xx / auth / quota).
-                //
-                // Compact previously called the provider directly with no chain
-                // at all: a rate-limited or exhausted model threw, and the only
-                // recovery was `generateCompactSummaryWithSplitting`'s halving —
-                // which re-sends to the SAME dead model, so it could never help.
-                // `shouldSplitOnError` already returns false for exactly these
-                // classes, so they arrive here untouched rather than being
-                // burned on split retries first.
-                //
-                // Classification is the agent loop's, not a new one:
-                // RateLimited / isHttpServerError / isFallbackable, plus
-                // FallbackStrategy.always. Reusing it is what keeps compact and
-                // normal turns agreeing about what "worth switching" means.
-                var summary = ""
-                run {
-                    val strategy = _selectedGroupId.value
-                        ?.let { gid ->
-                            providerRepository.config.value.modelGroups
-                                .find { it.id == gid }?.fallbackStrategy
-                        }
-                        ?: com.openminis.app.data.model.FallbackStrategy.default
-                    val tried = mutableSetOf<String>()
-                    _activeEntryId.value?.let { tried.add(it) }
-                    var attempt = 0
-                    while (true) {
-                        attempt++
-                        try {
-                            summary = withTimeout(timeoutMs) {
-                                CompactionSummary.summarize(
-                                    messages = toCompact,
-                                    previousSummary = existing,
-                                    callsIssued = compactCallsIssued,
-                                    onProgress = { depth, calls ->
-                                        _compactProgress.value = _compactProgress.value?.copy(
-                                            depth = depth,
-                                            callsIssued = calls,
-                                        )
-                                    },
-                                ) { userMessage ->
-                                    val provider = currentProvider
-                                        ?: throw IllegalStateException("No LLM provider available for compaction")
-                                    CompactionSummary.request(userMessage, currentModel, provider)
-                                }
-                            }.trim()
-                            break
-                        } catch (ce: CancellationException) {
-                            throw ce
-                        } catch (e: Exception) {
-                            val actual = unwrapFlowException(e)
-                            val err = actual as? com.openminis.app.data.model.LLMError
-                            val worthSwitching = err?.isFallbackable == true ||
-                                err?.isHttpServerError == true ||
-                                actual is com.openminis.app.data.model.LLMError.RateLimited ||
-                                strategy == com.openminis.app.data.model.FallbackStrategy.always
-                            val next = if (!worthSwitching) null else {
-                                buildFallbackProviders(
-                                    currentProvider ?: throw e,
-                                ).firstOrNull { it.entryId !in tried }
-                            }
-                            if (next == null) throw e
-                            tried.add(next.entryId)
-                            val from = currentModel?.displayName ?: "?"
-                            withContext(Dispatchers.Main) {
-                                adoptFallbackCandidate(next)
-                                _compactProgress.value = _compactProgress.value
-                                    ?.copy(modelName = next.provider.model.displayName)
-                            }
-                            AppLogger.warning(
-                                TAG,
-                                "[Compact] attempt $attempt on $from failed " +
-                                    "(${actual.javaClass.simpleName}) — retrying on " +
-                                    next.provider.model.displayName,
-                            )
-                            // Each candidate gets its own call budget; otherwise
-                            // the first model's spent attempts would starve the
-                            // replacement before it issues a single request.
-                            compactCallsIssued.set(0)
-                        }
-                    }
-                }
-                if (summary.isEmpty()) {
-                    withContext(Dispatchers.Main) {
-                        appendSystemInfo("Compaction produced no output — try again later.", "compact")
-                    }
-                    return@launch
-                }
-
-                val sid = realSessionId.ifEmpty { sessionId }
-                // v2 marker: lastCompactedMessageId IS the anchor — single
-                // source of truth. The anchor we resolved above is guaranteed
-                // to have a persisted dbMessageId. Legacy fields (firstKept /
-                // boundary / sortOrder) stay null/MAX so a downgraded reader
-                // sees "everything compacted, nothing kept" as a graceful
-                // fallback rather than a stale boundary.
-                // Re-resolve anchor: now that we're inside an IO coroutine
-                // we can read the messages DB to verify the dbMessageId is
-                // actually persisted, not just set on the in-memory
-                // LLMMessage. iOS does this belt-and-suspenders check
-                // (AIChatViewModel+Compaction.swift:644-657). Walk back from
-                // the original anchorIdx until we find an entry whose id is
-                // both non-empty AND present in rawDbIds.
-                val rawDbIds: Set<String> = try {
-                    chatRepository.dao.loadMessages(sid).map { it.id }.toSet()
-                } catch (e: Exception) {
-                    Log.w(TAG, "[Compact] loadMessages for raw-id verify failed: ${e.message}")
-                    emptySet()
-                }
-                val verifiedAnchorIdx: Int = if (rawDbIds.isEmpty()) {
-                    // DB read failed; trust the in-memory walk-back result.
-                    anchorIdx
-                } else {
-                    var i = anchorIdx
-                    while (i >= 0) {
-                        val id = history[i].dbMessageId
-                        if (!id.isNullOrEmpty() && id in rawDbIds) break
-                        i -= 1
-                    }
-                    i
-                }
-                if (verifiedAnchorIdx < 0) {
-                    Log.w(TAG, "[Compact] No agentHistory entry has a DB-persisted dbMessageId; aborting")
-                    withContext(Dispatchers.Main) {
-                        appendSystemInfo("Compact failed: could not anchor to a persisted message.", "compact")
-                    }
-                    return@launch
-                }
-                if (verifiedAnchorIdx != anchorIdx) {
-                    AppLogger.warning(
-                        TAG,
-                        "[Compact] anchor walked back from idx=$anchorIdx to idx=$verifiedAnchorIdx " +
-                            "(closest with id in rawDbIds). Unsynced tail entries will fall on the active side of the divider.",
-                    )
-                }
-                val lastCompactedDbId = history[verifiedAnchorIdx].dbMessageId
-                    ?: run {
-                        Log.w(TAG, "[Compact] verified anchor at idx=$verifiedAnchorIdx lost dbMessageId; aborting")
-                        withContext(Dispatchers.Main) {
-                            appendSystemInfo("Compact failed: anchor message id unavailable.", "compact")
-                        }
-                        return@launch
-                    }
-                val marker = CompactMarkerEntity(
-                    id = java.util.UUID.randomUUID().toString(),
-                    sessionId = sid,
-                    summary = summary,
-                    firstKeptSortOrder = Int.MAX_VALUE,   // legacy field; v2 ignores
-                    compactedCount = toCompact.size,
-                    createdAt = System.currentTimeMillis(),
-                    uiBoundarySortOrder = null,
-                    boundaryMessageId = null,
-                    firstKeptMessageId = null,
-                    lastCompactedMessageId = lastCompactedDbId,
-                    version = 2,
-                )
-                // [T-android-compact-failed-marker-rollback] Remember what to
-                // undo. The marker is persisted HERE, but `compactSucceeded`
-                // is only set at the end of the block — everything in between
-                // (the main-thread UI rebuild, the cutoff scan) can still
-                // throw. When it did, the user was told "Compaction failed"
-                // while a "compacted to here" marker stayed in the DB: the
-                // next reload grayed the range and the divider reappeared, so
-                // pressing Compact again reported the range as already
-                // compacted. Recording the previous marker lets the catch
-                // below restore the exact prior state.
-                val markerPersisted = runCatching {
-                    chatRepository.dao.insertCompactMarker(marker)
-                }.onFailure {
-                    Log.w(TAG, "Failed to persist compact marker: ${it.message}")
-                }.isSuccess
-                if (markerPersisted) {
-                    rollbackMarkerId = marker.id
-                    previousMarker = priorMarkerBeforeCompact
-                }
-                _compactSummary.value = summary
-                // Keep the marker in memory so effectiveAgentHistory() can
-                // resolve the boundary on the very next outgoing turn.
-                // Mirrors iOS `cachedLatestMarker = marker`.
+        compactionCoordinator.start(
+            history = history,
+            range = range,
+            sessionId = { realSessionId.ifEmpty { sessionId } },
+            callsIssued = compactCallsIssued::get,
+            summarize = { summarizeCompaction(toCompact, _compactSummary.value, timeoutMs) },
+            publish = { marker ->
+                val projected = CompactionCoordinator.projectDivider(_messages.value, marker)
+                _compactSummary.value = marker.summary
                 _cachedLatestMarker = marker
-                withContext(Dispatchers.Main) {
-                    // Gray out everything in the compacted range; the kept
-                    // tail (last N user turns + tool/assistant follow-ups)
-                    // stays full opacity. Determined by walking _messages
-                    // until we pass the row whose id == lastCompactedDbId.
-                    //
-                    // Also drop any prior compact-divider system rows — a
-                    // session shows at most one divider (the latest marker).
-                    // Those old dividers are stored as system messages with
-                    // a "compact" iconKind in toolBlocks[0].toolName.
-                    val cutoffId: String = lastCompactedDbId
-                    var passedCutoff = false   // anchor is guaranteed non-null in v2
-                    val cleaned = _messages.value
-                        .filterNot { msg ->
-                            // Drop prior compact-divider rows; appendSystemInfo
-                            // below will re-add the new one.
-                            msg.role == "system" &&
-                                msg.toolBlocks.firstOrNull()?.toolName == "compact"
-                        }
-                        .map { msg ->
-                            if (msg.role == "system") msg
-                            else if (passedCutoff) msg
-                            else {
-                                val grayed = if (msg.isCompactedHistory) msg
-                                    else msg.copy(isCompactedHistory = true)
-                                if (msg.id == cutoffId) passedCutoff = true
-                                grayed
-                            }
-                        }
-                    // T84: count UI bubbles in this pass's compacted range.
-                    // Filters: role != system (dividers/notices don't count).
-                    // Range: everything up to and including the cutoff row,
-                    // since the kept-tail starts immediately after.
-                    // Falls back to "all non-system" when cutoffId is null
-                    // (compact-everything path), matching iOS dividerInsertIdx
-                    // == messages.count behavior.
-                    //
-                    // We deliberately do NOT exclude `isCompactedHistory` rows.
-                    // Back-to-back compacts (or compact after restoring a prior
-                    // marker on session reload) leave the in-range rows already
-                    // grayed; excluding them produced "0 messages compacted"
-                    // even though `toCompact.size` was nonzero. The divider's
-                    // count should reflect the size of THIS pass's range, not
-                    // the delta of newly-grayed rows.
-                    val cutoffIdx = cleaned.indexOfLast { it.id == cutoffId }
-                    val compactedUICount = if (cutoffIdx < 0) {
-                        cleaned.count { it.role != "system" }
-                    } else {
-                        cleaned.take(cutoffIdx + 1).count { it.role != "system" }
-                    }
-                    // [T-android-compact-divider-position] Insert the divider
-                    // immediately AFTER the anchor row — not at the end of the
-                    // list.
-                    //
-                    // This used to call appendSystemInfo(), which appends to
-                    // `_messages`. For /compact that is invisible, because the
-                    // anchor IS the last message and "after the anchor" and
-                    // "end of list" are the same place. For long-press
-                    // "Compact Above" on an EARLIER message they are not: the
-                    // divider landed below every message that follows the
-                    // anchor, so the user saw active, full-opacity turns
-                    // sitting ABOVE a line claiming everything above it was
-                    // compacted — the boundary appeared several rows too low.
-                    //
-                    // The graying loop above already stops at `cutoffId`, so
-                    // the gray/active split was always correct; only the
-                    // divider row was misplaced. Placing it at cutoffIdx + 1
-                    // matches the reload path (rebuildWithCompactMarker's
-                    // `insertIdx = lcmIdx + 1`) and iOS, so the position no
-                    // longer changes when the session is reopened.
-                    //
-                    // cutoffIdx < 0 (anchor row not in the UI list) falls back
-                    // to the end, which is the old behaviour and is also what
-                    // the compact-everything path wants.
-                    val dividerBlock = AssistantBlock(
-                        id = "sysinfo_${System.currentTimeMillis()}",
-                        kind = "info",
-                        content = "$compactedUICount messages compacted",
-                        toolName = "compact",
-                        toolArgs = summary,
-                    )
-                    val dividerRow = ChatMessage(
-                        id = "sysinfo_${System.currentTimeMillis()}",
-                        role = "system",
-                        content = "",
-                        toolBlocks = listOf(dividerBlock),
-                    )
-                    val withDivider = cleaned.toMutableList()
-                    val dividerAt = if (cutoffIdx < 0) withDivider.size else cutoffIdx + 1
-                    withDivider.add(dividerAt.coerceIn(0, withDivider.size), dividerRow)
-                    _messages.value = withDivider
-                    AppLogger.info(
-                        TAG,
-                        "[Compact] divider: $compactedUICount UI bubbles compacted " +
-                            "(history entries: ${toCompact.size}) inserted at row $dividerAt " +
-                            "of ${withDivider.size} (cutoffIdx=$cutoffIdx)",
-                    )
-                }
-                compactSucceeded = true
-            } catch (e: TimeoutCancellationException) {
-                // [T-android-compact-failed-marker-rollback] A timeout is a
-                // failure like any other — the marker must not survive it.
-                rollbackFailedCompactMarker(rollbackMarkerId, previousMarker)
-                // [T-android-compact-runaway] MUST precede the CancellationException
-                // arm — TimeoutCancellationException extends it, so the generic
-                // re-throw would otherwise swallow our own timeout and surface it
-                // as a silent cancel with no message.
-                timedOut = true
-                // [T-compact-idle-timeout] Reaching this now means the 15-minute
-                // runaway backstop fired — the stream kept producing data the
-                // whole time (or it would have hit the idle timer first), so
-                // "slow or rate-limited" is the wrong advice here.
-                val elapsed = (timeoutMs / 1000L).toInt()
-                val calls = compactCallsIssued.get()
-                Log.w(TAG, "[Compact] hit the ${elapsed}s total ceiling ($calls model call(s) issued)")
-                withContext(Dispatchers.Main) {
-                    appendSystemInfo(
-                        text = "Compaction stopped after ${elapsed / 60} minutes " +
-                            "($calls model call(s) attempted) — the model kept producing " +
-                            "output without finishing. Try compacting again, or start a " +
-                            "new session if it keeps happening.",
-                        iconKind = "compact",
-                    )
-                }
-            } catch (e: CompactIdleTimeoutException) {
-                // [T-compact-idle-timeout] The stream stopped sending data. This
-                // is the "really stuck" case the idle timer exists to catch, and
-                // unlike the ceiling above it says something actionable: the
-                // connection or the model went quiet, so retrying is reasonable.
-                timedOut = true
-                val calls = compactCallsIssued.get()
-                Log.w(TAG, "[Compact] idle timeout: ${e.message} ($calls model call(s) issued)")
-                withContext(Dispatchers.Main) {
-                    appendSystemInfo(
-                        text = "Compaction stalled — no response from the model for " +
-                            "${COMPACT_IDLE_TIMEOUT_MS / 1000}s " +
-                            "($calls model call(s) attempted). Check your connection " +
-                            "and try compacting again.",
-                        iconKind = "compact",
-                    )
-                }
-            } catch (e: CancellationException) {
-                // User-initiated (cancelCompact) or scope teardown. Tell the
-                // user only if they are still around to read it; the `finally`
-                // below releases the lock either way.
-                if (compactJob?.isCancelled == true) {
-                    runCatching {
-                        withContext(NonCancellable + Dispatchers.Main) {
-                            appendSystemInfo("Compaction cancelled.", "compact")
-                        }
-                    }
-                }
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Compact failed", e)
-                rollbackFailedCompactMarker(rollbackMarkerId, previousMarker)
-                withContext(Dispatchers.Main) {
-                    appendSystemInfo(
-                        text = "Compaction failed: ${e.message ?: e.javaClass.simpleName}",
-                        iconKind = "compact",
-                    )
-                }
-            } finally {
+                _messages.value = projected
+            },
+            showInfo = { appendSystemInfo(it, "compact") },
+            finish = { succeeded ->
                 _isCompacting.value = false
                 _compactProgress.value = null
-                AppLogger.info(
-                    TAG,
-                    "[Compact] finished: success=$compactSucceeded timedOut=$timedOut " +
-                        "calls=${compactCallsIssued.get()}",
-                )
-                // [T-ctx-measure-outbound] The glow still shows the last report —
-                // the size of the context just replaced.
-                if (compactSucceeded) runCatching {
+                if (succeeded) runCatching {
                     publishMeasuredContextUsage()
-                    // [T-ctx-usage-after-compact] …and replace the placeholder
-                    // line, which still carried the pre-compaction figure.
                     announceContextUsageAfterCompaction()
                     AppLogger.info(TAG, "[CtxMeter] compacted marker=${_cachedLatestMarker?.id?.take(8)} measured $compactMeasuredBefore→${measureOutboundContextTokens()}")
                 }
-                // [T-android-auto-compact-inloop] Signal the awaiting in-loop
-                // caller. In `finally` so a thrown/cancelled compaction can
-                // never strand the agent loop waiting on a callback.
-                onFinished?.invoke(compactSucceeded)
-            }
-            // [T-android-compact-queued-drain] A successful compact must let
-            // any queued prompts proceed — previously nothing re-triggered the
-            // drain after compact (loop-end / cancel / tool-boundary are the
-            // only drain triggers), so a prompt sitting in the queue when a
-            // compact ran stayed in the dashed "queued" state forever. Reuse
-            // resumeQueueAfterCancel: it re-checks queue-non-empty + not-
-            // streaming + not-compacting after its grace delay (so an ✕ tap at
-            // the compact-finish instant is a clean no-op), refreshes OAuth,
-            // and drains through the normal stream-slot machinery — no new
-            // reentrancy path. Runs after `finally` so isCompacting is already
-            // false. Mirrors the iOS fix for the same report.
-            if (compactSucceeded && _promptQueue.value.isNotEmpty()) {
-                AppLogger.info(TAG, "[Compact] success with ${_promptQueue.value.size} queued prompt(s) — kicking drain")
-                resumeQueueAfterCancel()
-            }
-        }
+                onFinished?.invoke(succeeded)
+                if (succeeded && _promptQueue.value.isNotEmpty()) {
+                    AppLogger.info(TAG, "[Compact] success with ${_promptQueue.value.size} queued prompt(s) — kicking drain")
+                    resumeQueueAfterCancel()
+                }
+            },
+        )
     }
 
-    /**
-     * [T-android-compact-failed-marker-rollback] Undo a compact marker that was
-     * persisted by an attempt which then failed.
-     *
-     * `compactAllImpl` writes the `CompactMarkerEntity` before it rebuilds the
-     * UI and sets `compactSucceeded`, so a throw in between left the DB
-     * claiming a compaction the user was told had FAILED. On the next reload
-     * that marker grayed the range and re-inserted the divider, and pressing
-     * Compact again reported the messages as already compacted — the reported
-     * "retry 后再点 compact 误显示已 compact 到此处".
-     *
-     * Restores the in-memory cache to the marker that was current BEFORE this
-     * attempt (usually null), so `effectiveAgentHistory()` keeps sending the
-     * full history rather than silently folding turns away behind a summary
-     * that was never produced. Best-effort by design: a failed rollback must
-     * never mask the original compaction error, so it only logs.
-     */
-    private suspend fun rollbackFailedCompactMarker(
-        markerId: String?,
-        previousMarker: CompactMarkerEntity?,
-    ) {
-        if (markerId == null) return
-        val removed = runCatching { chatRepository.dao.deleteCompactMarker(markerId) }
-            .onFailure { Log.w(TAG, "[Compact] rollback: delete failed: ${it.message}") }
-            .getOrNull() ?: 0
-        _cachedLatestMarker = previousMarker
-        _compactSummary.value = previousMarker?.summary
-        AppLogger.info(
-            TAG,
-            "[Compact] rolled back failed marker ${markerId.take(8)} (rows=$removed) — " +
-                "restored previous=${previousMarker?.id?.take(8) ?: "none"}",
-        )
+    private suspend fun summarizeCompaction(
+        toCompact: List<LLMMessage>,
+        existing: String?,
+        timeoutMs: Long,
+    ): String {
+        val strategy = _selectedGroupId.value
+            ?.let { gid ->
+                providerRepository.config.value.modelGroups
+                    .find { it.id == gid }?.fallbackStrategy
+            }
+            ?: com.openminis.app.data.model.FallbackStrategy.default
+        val tried = mutableSetOf<String>()
+        _activeEntryId.value?.let { tried.add(it) }
+        var attempt = 0
+        while (true) {
+            attempt++
+            try {
+                return withTimeout(timeoutMs) {
+                    CompactionSummary.summarize(
+                        messages = toCompact,
+                        previousSummary = existing,
+                        callsIssued = compactCallsIssued,
+                        onProgress = { depth, calls ->
+                            _compactProgress.value = _compactProgress.value?.copy(
+                                depth = depth,
+                                callsIssued = calls,
+                            )
+                        },
+                    ) { userMessage ->
+                        val provider = currentProvider
+                            ?: throw IllegalStateException("No LLM provider available for compaction")
+                        CompactionSummary.request(userMessage, currentModel, provider)
+                    }
+                }.trim()
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                val actual = unwrapFlowException(e)
+                val err = actual as? com.openminis.app.data.model.LLMError
+                val worthSwitching = err?.isFallbackable == true ||
+                    err?.isHttpServerError == true ||
+                    actual is com.openminis.app.data.model.LLMError.RateLimited ||
+                    strategy == com.openminis.app.data.model.FallbackStrategy.always
+                val next = if (!worthSwitching) null else {
+                    buildFallbackProviders(
+                        currentProvider ?: throw e,
+                    ).firstOrNull { it.entryId !in tried }
+                }
+                if (next == null) throw e
+                tried.add(next.entryId)
+                val from = currentModel?.displayName ?: "?"
+                withContext(Dispatchers.Main) {
+                    adoptFallbackCandidate(next)
+                    _compactProgress.value = _compactProgress.value
+                        ?.copy(modelName = next.provider.model.displayName)
+                }
+                AppLogger.warning(
+                    TAG,
+                    "[Compact] attempt $attempt on $from failed " +
+                        "(${actual.javaClass.simpleName}) — retrying on " +
+                        next.provider.model.displayName,
+                )
+                // Each candidate gets its own call budget; otherwise
+                // the first model's spent attempts would starve the
+                // replacement before it issues a single request.
+                compactCallsIssued.set(0)
+            }
+        }
     }
 
     /**
@@ -3646,17 +3293,15 @@ class ChatViewModel(
 
         viewModelScope.launch(Dispatchers.IO) {
             AppLogger.info(TAG, "[Compact] ━━━ REVERT ━━━ session=${sid.take(8)} markerId=${current.id.take(8)} v=${current.version}")
-            val removed = runCatching { chatRepository.dao.deleteCompactMarker(current.id) }.getOrNull() ?: 0
-            if (removed <= 0) {
-                Log.w(TAG, "[Compact] revert: deleteCompactMarker returned 0 rows for id=${current.id.take(8)}")
-                withContext(Dispatchers.Main) {
-                    appendSystemInfo("Revert failed: marker not found in DB.", "compact")
+            val next = when (val result = compactionCoordinator.revert(sid, current)) {
+                CompactionCoordinator.RevertResult.Missing -> {
+                    withContext(Dispatchers.Main) {
+                        appendSystemInfo("Revert failed: marker not found in DB.", "compact")
+                    }
+                    return@launch
                 }
-                return@launch
+                is CompactionCoordinator.RevertResult.Removed -> result.previous
             }
-
-            // Refresh cache to next-most-recent marker (or null).
-            val next = chatRepository.dao.latestCompactMarker(sid)
             _cachedLatestMarker = next
             _compactSummary.value = next?.summary
 
@@ -3666,10 +3311,7 @@ class ChatViewModel(
             // path will re-insert one only if the new latest marker calls
             // for it.
             withContext(Dispatchers.Main) {
-                _messages.value = _messages.value.filterNot { msg ->
-                    msg.role == "system" &&
-                        msg.toolBlocks.firstOrNull()?.toolName == "compact"
-                }
+                _messages.value = _messages.value.filterNot(CompactionCoordinator::isCompactionDivider)
             }
 
             // Reload session messages — the existing path runs Phase 2.5
