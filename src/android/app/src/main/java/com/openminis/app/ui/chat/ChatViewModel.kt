@@ -49,7 +49,6 @@ import com.openminis.app.provider.ImageBudget
 import com.openminis.app.provider.LLMProvider
 import com.openminis.app.provider.ProviderFactory
 import com.openminis.app.provider.catalogMaxThinkingLevel
-import com.openminis.app.provider.withIdleTimeout
 import com.openminis.app.provider.effectiveMaxThinkingLevel
 import com.openminis.app.agent.shell.BashismDetector
 import com.openminis.app.agent.shell.BashismReminder
@@ -320,44 +319,6 @@ class ChatViewModel(
             // payload-size independent.
             if (error is java.io.IOException) return false
             return true
-        }
-
-        /**
-         * [T-android-offload-warmup-scan] The index mapping behind
-         * offloadWarmUpScanPlan, pure for tests: of history from priorIdx to anchorIdx,
-         * the raw indices effectiveAgentHistoryUncounted sends (tool results
-         * over 1000 chars and their calls pruned, text-only messages kept,
-         * emptied messages dropped, leading non-user peeled, then the first
-         * `drop` removed when the per-marker trim is decided), and the pruned ids.
-         */
-        internal fun warmUpScanIndices(
-            history: List<LLMMessage>,
-            priorIdx: Int,
-            anchorIdx: Int,
-            drop: Int?,
-        ): Pair<List<Int>, Set<String>> {
-            if (priorIdx < 0 || priorIdx > anchorIdx || anchorIdx >= history.size) return emptyList<Int>() to emptySet()
-            val pruned = HashSet<String>()
-            for (i in priorIdx..anchorIdx) {
-                for (part in history[i].contentParts) {
-                    if (part is AgentContentPart.ToolResult && part.content.length > 1000) pruned.add(part.id)
-                }
-            }
-            val kept = ArrayList<Int>()
-            for (i in priorIdx..anchorIdx) {
-                val parts = history[i].contentParts
-                val survives = parts.isEmpty() || parts.any { part ->
-                    when (part) {
-                        is AgentContentPart.ToolUse -> part.id !in pruned
-                        is AgentContentPart.ToolResult -> part.id !in pruned
-                        else -> true
-                    }
-                }
-                if (survives) kept.add(i)
-            }
-            while (kept.isNotEmpty() && history[kept.first()].role != LLMMessage.Role.USER) kept.removeAt(0)
-            val trimmed = drop?.let { kept.drop(minOf(it, kept.size)) } ?: kept
-            return trimmed to pruned
         }
 
         /**
@@ -643,7 +604,6 @@ class ChatViewModel(
          * I/O so it can answer follow-ups that need verbatim detail rather than
          * the summary's distilled form. Mirrors iOS `compactKeepRecentUserTurns`.
          */
-        private const val COMPACT_KEEP_RECENT_USER_TURNS = 3
         /// Max per-tool-call retained `accumulated` JSON snapshots from
         /// `ToolInputDelta`. Drained on preflight failure for diagnosis.
         private const val TOOL_INPUT_CHUNK_RING_MAX = 10
@@ -1386,75 +1346,23 @@ class ChatViewModel(
     private val _lastTurnContextTokens = MutableStateFlow(0)
     val lastTurnContextTokens: StateFlow<Int> = _lastTurnContextTokens.asStateFlow()
 
-    /**
-     * [T-ctx-measure-outbound] Calibration state for [ContextSizeMeter].
-     *
-     * Replaces `lastTurnContextTokensStale`, a one-shot "do not compact on this
-     * number again" flag that only the in-loop path ever set: a send-time or
-     * manual compaction left [_lastTurnContextTokens] at its pre-compaction
-     * value with no flag, so the next check compacted again on it. The capacity
-     * guards no longer read that value at all — it stays as the glow's source —
-     * and judge [measureOutboundContextTokens] instead.
-     *
-     * [contextCalibrationRatio] — provider count / our estimate of the same
-     *   request; 1.0 until the first report. [contextFixedTokens] — estimated
-     *   system prompt + tool schemas. [lastDispatchEstimate] — estimate of the
-     *   request in flight, paired with its report on arrival.
-     *   [lastCalibratedPair] — (estimate, fixed) of the last paired request,
-     *   written into the turn's usage row so a reopened session re-seeds the
-     *   RATIO rather than a stale raw size.
-     */
-    /** Per model: a ratio mostly reflects the provider's tokenizer (see [ContextSizeMeter.ratioFor]). */
-    private val contextCalibrationRatios = mutableMapOf<String, Double>()
-    private var lastLearnedCalibration: Double? = null
-    /** The session the in-memory ratios were learned for (see [seedContextCalibration]). */
-    private var calibrationSessionId: String? = null
-    /**
-     * [T-ctx-warmup-fit] Per compaction marker: how many leading warm-up
-     * messages were dropped to fit. Decided once, then reused, so the request
-     * prefix stays stable across turns (see [trimWarmUpToFit]).
-     */
-    private val warmUpDropByMarker = mutableMapOf<String, Int>()
-    private var contextFixedTokens = 0
-    private var lastDispatchEstimate = 0
-    /** Ratio and calibrated size used for the request in flight ([CtxMeter] actual scores it). */
-    private var lastDispatchRatio = 1.0
-    /** Set by revertCompact; loadSession logs [CtxMeter] reverted once the reload has measured. */
+    private val contextMeter = ContextMeterCoordinator(TAG)
+    /** Set by revertCompact; loadSession logs [CtxMeter] reverted after measuring the reload. */
     @Volatile private var pendingRevertLogMarker: String? = null
-    private var lastDispatchPredicted = 0
-    /** (estimate, fixed, model) of the last paired request, written into the turn's usage row. */
-    private var lastCalibratedPair: Triple<Int, Int, String?>? = null
-    /** Whether this loop already sent once past an extrapolated "over the window" verdict. */
-    private var sentPastExtrapolatedLimitThisLoop = false
     /** Set when an in-loop compaction left the request no smaller; cleared by the next response. */
     private var lastInLoopCompactionMadeNoProgress = false
+    private val compactionHistory = CompactionHistory()
 
-    /**
-     * [T-ctx-measure-outbound] Estimated size of the next request: the
-     * compaction-aware outbound history plus system prompt and tools, scaled by
-     * the session's calibration. The one number every capacity decision reads.
-     * Measured before the request image budget, like the calibration side.
-     */
     private fun contextCalibrationRatio(modelId: String? = currentModel?.id): Double =
-        ContextSizeMeter.ratioFor(modelId, contextCalibrationRatios, lastLearnedCalibration)
+        contextMeter.ratioFor(modelId)
 
     private fun measureOutboundContextTokens(ratio: Double? = null): Int = contextMeasurement(ratio).measured
 
-    /** The measurement with its parts, for the [CtxMeter] logs. */
-    private data class ContextMeasurement(val history: Int, val fixed: Int, val ratio: Double, val source: String, val measured: Int)
-
-    private fun contextMeasurement(override: Double? = null): ContextMeasurement {
-        val history = ContextSizeMeter.estimateTokens(effectiveAgentHistoryUncounted())
-        val model = currentModel?.id
-        val ratio = override ?: contextCalibrationRatio(model)
-        val source = if (override != null) "forced"
-            else ContextSizeMeter.ratioSource(model, contextCalibrationRatios, lastLearnedCalibration)
-        return ContextMeasurement(history, contextFixedTokens, ratio, source,
-            ContextSizeMeter.calibrated(history + contextFixedTokens, ratio))
-    }
+    private fun contextMeasurement(override: Double? = null): ContextMeterCoordinator.Measurement =
+        contextMeter.measure(effectiveAgentHistoryUncounted(), currentModel?.id, override)
 
     /** [CtxMeter] decide — every capacity decision with its inputs, so a field log can replay it. */
-    private fun logContextDecision(site: String, m: ContextMeasurement, threshold: Int, window: Int, result: String) {
+    private fun logContextDecision(site: String, m: ContextMeterCoordinator.Measurement, threshold: Int, window: Int, result: String) {
         AppLogger.info(
             TAG,
             "[CtxMeter] decide site=$site model=${currentModel?.id ?: "?"} history=${m.history} fixed=${m.fixed} " +
@@ -1469,125 +1377,8 @@ class ChatViewModel(
      * replaces this with the exact figure before its first request.
      */
     private fun ensureContextFixedTokens() {
-        if (contextFixedTokens > 0) return
-        contextFixedTokens = ContextSizeMeter.estimateFixedTokens(buildSystemPrompt(), agentTools)
-    }
-
-    /**
-     * [T-android-ctx-overflow-attribute-dispatch] The model the request in
-     * flight went to, and its window. The provider's count or rejection is
-     * evidence about THAT model; the selected one ([currentModel]) can differ
-     * after a group fallback or a mid-turn switch, and scoring the report
-     * against it skews the wrong model's ratio (iOS 08f3feea2).
-     */
-    private var lastDispatchModel: LLMModel? = null
-    private var lastDispatchWindow = 0
-
-    /** Record our estimate of the request being sent; returns its calibrated size. */
-    private fun recordContextDispatch(history: List<LLMMessage>, model: LLMModel? = currentModel): Int {
-        lastDispatchModel = model
-        lastDispatchWindow = resolvedContextWindow(model)?.first ?: 0
-        lastDispatchEstimate = ContextSizeMeter.estimateTokens(history) + contextFixedTokens
-        lastDispatchRatio = contextCalibrationRatio(model?.id)
-        lastDispatchPredicted = ContextSizeMeter.calibrated(lastDispatchEstimate, lastDispatchRatio)
-        return lastDispatchPredicted
-    }
-
-    /** Pair the provider's count with the recorded estimate, for the model that served it. */
-    private fun calibrateContextSize(reportedTokens: Int): Boolean {
-        val sample = ContextSizeMeter.calibrationRatio(reportedTokens, lastDispatchEstimate) ?: return false
-        val model = lastDispatchModel?.id ?: currentModel?.id
-        // [T-ctx-ratio-smoothing] Blend into the model's OWN history only; a
-        // borrowed ratio is not evidence about this model.
-        val own = model?.let { contextCalibrationRatios[it] }
-        val updated = ContextSizeMeter.smoothed(own, sample)
-        if (model != null) contextCalibrationRatios[model] = updated
-        lastLearnedCalibration = updated
-        lastCalibratedPair = Triple(lastDispatchEstimate, contextFixedTokens, model)
-        // [CtxMeter] actual — the prediction made at dispatch vs what the
-        // provider counted; `err` is how wrong this request's decision could be.
-        val err = if (lastDispatchPredicted > 0) (lastDispatchPredicted - reportedTokens) * 100.0 / reportedTokens else 0.0
-        AppLogger.info(
-            TAG,
-            "[CtxMeter] actual model=${model ?: "?"} predicted=$lastDispatchPredicted reported=$reportedTokens " +
-                "err=${"%+.1f".format(err)}% estimate=$lastDispatchEstimate sample=${"%.3f".format(sample)} " +
-                "ratio=${"%.3f".format(lastDispatchRatio)}→${"%.3f".format(updated)}" +
-                if (own == null) " (first own sample)" else "",
-        )
-        return true
-    }
-
-    /**
-     * A provider rejected the request as too long — ground truth that we
-     * under-read it (a borrowed ratio after a model switch, a legacy session,
-     * content the estimator under-reads). Raise this model's ratio so the retry
-     * or next send compacts instead of being rejected again. Never lowers it.
-     */
-    private fun noteContextOverflow(detail: String) {
-        val model = lastDispatchModel?.id ?: currentModel?.id
-        val window = lastDispatchWindow.takeIf { lastDispatchModel != null && it > 0 }
-            ?: effectiveContextWindowTokens() ?: 0
-        val current = contextCalibrationRatio(model)
-        val requested = ContextSizeMeter.requestedTokens(detail)
-        val raised = ContextSizeMeter.ratioAfterOverflow(current, lastDispatchEstimate, requested, window)
-        if (model != null) contextCalibrationRatios[model] = raised
-        lastLearnedCalibration = raised
-        // [T-ctx-valve-rearm] The ratio now rests on the provider's own count,
-        // not an extrapolation, so the uncalibrated send-once is spent: firing
-        // it would re-send the request that was just rejected.
-        sentPastExtrapolatedLimitThisLoop = true
-        AppLogger.warning(
-            TAG,
-            "[CtxMeter] rejected predicted=$lastDispatchPredicted — provider rejected the request as too long — calibration model=${model ?: "?"} " +
-                "${"%.2f".format(current)} → ${"%.2f".format(raised)} (estimated=$lastDispatchEstimate " +
-                "statedTokens=${requested ?: "none"} window=$window); the next attempt will compact",
-        )
-    }
-
-    /**
-     * Re-derive calibration from the session's persisted usage rows: the last
-     * row carrying BOTH its report and our estimate of the same request. No raw
-     * size is carried over, so a compaction or revert done since cannot make
-     * the next decision stale. Returns true when a pair was found.
-     */
-    /**
-     * Reloading the SAME session keeps what this view model already learned: a
-     * revert reloads through loadSession, and a ratio raised by a provider
-     * rejection exists only in memory (a rejected request stamps no pair), so
-     * wiping it let the retry go out uncompacted and be rejected again —
-     * measured on the iOS twin of this code. In-memory values are never older
-     * than the rows', so they win; a different session starts from scratch.
-     */
-    private fun seedContextCalibration(usageJsons: List<String>): Boolean {
-        val sid = realSessionId.ifEmpty { sessionId }
-        val learned = if (sid.isNotEmpty() && calibrationSessionId == sid) {
-            ContextSizeMeter.CalibrationState(contextCalibrationRatios.toMap(), lastLearnedCalibration, contextFixedTokens)
-        } else {
-            null
-        }
-        // [T-ctx-ratio-smoothing] Replay rows oldest → newest through the same
-        // rule the live path uses, so a reload reproduces the smoothed ratio.
-        val seeded = ContextSizeMeter.replayCalibration(usageJsons.mapNotNull(ContextSizeMeter::calibrationSample))
-        val state = learned?.let { seeded.carryingOver(it) } ?: seeded
-        contextCalibrationRatios.clear()
-        contextCalibrationRatios.putAll(state.ratios)
-        lastLearnedCalibration = state.lastLearned
-        contextFixedTokens = state.fixedTokens
-        lastDispatchEstimate = 0
-        lastDispatchModel = null
-        lastDispatchWindow = 0
-        lastCalibratedPair = null
-        // [T-ctx-valve-spend-survives-retry] The valve's spent state belongs to
-        // the session's evidence like the ratios above: a different session
-        // starts armed, the same session (revert/reload) keeps a rejection's spend.
-        if (learned == null) sentPastExtrapolatedLimitThisLoop = false
-        calibrationSessionId = sid
-        AppLogger.info(
-            TAG,
-            "[CtxMeter] seed session=${sid.take(8)} samples=${seeded.samples} keptInMemory=${learned?.ratios?.size ?: 0} " +
-                "ratios=${state.ratios.entries.sortedBy { it.key }.joinToString(",") { "${it.key}=${"%.3f".format(it.value)}" }}",
-        )
-        return seeded.samples > 0 || !learned?.ratios.isNullOrEmpty()
+        if (contextMeter.fixedTokens > 0) return
+        contextMeter.fixedTokens = ContextSizeMeter.estimateFixedTokens(buildSystemPrompt(), agentTools)
     }
 
     /**
@@ -1600,50 +1391,6 @@ class ChatViewModel(
         val measured = measureOutboundContextTokens()
         if (measured > 0) _lastTurnContextTokens.value = measured
     }
-
-    /**
-     * [T-ctx-warmup-fit] Trim a compaction's warm-up turns so the request fits
-     * under the compact line. Mirrors iOS `trimWarmUpToFit`.
-     *
-     * A compaction keeps the last few user turns before its anchor as warm-up.
-     * When those turns are large, or the model's tokenizer is denser than the
-     * one the session ran on, summary + warm-up can still be over the line;
-     * every later compaction keeps the same warm-up, so the session can never
-     * continue on that model (measured on device with a 1.8x-denser model:
-     * compacted and still at 100% of the window). Only runs over budget, so a
-     * normal compaction's request and prompt-cache prefix are unchanged. Drops
-     * whole user-TEXT turns oldest-first (tool results are USER messages too,
-     * and cutting between a call and its result would orphan it), in
-     * raw-estimate units so it cannot recurse into the measurement.
-     */
-    private fun trimWarmUpToFit(warmUp: List<LLMMessage>, rest: List<LLMMessage>, summaryText: String): WarmUpTrim {
-        if (warmUp.isEmpty()) return WarmUpTrim(warmUp, decided = true)
-        // [T-ctx-warmup-trim-undecided] No entry / unknown window / fixed
-        // tokens not yet seeded: there is no budget to judge against, so the
-        // warm-up passes through UNDECIDED and the caller must not cache it.
-        val budget = warmUpBudget(
-            window = effectiveContextWindowTokens(),
-            compactThreshold = currentContextPolicy()?.first?.compactThreshold,
-            ratio = contextCalibrationRatio(),
-            fixedTokens = contextFixedTokens,
-        ) ?: return WarmUpTrim(warmUp, decided = false)
-        val restTokens = ContextSizeMeter.estimateTokens(rest) + ContextSizeMeter.estimateTokens(summaryText)
-        if (ContextSizeMeter.estimateTokens(warmUp) + restTokens < budget) return WarmUpTrim(warmUp, decided = true)
-        val drop = ContextSizeMeter.warmUpDrop(
-            sizes = warmUp.map { ContextSizeMeter.estimateTokens(listOf(it)) },
-            startsTurn = warmUp.map { m -> m.role == LLMMessage.Role.USER && m.contentParts.none { it is AgentContentPart.ToolResult } },
-            restTokens = restTokens,
-            budget = budget,
-        )
-        AppLogger.info(TAG, "[CtxMeter] warmup trimmed to fit: kept ${warmUp.size - drop}/${warmUp.size} message(s) (budget=$budget raw tokens)")
-        return WarmUpTrim(warmUp.drop(drop), decided = true)
-    }
-
-    /** `"estimatedRequestTokens":…,"estimatedFixedTokens":…` for the usage row, or "". Same keys as iOS StoredTokenUsage. */
-    private fun calibrationJsonFields(): String = lastCalibratedPair?.let { (est, fixed, model) ->
-        val modelField = model?.let { ""","calibrationModelId":${JSONObject.quote(it)}""" } ?: ""
-        ""","estimatedRequestTokens":$est,"estimatedFixedTokens":$fixed$modelField"""
-    } ?: ""
 
     // ---- [T-android-context-usage-hint] Context-window pressure surface ----
     //
@@ -3636,7 +3383,7 @@ class ChatViewModel(
         // backstop. Transcript length no longer scales it — under an idle timer
         // a big transcript just takes longer, which is correct, and sizing a
         // total budget off it was what cancelled healthy streams mid-flight.
-        val transcriptChars = buildConversationTextForSummary(toCompact).length
+        val transcriptChars = CompactionSummary.transcript(toCompact).length
         val timeoutMs = COMPACT_MAX_TOTAL_MS
         compactCallsIssued.set(0)
         _compactProgress.value = CompactProgress(
@@ -3708,11 +3455,21 @@ class ChatViewModel(
                         attempt++
                         try {
                             summary = withTimeout(timeoutMs) {
-                                generateCompactSummaryWithSplitting(
+                                CompactionSummary.summarize(
                                     messages = toCompact,
                                     previousSummary = existing,
-                                    depth = 0,
-                                )
+                                    callsIssued = compactCallsIssued,
+                                    onProgress = { depth, calls ->
+                                        _compactProgress.value = _compactProgress.value?.copy(
+                                            depth = depth,
+                                            callsIssued = calls,
+                                        )
+                                    },
+                                ) { userMessage ->
+                                    val provider = currentProvider
+                                        ?: throw IllegalStateException("No LLM provider available for compaction")
+                                    CompactionSummary.request(userMessage, currentModel, provider)
+                                }
                             }.trim()
                             break
                         } catch (ce: CancellationException) {
@@ -4384,122 +4141,26 @@ class ChatViewModel(
     private data class Quad(val a: Int, val b: Int, val c: String, val d: String?)
 
     private fun applyRequestImageBudget(messages: List<LLMMessage>): List<LLMMessage> {
-        // Collect every image in chronological order so the planner can
-        // walk in reverse and protect the most recent images.
-        data class ImageRef(val msgIdx: Int, val partIdx: Int, val image: ImageBudget.BudgetImage)
-        val images = mutableListOf<ImageRef>()
-        messages.forEachIndexed { mi, msg ->
-            msg.contentParts.forEachIndexed { pi, part ->
-                when (part) {
-                    is AgentContentPart.ImageData -> {
-                        images.add(
-                            ImageRef(
-                                mi, pi,
-                                ImageBudget.BudgetImage(part.data, part.linuxPath, part.mimeType),
-                            )
-                        )
-                    }
-                    is AgentContentPart.ToolResult -> {
-                        val img = part.imageData
-                        if (img != null) {
-                            images.add(
-                                ImageRef(
-                                    mi, pi,
-                                    ImageBudget.BudgetImage(
-                                        img,
-                                        part.imageLinuxPath,
-                                        part.imageMimeType ?: "image/jpeg",
-                                    ),
-                                )
-                            )
-                        }
-                    }
-                    else -> Unit
-                }
-            }
-        }
-        if (images.isEmpty()) return messages
-
-        // [token-opt] Also cap the image COUNT, not just bytes.
-        val plan = ImageBudget.planRequestBudget(
-            images.map { it.image },
-            maxCount = ImageBudget.requestImageCountCap(
-                images.mapTo(HashSet()) { ImageBudget.ImagePartId.of(it.image.data) }.size,
-            ),
-        )
-        if (!plan.mutated) return messages
-
-        // For dropped images without a linuxPath, lazily spill to disk so
-        // the placeholder still gives the model an addressable reference.
-        val attachmentsRoot = activeSessionId?.let { sid ->
-            java.io.File(context.filesDir, "minis-sessions/$sid/attachments")
-        }
-        val resolvedPaths = HashMap<ImageBudget.ImagePartId, String?>()
-        for (ref in images) {
-            val id = ImageBudget.ImagePartId.of(ref.image.data)
-            if (id !in plan.droppedIds) continue
-            val existing = ref.image.linuxPath
-            if (existing != null) {
-                resolvedPaths[id] = existing
-            } else if (attachmentsRoot != null) {
-                resolvedPaths[id] = ImageBudget.ensureSpillover(
-                    attachmentsRoot, ref.image.data, ref.image.mimeType,
-                )
-            } else {
-                resolvedPaths[id] = null
-            }
-        }
-
-        // Build a new message list with dropped image parts replaced by
-        // text placeholders. Same-message multiple drops collapse cleanly
-        // because we never touch parts whose ids weren't in droppedIds.
-        val byMsg = images.groupBy { it.msgIdx }
-        val mutated = messages.toMutableList()
-        for ((mi, refs) in byMsg) {
-            val msg = mutated[mi]
-            val newParts = msg.contentParts.toMutableList()
-            for (ref in refs) {
-                val id = ImageBudget.ImagePartId.of(ref.image.data)
-                if (id !in plan.droppedIds) continue
-                val path = resolvedPaths[id]
-                val placeholder = AgentContentPart.Text(ImageBudget.elidedImagePlaceholder(path))
-                val originalPart = newParts[ref.partIdx]
-                newParts[ref.partIdx] = when (originalPart) {
-                    is AgentContentPart.ImageData -> placeholder
-                    is AgentContentPart.ToolResult -> originalPart.copy(
-                        // Strip the bytes but keep the structural ToolResult
-                        // role; append the elision marker into content so
-                        // the model sees it next to the rest of the tool
-                        // output. linux path remains in the part for any
-                        // subsequent diagnostic round-trip.
-                        imageData = null,
-                        imageMimeType = null,
-                        content = originalPart.content +
-                            (if (originalPart.content.isEmpty()) "" else "\n") +
-                            ImageBudget.elidedImagePlaceholder(path),
-                    )
-                    else -> originalPart
-                }
-            }
-            mutated[mi] = msg.copy(contentParts = newParts)
-        }
-
-        _requestBudgetEvent.tryEmit(plan)
+        val result = RequestImageBudget.apply(messages) {
+            java.io.File(context.filesDir, "minis-sessions/$activeSessionId/attachments")
+        } ?: return messages
+        _requestBudgetEvent.tryEmit(result.plan)
+        val plan = result.plan
         AppLogger.info(
             TAG,
             "applyRequestImageBudget: dropped=${plan.droppedCount}/${plan.totalCount} keptBytes=${plan.keptBytes}B elidedBytes=${plan.elidedBytes}B",
         )
-        return mutated
+        return result.messages
     }
 
     /**
      * [T-android-compact-orphan-toolcall] The outgoing history, with tool
      * call/result pairing repaired. Every request goes through here — see
-     * [dropOrphanedToolParts] for why the sweep exists and what it can and
+     * [CompactionHistory.dropOrphanedToolParts] for why the sweep exists and what it can and
      * cannot fix.
      */
     private fun effectiveAgentHistory(): List<LLMMessage> =
-        dropOrphanedToolParts(effectiveAgentHistoryUncounted())
+        compactionHistory.dropOrphanedToolParts(effectiveAgentHistoryUncounted(), activeSessionId)
 
     // ---- [T-longctx-persona-reminder-cachebreak] Long-context persona reminder ----
     //
@@ -4552,759 +4213,21 @@ class ChatViewModel(
         Log.i(TAG, "[PersonaReminder] appended at ~$contextTokens ctx tokens (agentHistory.size=${agentHistory.size})")
     }
 
-    private fun effectiveAgentHistoryUncounted(): List<LLMMessage> {
-        val summary = _compactSummary.value
-        val marker = _cachedLatestMarker
-        // No compact in play → return full history untouched.
-        if (summary.isNullOrBlank() || marker == null) return agentHistory.toList()
+    private fun effectiveAgentHistoryUncounted(): List<LLMMessage> =
+        compactionHistory.outbound(agentHistory, _compactSummary.value, _cachedLatestMarker, ::currentWarmUpBudget)
 
-        val summaryWrappedText = "<context-summary>\n" +
-            "The following is a summary of the earlier conversation that was compacted to save context space.\n" +
-            "Treat it as background context only. The user's most recent message (below or in the next turn) takes precedence — if it changes the task, the goal, or any numbers/scope, follow the new instruction and do not resume the old plan from this summary. Do not re-run discovery (reading memory, scanning skills, re-reading files) unless the new instruction requires it.\n\n" +
-            summary +
-            "\n</context-summary>"
-
-        // ─── v2 markers (id-only anchor model) ─────────────────────────
-        //
-        // anchor = lastCompactedMessageId. What we send to the model:
-        //   1. last [COMPACT_KEEP_RECENT_USER_TURNS] user-text turns BEFORE
-        //      anchor (inclusive of anchor) — recent verbatim warm-up
-        //   2. the summary, INLINED as a `<context-summary>` text part
-        //      prepended to the first user message AFTER anchor (preserves
-        //      strict role alternation — no synthetic standalone user turn)
-        //   3. all messages strictly after anchor (the kept-tail "active"
-        //      region — typically empty right after compact, populated as
-        //      the user sends new prompts)
-        //
-        // If anchor unresolvable, degrade to full history (over-inform
-        // beats summary-only; the M-Team session bug taught us that a lone
-        // summary message paired with hot tools makes the model loop).
-        if (marker.version >= 2) {
-            val anchorId = marker.lastCompactedMessageId?.takeIf { it.isNotEmpty() }
-            val anchorIdx = anchorId?.let { id ->
-                agentHistory.indexOfLast { it.dbMessageId == id }
-            } ?: -1
-            if (anchorIdx < 0) {
-                Log.w(TAG, "[Compact] effectiveAgentHistory v2: anchorId=${anchorId?.take(8) ?: "nil"} not in agentHistory(size=${agentHistory.size}) — degrading to full history (no summary)")
-                return agentHistory.toList()
-            }
-
-            // Step 1: walk back from anchor collecting user-text turns. Stop
-            // when EITHER we've collected N user-text turns OR including the
-            // next turn would push preAnchor over 100 messages. Decisions
-            // happen only at user-message boundaries so we never split a
-            // user/assistant/tool round in half (which would orphan a
-            // tool_use with no matching tool_result).
-            //
-            // [T-compact-preanchor-prune, port iOS 8b76cd74]
-            val keepN = COMPACT_KEEP_RECENT_USER_TURNS
-            val preAnchorCap = 100
-            val walkBack = walkBackUserTurnsBounded(
-                anchorIdx = anchorIdx,
-                maxUserTextTurns = keepN,
-                maxMessages = preAnchorCap,
-            )
-            val priorIdxResolved: Int? = walkBack.priorIdx
-            val priorIdx = walkBack.priorIdx ?: (anchorIdx + 1) // empty preAnchor sentinel
-            if (walkBack.stopReason != "userTextTargetMet") {
-                AppLogger.info(TAG, "[CompactDiag] eAH v2 walkBack stopped: reason=${walkBack.stopReason} priorIdx=$priorIdx userTextTurnsFound=${walkBack.userTextTurnsFound} preAnchorMsgs=${walkBack.messageCount}")
-            }
-
-            // PRE-ANCHOR PRUNE (tool-heavy session fix):
-            // The walk-back-N-user-text strategy pulls in everything between
-            // the Nth-last and last user-text turn — in a heavy tool-call
-            // session that can be many messages of tool_result / tool_use,
-            // tens of thousands of tokens that the summary already covers.
-            // Drop any tool_result > 1000 chars in the preAnchor slice and
-            // strip the matching tool_use part (same id) from the assistant
-            // message so the model never sees a dangling tool_use/result.
-            val preAnchorRaw: List<LLMMessage> =
-                if (priorIdx <= anchorIdx) agentHistory.subList(priorIdx, anchorIdx + 1).toList()
-                else emptyList()
-
-            val droppedToolIds = mutableSetOf<String>()
-            var droppedToolResultCount = 0
-            for (msg in preAnchorRaw) {
-                for (part in msg.contentParts) {
-                    if (part is AgentContentPart.ToolResult && part.content.length > 1000) {
-                        droppedToolIds.add(part.id)
-                        droppedToolResultCount += 1
-                    }
-                }
-            }
-
-            val preAnchorPruned: MutableList<LLMMessage> = ArrayList(preAnchorRaw.size)
-            for (msg in preAnchorRaw) {
-                if (msg.contentParts.isEmpty()) {
-                    // Plain text-only message — nothing to prune.
-                    preAnchorPruned.add(msg)
-                    continue
-                }
-                val kept = msg.contentParts.filter { part ->
-                    when (part) {
-                        is AgentContentPart.ToolUse -> !droppedToolIds.contains(part.id)
-                        is AgentContentPart.ToolResult -> !droppedToolIds.contains(part.id)
-                        else -> true
-                    }
-                }
-                if (kept.isEmpty()) continue // skip empty shells
-                preAnchorPruned.add(msg.copy(contentParts = kept))
-            }
-
-            if (droppedToolResultCount > 0) {
-                AppLogger.info(TAG, "[CompactDiag] eAH v2 preAnchor prune: dropped $droppedToolResultCount toolResult(>1kc) + paired toolUse, ${preAnchorRaw.size - preAnchorPruned.size} messages emptied; pruned slice=${preAnchorPruned.size}")
-            }
-
-            // ROLE ALIGNMENT: the API requires the first message to be `user`.
-            // After clamp (cap may land on assistant) and after prune (the
-            // head user may have been emptied), peel any leading non-user
-            // messages so preAnchor starts on a user turn.
-            while (preAnchorPruned.isNotEmpty() && preAnchorPruned.first().role != LLMMessage.Role.USER) {
-                preAnchorPruned.removeAt(0)
-            }
-
-            val postAnchor = if (anchorIdx + 1 < agentHistory.size) {
-                agentHistory.subList(anchorIdx + 1, agentHistory.size)
-            } else {
-                emptyList()
-            }
-            // [T-ctx-warmup-fit] Warm-up turns are optional context — the summary
-            // covers them. Drop them oldest-first when keeping them all would
-            // leave the request over the compact line (see trimWarmUpToFit).
-            // Decided ONCE per marker, then reused: re-deciding every request
-            // slid the warm-up window one turn per message (measured on the
-            // iOS twin), changing the request prefix every turn and defeating
-            // prompt caching. Fixed per marker, the prefix is stable, the
-            // request grows normally, and compaction fires at the line.
-            // [T-ctx-warmup-trim-undecided] Cache only a REAL decision. When no
-            // budget could be computed yet (no entry, unknown window, fixed
-            // tokens not seeded) the trim passes the warm-up through unchanged;
-            // caching drop=0 then would pin "keep everything" for this marker
-            // forever, even once the budget is known and says it does not fit.
-            val warmUp = warmUpDropByMarker[marker.id]?.let { drop ->
-                preAnchorPruned.drop(minOf(drop, preAnchorPruned.size))
-            } ?: trimWarmUpToFit(preAnchorPruned, postAnchor, summaryWrappedText).let { trim ->
-                if (trim.decided) warmUpDropByMarker[marker.id] = preAnchorPruned.size - trim.kept.size
-                trim.kept
-            }
-            // Step 2 & 3: copy the lookback window (post-prune, trimmed to fit),
-            // then splice in the summary as parts[0] of the first post-anchor user msg.
-            val result = mutableListOf<LLMMessage>()
-            result.addAll(warmUp)
-
-            // DIAG: explain how the slice was sized using post-prune /
-            // post-alignment counts so the log reflects what actually
-            // reaches the model.
-            val preAnchorRawCount = maxOf(0, anchorIdx - priorIdx + 1)
-            val priorIdxSource =
-                if (priorIdxResolved == null) "fallback=empty(<$keepN user-text turns before anchor or cap hit)"
-                else "userTextWalkBack(N=$keepN)"
-            AppLogger.info(TAG, "[CompactDiag] eAH v2 slice: priorIdx=$priorIdx anchorIdx=$anchorIdx agentHistory.size=${agentHistory.size} → preAnchorRaw=$preAnchorRawCount preAnchorSent=${preAnchorPruned.size} postAnchor=${postAnchor.size} summaryChars=${summary.length} priorIdxSource=$priorIdxSource markerId=${marker.id.take(8)}")
-
-            val firstUserOffset = postAnchor.indexOfFirst { it.role == LLMMessage.Role.USER }
-            if (firstUserOffset >= 0) {
-                if (firstUserOffset > 0) {
-                    result.addAll(postAnchor.subList(0, firstUserOffset))
-                }
-                val target = postAnchor[firstUserOffset]
-                // Prepend `<context-summary>...` to the user turn.
-                //
-                // [T-android-compact-summary-dropped] `content` alone is NOT
-                // enough. Every persisted message carries contentParts (its
-                // partsJson round-trips into a Text part), and the provider
-                // serializers prefer parts when they exist — the Responses
-                // API builder emits `textParts.joinToString("")` for a user
-                // turn and never reads `msg.content`. So injecting into
-                // `content` only meant the summary was assembled, logged
-                // (summaryChars=734 in CompactDiag) and then silently dropped
-                // on the way to the wire: the model got neither the compacted
-                // detail nor the summary standing in for it. Measured on
-                // device — the post-compact request carried 27 rows exactly as
-                // the slice log predicted, with no `<context-summary>`
-                // anywhere in the body.
-                //
-                // Update BOTH representations so the summary survives whichever
-                // one a given provider reads.
-                val injectedParts = if (target.contentParts.isEmpty()) {
-                    target.contentParts
-                } else {
-                    val firstTextIdx = target.contentParts.indexOfFirst { it is AgentContentPart.Text }
-                    if (firstTextIdx < 0) {
-                        // No text part to prepend onto (image/tool-only turn):
-                        // add one at the front rather than editing a non-text
-                        // part, so nothing already there is disturbed.
-                        listOf(AgentContentPart.Text(summaryWrappedText)) + target.contentParts
-                    } else {
-                        target.contentParts.mapIndexed { i, part ->
-                            if (i != firstTextIdx || part !is AgentContentPart.Text) part
-                            else AgentContentPart.Text(summaryWrappedText + "\n\n" + part.text)
-                        }
-                    }
-                }
-                val injected = target.copy(
-                    content = summaryWrappedText + "\n\n" + target.content,
-                    contentParts = injectedParts,
-                )
-                result.add(injected)
-                if (firstUserOffset + 1 < postAnchor.size) {
-                    result.addAll(postAnchor.subList(firstUserOffset + 1, postAnchor.size))
-                }
-            } else {
-                // Rare: no user message after anchor. Append everything
-                // post-anchor (typically empty) then a standalone summary
-                // user turn. Safe — no later user follows it to break
-                // alternation.
-                result.addAll(postAnchor)
-                result.add(LLMMessage(role = LLMMessage.Role.USER, content = summaryWrappedText))
-            }
-            return result
-        }
-
-        // ─── v1 (legacy) markers ──────────────────────────────────────
-        //
-        // Original behavior preserved unchanged so old markers keep
-        // rendering / sending data the same way they always did.
-        val summaryHead = LLMMessage(role = LLMMessage.Role.USER, content = summaryWrappedText)
-        val firstKeptId = (marker.firstKeptMessageId?.takeIf { it.isNotEmpty() })
-            ?: (marker.boundaryMessageId?.takeIf { it.isNotEmpty() })
-
-        if (firstKeptId != null) {
-            val keepStart = agentHistory.indexOfFirst { it.dbMessageId == firstKeptId }
-            if (keepStart >= 0) {
-                return buildList(agentHistory.size - keepStart + 1) {
-                    add(summaryHead)
-                    addAll(agentHistory.subList(keepStart, agentHistory.size))
-                }
-            }
-            // Fall through to safety net.
-        } else {
-            val lcmId = marker.lastCompactedMessageId?.takeIf { it.isNotEmpty() }
-            val lcmIdx = lcmId?.let { id ->
-                agentHistory.indexOfLast { it.dbMessageId == id }
-            } ?: -1
-            val postCompactStart = lcmIdx + 1
-            return buildList(agentHistory.size - postCompactStart + 1) {
-                add(summaryHead)
-                if (postCompactStart < agentHistory.size) {
-                    addAll(agentHistory.subList(postCompactStart, agentHistory.size))
-                }
-            }
-        }
-
-        Log.w(TAG, "[Compact] effectiveAgentHistory: marker ${marker.id.take(8)} unresolvable in agentHistory (size=${agentHistory.size}); returning full history")
-        return agentHistory.toList()
-    }
-
-    /**
-     * [T-android-compact-orphan-toolcall] Last line of defence before a history
-     * slice becomes a provider request: every ToolResult (function_call_output)
-     * must have a matching ToolUse (function_call) in the same slice, and vice
-     * versa.
-     *
-     * An unmatched pair is a hard 400 on OpenAI-compatible APIs —
-     *     No tool call found for function call output with call_id …
-     * — and because the slice is recomputed deterministically, it repeats on
-     * every retry AND every fallback model, wedging the conversation until the
-     * user clears the session. Port of iOS `dropOrphanedToolParts`
-     * (AIChatViewModel+Persistence.swift, c7f6a299e).
-     *
-     * Any orphan reaching here is an upstream bug (the walk-back boundary is
-     * supposed to preserve pairing), so this logs loudly rather than silently
-     * papering over it:
-     *   - orphaned result → drop it; its call is gone from the slice and
-     *     nothing can reconstruct it.
-     *   - orphaned call → synthesise an error result rather than deleting the
-     *     call, because deleting would silently discard the assistant's own
-     *     reasoning. The placeholder keeps the turn intact and tells the model
-     *     that round failed.
-     * Messages emptied by the drop are removed — a parts-less message is itself
-     * invalid on several providers.
-     */
-    /**
-     * [T-android-orphan-toolcall-diag] (GH#352) `role:id` for every orphan, so
-     * a log alone says which side of the pairing broke.
-     */
-    private fun orphanRoleSummary(
-        history: List<LLMMessage>,
-        orphanedResults: Set<String>,
-        orphanedUses: Set<String>,
-    ): String {
-        val out = mutableListOf<String>()
-        for (msg in history) {
-            for (part in msg.contentParts) {
-                val id = when (part) {
-                    is AgentContentPart.ToolUse -> part.id.takeIf { com.openminis.app.provider.ToolPairing.key(it) in orphanedUses }
-                    is AgentContentPart.ToolResult -> part.id.takeIf { com.openminis.app.provider.ToolPairing.key(it) in orphanedResults }
-                    else -> null
-                } ?: continue
-                out += "${msg.role}:$id"
-            }
-        }
-        return out.joinToString(",")
-    }
-
-    private fun dropOrphanedToolParts(history: List<LLMMessage>): List<LLMMessage> {
-        // [T-android-responses-tool-id-normalize] Paired on ToolPairing.key,
-        // not the raw id: the Responses path stores "call|fc" ids and a history
-        // can hold both forms for one call, which raw ids called orphans.
-        val toolUseIds = HashSet<String>()
-        val toolResultIds = HashSet<String>()
-        for (msg in history) {
-            for (part in msg.contentParts) {
-                when (part) {
-                    is AgentContentPart.ToolUse -> toolUseIds.add(com.openminis.app.provider.ToolPairing.key(part.id))
-                    is AgentContentPart.ToolResult -> toolResultIds.add(com.openminis.app.provider.ToolPairing.key(part.id))
-                    else -> {}
-                }
-            }
-        }
-        val orphanedResults = toolResultIds - toolUseIds
-        val orphanedUses = HashSet(toolUseIds - toolResultIds)
-
-        // [T-android-compact-orphan-toolcall] IN-FLIGHT EXEMPTION (iOS
-        // 5d346dc2e). The tool_uses in the FINAL assistant message are not
-        // orphans while the loop sits between "model asked for tools" and
-        // "results appended" — agentHistory legitimately looks unpaired for
-        // that whole window (the assistant turn is appended at ~7500 and its
-        // tool results only at ~7517). Any snapshot taken inside that gap would
-        // otherwise carry fabricated "interrupted" results for tools that were
-        // about to run normally, telling the model its tools had failed.
-        // Trailing unanswered calls need no repair anyway: a request ending on
-        // an assistant tool_use is exactly what the API expects mid-round.
-        val last = history.lastOrNull()
-        if (last != null && last.role == LLMMessage.Role.ASSISTANT) {
-            for (part in last.contentParts) {
-                if (part is AgentContentPart.ToolUse) orphanedUses.remove(com.openminis.app.provider.ToolPairing.key(part.id))
-            }
-        }
-
-        if (orphanedResults.isEmpty() && orphanedUses.isEmpty()) return history
-
-        AppLogger.warning(
-            TAG,
-            // [T-android-orphan-toolcall-diag] (GH#352) Session id and the
-            // roles carrying each orphan were missing, and both are what a
-            // report like GH#352 needs: without the session id a log cannot be
-            // tied to the conversation the user complains about, and without
-            // the roles it is impossible to tell WHICH side lost its partner
-            // (a dangling assistant tool_call is a different bug from a
-            // stranded tool reply). ALL ids are listed, not a sample of three —
-            // the case worth diagnosing is the one where a specific id repeats.
-            "[CompactDiag] orphan tool parts in OUTGOING history — repairing. " +
-                "session=$activeSessionId " +
-                "orphanedOutputs=${orphanedResults.size} [${orphanedResults.sorted().joinToString(",")}] " +
-                "orphanedCalls=${orphanedUses.size} [${orphanedUses.sorted().joinToString(",")}] " +
-                "orphanRoles=[${orphanRoleSummary(history, orphanedResults, orphanedUses)}] " +
-                "historyCount=${history.size}",
-        )
-
-        val cleaned = ArrayList<LLMMessage>(history.size)
-        for (msg in history) {
-            val kept = msg.contentParts.filter { part ->
-                if (part is AgentContentPart.ToolResult) !orphanedResults.contains(com.openminis.app.provider.ToolPairing.key(part.id)) else true
-            }
-            // Only drop the message when it HAD parts and lost them all. A
-            // plain text message legitimately carries no contentParts and must
-            // survive untouched.
-            if (kept.isEmpty() && msg.contentParts.isNotEmpty()) continue
-            cleaned.add(if (kept.size == msg.contentParts.size) msg else msg.copy(contentParts = kept))
-
-            // Follow an assistant turn holding orphaned calls with the
-            // placeholder results it never got, so the pair is complete.
-            if (msg.role != LLMMessage.Role.ASSISTANT) continue
-            val unanswered = kept.filterIsInstance<AgentContentPart.ToolUse>()
-                .filter { orphanedUses.contains(com.openminis.app.provider.ToolPairing.key(it.id)) }
-            if (unanswered.isNotEmpty()) {
-                cleaned.add(
-                    LLMMessage(
-                        role = LLMMessage.Role.USER,
-                        content = "",
-                        contentParts = unanswered.map {
-                            AgentContentPart.ToolResult(
-                                id = it.id,
-                                name = it.name,
-                                content = "Tool execution was interrupted by an unexpected error.",
-                                isError = true,
-                            )
-                        },
-                    ),
-                )
-            }
-        }
-        return cleaned
-    }
+    private fun currentWarmUpBudget(): Int? = warmUpBudget(
+        window = effectiveContextWindowTokens(),
+        compactThreshold = currentContextPolicy()?.first?.compactThreshold,
+        ratio = contextCalibrationRatio(),
+        fixedTokens = contextMeter.fixedTokens,
+    )
 
     /** Latest in-memory compact marker, used by [effectiveAgentHistory] to
      * resolve boundaries the same way iOS `cachedLatestMarker` does. Refreshed
      * on every compactAll write and on session reload. */
     @Volatile
     private var _cachedLatestMarker: com.openminis.app.data.db.CompactMarkerEntity? = null
-
-    /**
-     * Result of a bounded walk-back. `priorIdx` is the agentHistory index
-     * the caller should use as the start of preAnchor; `null` means even
-     * the first user turn including anchor would exceed `maxMessages`, so
-     * preAnchor should be empty.
-     *
-     * Mirrors iOS `WalkBackResult` in AIChatViewModel.swift (8b76cd74).
-     */
-    private data class WalkBackResult(
-        val priorIdx: Int?,
-        val userTextTurnsFound: Int,
-        val messageCount: Int,
-        /** "userTextTargetMet" | "messageCapWouldExceed" | "reachedStart" | "invalidAnchor" */
-        val stopReason: String,
-    )
-
-    /**
-     * Walk back from `anchorIdx` toward 0, deciding ONLY at user-message
-     * boundaries whether to include the next round. Stops when:
-     * - we've collected `maxUserTextTurns` user-text turns (success), OR
-     * - including the next user round would push total messages over
-     *   `maxMessages` (cap reason — don't split a user/assistant/tool round
-     *   in the middle, otherwise a tool_use would be orphaned without its
-     *   tool_result), OR
-     * - we hit index 0 (start of history).
-     *
-     * Port of iOS `walkBackUserTurnsBounded` (AIChatViewModel.swift, 8b76cd74).
-     */
-    private fun walkBackUserTurnsBounded(
-        anchorIdx: Int,
-        maxUserTextTurns: Int,
-        maxMessages: Int,
-    ): WalkBackResult {
-        if (anchorIdx < 0 || anchorIdx >= agentHistory.size) {
-            return WalkBackResult(null, 0, 0, "invalidAnchor")
-        }
-        var acceptedPriorIdx: Int? = null
-        var acceptedUserTextTurns = 0
-        var acceptedMessageCount = 0
-
-        var i = anchorIdx
-        while (i >= 0) {
-            val msg = agentHistory[i]
-            if (msg.role != LLMMessage.Role.USER) {
-                i -= 1
-                continue
-            }
-            // [T-android-compact-orphan-toolcall] A user message CARRYING a
-            // tool result is the second half of a round, not the start of one.
-            // This walk-back's whole premise is that `role == USER` marks a
-            // round boundary — but tool results are themselves persisted as
-            // USER messages (see the agentHistory.add at the end of the tool
-            // dispatch loop), so stopping on one cuts between an assistant's
-            // tool_use and its own tool_result. The call is then discarded with
-            // pre-history while the result survives in preAnchor and goes out
-            // alone, which every OpenAI-compatible provider answers with
-            //     400 No tool call found for function call output with call_id …
-            // and, since the slice is recomputed identically on every retry and
-            // fallback, the session wedges permanently. Port of iOS c7f6a299e.
-            if (msg.contentParts.any { it is AgentContentPart.ToolResult }) {
-                i -= 1
-                continue
-            }
-            val candidateMessageCount = anchorIdx - i + 1
-            if (candidateMessageCount > maxMessages) {
-                return WalkBackResult(
-                    priorIdx = acceptedPriorIdx,
-                    userTextTurnsFound = acceptedUserTextTurns,
-                    messageCount = acceptedMessageCount,
-                    stopReason = "messageCapWouldExceed",
-                )
-            }
-            // Accept this user as the new tentative priorIdx.
-            acceptedPriorIdx = i
-            acceptedMessageCount = candidateMessageCount
-            val hasText = msg.content.isNotBlank() ||
-                msg.contentParts.any { it is AgentContentPart.Text && it.text.isNotBlank() }
-            if (hasText) {
-                acceptedUserTextTurns += 1
-                if (acceptedUserTextTurns >= maxUserTextTurns) {
-                    return WalkBackResult(
-                        priorIdx = acceptedPriorIdx,
-                        userTextTurnsFound = acceptedUserTextTurns,
-                        messageCount = acceptedMessageCount,
-                        stopReason = "userTextTargetMet",
-                    )
-                }
-            }
-            i -= 1
-        }
-        return WalkBackResult(
-            priorIdx = acceptedPriorIdx,
-            userTextTurnsFound = acceptedUserTextTurns,
-            messageCount = acceptedMessageCount,
-            stopReason = "reachedStart",
-        )
-    }
-
-    /**
-     * Format the agent history as a plain-text transcript for the
-     * summarisation LLM. Keeps role prefixes and truncates long tool arg /
-     * output bodies so we stay well under any context window. Mirrors iOS
-     * `buildConversationTextForSummary`.
-     */
-    private fun buildConversationTextForSummary(history: List<LLMMessage>): String = buildString {
-        for (msg in history) {
-            val role = msg.role.name.lowercase()
-            val text = msg.content.take(500)
-            if (text.isNotEmpty()) {
-                append(role).append(": ").append(text).append('\n')
-            }
-            for (part in msg.contentParts) {
-                when (part) {
-                    is AgentContentPart.Text -> {
-                        append(role).append(": ").append(part.text.take(500)).append('\n')
-                    }
-                    is AgentContentPart.ToolUse -> {
-                        val preview = part.input.toString().take(200)
-                        append(role).append(" [tool:").append(part.name).append("]: ")
-                            .append(preview).append('\n')
-                    }
-                    is AgentContentPart.ToolResult -> {
-                        append(role).append(" [result:").append(part.name).append("]: ")
-                            .append(part.content.take(500)).append('\n')
-                    }
-                    is AgentContentPart.ImageData -> {
-                        append(role).append(" [image: ").append(part.mimeType).append("]\n")
-                    }
-                }
-            }
-        }
-    }
-
-    /**
-     * Summarize [messages], recursively halving when a whole-input attempt
-     * fails. Mirrors iOS `generateCompactSummaryWithSplitting`.
-     *
-     * Depth cap = 3 (matches iOS) so a pathologically large conversation
-     * still terminates instead of fanning out indefinitely. At each split we
-     * halve by message count, summarize each half independently, then
-     * concatenate the partial summaries oldest-first. The concatenation is a
-     * plain string join, NOT a further LLM call — see the comment at the join
-     * for why the extra round-trip was removed. Both platforms must keep this
-     * the same, or the summary a session carries differs by device.
-     */
-    private suspend fun generateCompactSummaryWithSplitting(
-        messages: List<LLMMessage>,
-        previousSummary: String? = null,
-        depth: Int = 0,
-    ): String {
-        val transcript = buildConversationTextForSummary(messages)
-        val conversationText = if (previousSummary.isNullOrBlank()) {
-            transcript
-        } else {
-            "Previous context summary:\n$previousSummary\n\n" +
-                "New conversation to merge:\n$transcript"
-        }
-        // [T-android-compact-runaway] Spend one unit of the run's call budget.
-        // The depth cap bounds how DEEP the recursion goes; this bounds how
-        // WIDE it gets in total, which is what actually determines wall-clock
-        // time when each call is slow rather than failing fast.
-        val spent = compactCallsIssued.incrementAndGet()
-        if (spent > MAX_COMPACT_LLM_CALLS) {
-            throw IllegalStateException(
-                "compaction exceeded its budget of $MAX_COMPACT_LLM_CALLS model calls"
-            )
-        }
-        // [T-android-compact-progress] Publish before the call so the UI shows
-        // the segment that is actually running, not the one that just finished.
-        _compactProgress.value = _compactProgress.value?.copy(
-            depth = depth,
-            callsIssued = spent,
-        )
-        return try {
-            generateCompactSummary(conversationText)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            if (!isSegmentRetryableError(e) || messages.size < 2 || depth >= 3) {
-                throw e
-            }
-            // Don't start a split we cannot afford to finish: a half that
-            // immediately throws on budget would discard the sibling's work.
-            if (compactCallsIssued.get() + 2 > MAX_COMPACT_LLM_CALLS) {
-                AppLogger.info(
-                    TAG,
-                    "[Compact] not splitting at depth=$depth — " +
-                        "${compactCallsIssued.get()}/$MAX_COMPACT_LLM_CALLS calls already spent",
-                )
-                throw e
-            }
-            val mid = messages.size / 2
-            val firstHalf = messages.subList(0, mid).toList()
-            val secondHalf = messages.subList(mid, messages.size).toList()
-            AppLogger.info(
-                TAG,
-                "[Compact] Splitting ${messages.size} messages into ${firstHalf.size} + ${secondHalf.size} (depth=$depth)",
-            )
-            val summary1 = generateCompactSummaryWithSplitting(firstHalf, null, depth + 1)
-            val summary2 = generateCompactSummaryWithSplitting(secondHalf, null, depth + 1)
-            // Join the partials textually — the caller stores a single summary
-            // string, so segmentation stays invisible downstream.
-            //
-            // This used to be a THIRD LLM call that re-summarised the two
-            // partials. Dropped, because the size premise behind it does not
-            // hold: each segment's output is already hard-capped (see
-            // maxOutputTokens in generateCompactSummary), so two partials are
-            // nowhere near a context boundary and not worth another round-trip
-            // to shrink.
-            //
-            // It was also the one genuinely fragile step: the merge went
-            // through generateCompactSummary directly, with no depth and no
-            // split retry of its own, so a failure there threw away the
-            // segments that had just succeeded. The mechanism that exists to
-            // rescue a failing compaction ended its own happy path on an
-            // unprotected call. A string join cannot fail.
-            //
-            // What is lost is the merge prompt's cross-part editing (prefer the
-            // newer half, de-duplicate shared background). Accepted: the parts
-            // are already ordered oldest-first, which is the same signal in
-            // positional form, and each is internally coherent because it was
-            // summarised under the full system prompt.
-            summary1 + "\n\n" + summary2
-        }
-    }
-
-    /**
-     * Single-shot LLM call that turns [conversationText] into a structured
-     * summary. Throws on provider error so the splitter above can detect
-     * context-too-large failures and retry with halved input.
-     */
-    private suspend fun generateCompactSummary(conversationText: String): String {
-        // Wrap the transcript in explicit BEGIN/END framing so the model
-        // treats it as material to summarize rather than as a chat turn to
-        // continue. Mirrors iOS AIChatViewModel+Compaction.swift
-        // `compactUserMessage` construction. Without this wrapper, fast models
-        // (e.g. deepseek-v4-flash) tend to "answer" whatever the last user
-        // turn in the transcript said — producing a single-line continuation
-        // instead of a structured summary.
-        val userMessage = buildString {
-            append("Compact this conversation into a context summary:\n\n")
-            append(conversationText)
-            append("\n\n---\nEND OF CONVERSATION TO COMPACT.\n\n")
-            append(
-                "Now generate a structured context summary following the system prompt " +
-                    "instructions. Do NOT continue the conversation above — summarize it. " +
-                    "Write everything in past tense, framed as \"what was discussed / what " +
-                    "was done\", NOT as an ongoing goal or todo list."
-            )
-        }
-        val model = currentModel
-        val contextWindow = model?.contextWindow ?: 128_000
-        val estimatedInput = userMessage.length / 4
-        val maxOut = maxOf(1024, minOf(8192, contextWindow - estimatedInput))
-        val provider = currentProvider
-            ?: throw IllegalStateException("No LLM provider available for compaction")
-        // [T-compact-idle-timeout] Stream rather than calling sendMessage.
-        //
-        // sendMessage is the same request underneath — every provider collects
-        // its own stream internally and hands back the joined text — but it
-        // surfaces nothing until the whole response is complete, so the layer
-        // that has to decide "is this stuck?" cannot see the chunks that prove
-        // it is not. Collecting here makes each delta observable, which is what
-        // lets the timer below measure silence instead of duration.
-        val textBuf = StringBuilder()
-        var chunks = 0L
-        provider.streamMessage(
-            messages = listOf(
-                LLMMessage(role = LLMMessage.Role.USER, content = userMessage)
-            ),
-            systemPrompt = compactSummarySystemPrompt,
-            maxTokens = maxOut,
-            // Mirror iOS AIChatViewModel.swift:12926 — null lets the
-            // provider/model use its default. gpt-5.x family rejects any
-            // temperature != 1 with HTTP 400, and Android
-            // OpenAIProvider.buildRequestBody omits the field entirely when
-            // temperature is null.
-            temperature = null,
-            imageParts = emptyList(),
-            tools = emptyList(),
-            thinkingLevel = ThinkingLevel.OFF,
-        )
-            // Reset the clock on EVERY chunk, not only on text. A model that is
-            // thinking emits reasoning deltas and no text for long stretches;
-            // treating those as silence would time out exactly the slow-but-
-            // healthy runs this change exists to protect.
-            .withIdleTimeout(COMPACT_IDLE_TIMEOUT_MS) { idleMs ->
-                throw CompactIdleTimeoutException(
-                    "compaction stream received no data for ${idleMs / 1000}s"
-                )
-            }
-            .collect { chunk ->
-                chunks++
-                if (chunk is LLMStreamChunk.Text) textBuf.append(chunk.text)
-            }
-        AppLogger.info(
-            TAG,
-            "[Compact] segment stream done: $chunks chunks, ${textBuf.length} chars",
-        )
-        return textBuf.toString()
-    }
-
-    /**
-     * Should a failed summary attempt be retried by splitting the input in half?
-     *
-     * Ported from iOS `isSegmentRetryableError`
-     * (AIChatViewModel+Compaction.swift:1010, T-compact-segment-retry-any-error).
-     *
-     * Everything EXCEPT the two cases where a smaller request cannot help:
-     *   - cancellation — the user (or a session switch) stopped the work, so a
-     *     retry would fight that and immediately throw again;
-     *   - network/offline — the request never reached a model, so payload size
-     *     is irrelevant and splitting just doubles the failed round-trips.
-     *
-     * This deliberately REPLACES [isContextTooLargeError] on the split path.
-     * That substring allow-list tried to enumerate how every provider words an
-     * over-length refusal and was provably incomplete — OpenMinis#133's
-     * `[context_length_exceeded] Your input exceeds the context window of this
-     * model` slipped past several variants — and every miss silently disabled
-     * splitting, so compaction failed outright instead of retrying smaller.
-     *
-     * Splitting on an unclassified error is still the default, for that reason:
-     * a summary built from halves beats no summary, so the burden of proof is
-     * on NOT retrying.
-     *
-     * [T-android-compact-runaway] What changed is that "unclassified" no longer
-     * means "everything". Splitting only helps when the failure was caused by
-     * the SIZE of the request, and two error classes are known not to be:
-     *
-     *   - [LLMError.RateLimited] (429). The model is refusing on quota, not on
-     *     length. Halving turns one rejected call into two rejected calls, each
-     *     still subject to the provider's backoff — this is the exact shape
-     *     that turned a single failure into ~15 sequential slow calls and the
-     *     15-20 minute apparent hang users reported.
-     *   - [LLMError.TransientError] (5xx / upstream). A server-side fault is
-     *     independent of payload; retrying smaller just multiplies the outage.
-     *
-     * Both are better served by failing fast and letting the user retry the
-     * whole compaction once conditions change.
-     */
-    private fun isSegmentRetryableError(error: Throwable): Boolean =
-        shouldSplitOnError(error)
-
-    /**
-     * Match provider error text against the substring set iOS
-     * `isContextTooLargeError` used before T-compact-segment-retry-any-error.
-     *
-     * NO LONGER gates segment retry — [isSegmentRetryableError] does, for the
-     * reasons documented there. Retained only for user-facing wording, where
-     * guessing wrong costs a less specific message rather than a failed
-     * compaction.
-     */
-    @Suppress("unused")
-    private fun isContextTooLargeError(error: Throwable): Boolean {
-        val desc = (error.message ?: error.toString()).lowercase()
-        return desc.contains("too many tokens") ||
-            desc.contains("context length") ||
-            desc.contains("max_tokens") ||
-            desc.contains("content is too long") ||
-            desc.contains("exceeds the model") ||
-            desc.contains("request too large") ||
-            desc.contains("prompt is too long") ||
-            desc.contains("token limit") ||
-            desc.contains("context window")
-    }
 
     /**
      * Consult [ContextPolicy] before sending. Returns true to proceed. The
@@ -5561,7 +4484,7 @@ class ChatViewModel(
      * rests only on the ratio gets one real request. See
      * [ContextPolicy.inLoopStep], which holds the table and its tests.
      */
-    private fun settleWithoutCompacting(m: ContextMeasurement, window: Int, compactionsSoFar: Int): InLoopContextAction {
+    private fun settleWithoutCompacting(m: ContextMeterCoordinator.Measurement, window: Int, compactionsSoFar: Int): InLoopContextAction {
         val step = ContextPolicy.inLoopStep(
             verdict = ContextPolicy.CheckResult.NEEDS_COMPACT,
             measured = m.measured,
@@ -5569,7 +4492,7 @@ class ChatViewModel(
             window = window,
             canCompact = false,
             ratio = m.ratio,
-            uncalibratedSendUsed = sentPastExtrapolatedLimitThisLoop,
+            uncalibratedSendUsed = contextMeter.sentPastExtrapolatedLimit,
         )
         return when (step) {
             ContextPolicy.InLoopStep.SEND_WITHIN_WINDOW -> {
@@ -5582,7 +4505,7 @@ class ChatViewModel(
                 InLoopContextAction.PROCEED
             }
             ContextPolicy.InLoopStep.SEND_UNCALIBRATED_ONCE -> {
-                sentPastExtrapolatedLimitThisLoop = true
+                contextMeter.sentPastExtrapolatedLimit = true
                 AppLogger.warning(
                     TAG,
                     "[AutoCompact] calibrated size over the window but the raw estimate fits " +
@@ -5620,32 +4543,6 @@ class ChatViewModel(
                 }
             }
         }
-
-    /**
-     * System prompt for the single-shot summarisation call. Matches iOS
-     * wording so cross-device summaries stay stylistically aligned.
-     */
-    private val compactSummarySystemPrompt: String = """
-        You are a context compaction engine. Your summary will REPLACE the original messages in the conversation context window. The agent will read your summary as past context, then proceed based on the user's NEXT message — your summary is background, not a standing work order. Write the summary in the same language the user used in the conversation.
-
-        MUST PRESERVE (never omit or shorten):
-        - All file paths, directory names, URLs, UUIDs, and identifiers — copy verbatim
-        - Commands executed and their outcomes (success/failure/output)
-        - What was requested and what was done (record as past events, not as ongoing goals)
-        - Key decisions made and their rationale
-        - Errors encountered and how they were resolved
-        - Important constraints, rules, or user preferences mentioned
-        - Any tool calls and their results that affect current state
-
-        STRUCTURE:
-        1. Start with a one-line description of what the conversation was about (use past tense — "User asked X, agent did Y", NOT "Goal: X").
-        2. Then a concise narrative of what happened, preserving technical details.
-        3. End with a "What had been done so far" section listing completed work — NOT a "todo" or "pending" list. Do not invent ongoing objectives or carry-over tasks from old turns; if the user wants to continue, they will say so in their next message.
-
-        PRIORITIZE recent context over older history — recent decisions and recent file/path references are most useful for continuity.
-
-        Do NOT translate or alter code snippets, file paths, identifiers, or error messages. Be concise but never lose information the agent needs.
-    """.trimIndent()
 
     // T203 part 2: these MUST be declared before `init { loadSession() }` below.
     // viewModelScope.launch defaults to Dispatchers.Main.immediate, which runs
@@ -6422,7 +5319,7 @@ class ChatViewModel(
             // reloads through here, which is what lets the restored history be
             // measured at its full size.
             runCatching {
-                seedContextCalibration(chatRepository.sessionTokenUsages(realSessionId.ifEmpty { sessionId }))
+                contextMeter.seed(activeSessionId, chatRepository.sessionTokenUsages(activeSessionId))
             }
             // [T-android-context-usage-hint] Adopt this session's pressure
             // WITHOUT announcing it. Opening an already-long conversation must
@@ -9962,39 +8859,8 @@ class ChatViewModel(
         return if (anchorIdx < 0) 0 else anchorIdx + 1
     }
 
-    /**
-     * [T-android-offload-warmup-scan] Raw [agentHistory] indices of the
-     * pre-anchor warm-up messages that [effectiveAgentHistoryUncounted]
-     * actually sends, plus the tool ids whose parts it prunes there. Port of
-     * iOS `offloadWarmUpScanPlan` (155501fcd).
-     *
-     * [offloadScanStartIndex] starts AFTER the anchor, but compact-v2 still
-     * sends up to [COMPACT_KEEP_RECENT_USER_TURNS] user turns (≤ 100 messages)
-     * before it, pruned only of tool results over 1000 chars and their calls:
-     * file_write/file_edit arguments, 501–1000-char results and images there
-     * go out on every request, yet could no longer be offloaded. This mirrors
-     * that function's steps exactly — same walk-back, same > 1000 prune, a
-     * text-only message always kept, emptied messages dropped, leading
-     * non-user peeled, the per-marker warm-up trim applied only when already
-     * decided — so nothing unsent is scanned. Empty whenever that function
-     * sends no warm-up (no summary / marker, v1, unresolved anchor).
-     */
-    private fun offloadWarmUpScanPlan(): Pair<List<Int>, Set<String>> {
-        val none = emptyList<Int>() to emptySet<String>()
-        if (_compactSummary.value.isNullOrBlank()) return none
-        val marker = _cachedLatestMarker ?: return none
-        if (marker.version < 2) return none
-        val anchorId = marker.lastCompactedMessageId?.takeIf { it.isNotEmpty() } ?: return none
-        val anchorIdx = agentHistory.indexOfLast { it.dbMessageId == anchorId }
-        if (anchorIdx < 0) return none
-        val priorIdx = walkBackUserTurnsBounded(
-            anchorIdx = anchorIdx,
-            maxUserTextTurns = COMPACT_KEEP_RECENT_USER_TURNS,
-            maxMessages = 100,
-        ).priorIdx ?: return none
-        if (priorIdx > anchorIdx) return none
-        return warmUpScanIndices(agentHistory, priorIdx, anchorIdx, warmUpDropByMarker[marker.id])
-    }
+    private fun offloadWarmUpScanPlan(): Pair<List<Int>, Set<String>> =
+        compactionHistory.offloadWarmUpScanPlan(agentHistory, _compactSummary.value, _cachedLatestMarker)
 
     /**
      * Offload candidate descriptor. `msgIdx` and `partIdx` index back into
@@ -10591,12 +9457,12 @@ class ChatViewModel(
         var inLoopCompactions = 0
         lastInLoopCompactionMadeNoProgress = false
         // [T-ctx-valve-spend-survives-retry] Do NOT re-arm the uncalibrated
-        // send-once here. noteContextOverflow spends it when the provider rejects
+        // send-once here. A provider rejection spends it
         // a request as too long; when the self-heal finds nothing to offload the
         // rejection ends the loop, and resetting here made Retry fire the valve
         // and re-send the exact request that was just rejected. It is re-armed
         // only by an accepted response (see the usage handler) or a session change
-        // (seedContextCalibration).
+        // (see ContextMeterCoordinator.seed).
         // [T-android-empty-after-toolresult-reminder] One-shot guard for the
         // "<system-reminder> + retry one round" recovery when the server returns
         // an empty response right after a tool result. Fires at most once per
@@ -10810,7 +9676,7 @@ class ChatViewModel(
             // request; measure them for this iteration (the helper wrap-up path
             // drops the tools) so the guards and the calibration pair see the
             // real fixed share.
-            contextFixedTokens = ContextSizeMeter.estimateFixedTokens(
+            contextMeter.fixedTokens = ContextSizeMeter.estimateFixedTokens(
                 loopSystemPrompt,
                 if (helperWrapUpInjected) emptyList() else agentTools,
             )
@@ -11190,11 +10056,13 @@ class ChatViewModel(
                         // (pre-budget, like every measurement) so the provider's count
                         // for it calibrates the meter, and size max_tokens from it.
                         val outboundHistory = effectiveAgentHistory()
-                        val dispatchInputTokens = recordContextDispatch(outboundHistory, currentProvider.model)
+                        val dispatchInputTokens = contextMeter.recordDispatch(
+                            outboundHistory, currentProvider.model.id, resolvedContextWindow(currentProvider.model)?.first ?: 0,
+                        )
                         AppLogger.info(
                             TAG,
-                            "[CtxMeter] dispatch model=${currentModel?.id ?: "?"} estimate=$lastDispatchEstimate " +
-                                "ratio=${"%.3f".format(lastDispatchRatio)} predicted=$dispatchInputTokens " +
+                            "[CtxMeter] dispatch model=${currentModel?.id ?: "?"} estimate=${contextMeter.dispatchEstimate} " +
+                                "ratio=${"%.3f".format(contextMeter.dispatchRatio)} predicted=$dispatchInputTokens " +
                                 "maxTokens=${dynamicMaxTokens(currentProvider, dispatchInputTokens)}",
                         )
                         currentProvider.streamMessage(
@@ -11560,7 +10428,7 @@ class ChatViewModel(
                             // [T-ctx-measure-outbound] Pair the report with our
                             // estimate of the same request; the pair (persisted
                             // with the turn) is what capacity decisions use.
-                            calibrateContextSize(lastContextTokens)
+                            contextMeter.calibrate(lastContextTokens, currentModel?.id)
                             lastInLoopCompactionMadeNoProgress = false
                             // [T-ctx-valve-rearm] An accepted request is fresh
                             // evidence, so the once-per-evidence uncalibrated
@@ -11571,7 +10439,7 @@ class ChatViewModel(
                             // after the provider accepted a same-size request.
                             // A rejection does not re-arm it, so a real
                             // overflow still stops.
-                            sentPastExtrapolatedLimitThisLoop = false
+                            contextMeter.sentPastExtrapolatedLimit = false
                             // [T-android-context-usage-hint] Mid-loop path: a
                             // turn that runs tools for minutes should not stay
                             // silent until it finishes, so a genuine upward
@@ -11846,7 +10714,7 @@ class ChatViewModel(
                         // offload below heals it, so the next judgement (this
                         // retry's successor, Resume, or the next send) sees the
                         // real size and compacts.
-                        noteContextOverflow(overflowErr?.detail ?: "")
+                        contextMeter.noteOverflow(overflowErr?.detail.orEmpty(), currentModel?.id, ::effectiveContextWindowTokens)
                         val healed = offloadLargestPartForOverflow()
                         if (healed) {
                             AppLogger.warning(
@@ -14818,7 +13686,7 @@ class ChatViewModel(
         if (parts.isEmpty()) return null
         val partsJson = buildAssistantPartsJson(parts, toolBlockMeta)
         val tokenJson = usage?.let {
-            """{"inputTokens":${it.inputTokens},"outputTokens":${it.outputTokens},"cacheCreationTokens":${it.cacheCreationInputTokens ?: 0},"cacheReadTokens":${it.cacheReadInputTokens ?: 0},"latestContextTokens":${it.latestContextTokens},"streamMs":$streamMs${calibrationJsonFields()}}"""
+            """{"inputTokens":${it.inputTokens},"outputTokens":${it.outputTokens},"cacheCreationTokens":${it.cacheCreationInputTokens ?: 0},"cacheReadTokens":${it.cacheReadInputTokens ?: 0},"latestContextTokens":${it.latestContextTokens},"streamMs":$streamMs${contextMeter.calibrationJsonFields()}}"""
         }
         val entity = chatRepository.appendMessage(
             realSessionId.ifEmpty { sessionId }, "assistant", partsJson, tokenJson,
@@ -16073,29 +14941,4 @@ class ChatViewModel(
 
     private fun parseToolParams(argsJson: String): Map<String, Any?> =
         ChatPayloadCodec.parseToolParams(argsJson)
-}
-
-/**
- * [T-ctx-warmup-trim-undecided] Result of [ChatViewModel]'s warm-up trim.
- * [decided] is false when no budget could be computed, in which case [kept] is
- * the warm-up unchanged and the per-marker cache must NOT record it.
- */
-internal data class WarmUpTrim(val kept: List<LLMMessage>, val decided: Boolean)
-
-/**
- * [T-ctx-warmup-trim-undecided] The raw-estimate token budget a compaction's
- * warm-up must fit under, or null when it cannot be known yet:
- *  - [window] unknown (null / <= 0),
- *  - [compactThreshold] null (no active entry, so no context policy),
- *  - [fixedTokens] not yet seeded (<= 0): system prompt + tool schemas are
- *    counted on every request, so a budget without them over-promises and
- *    would decide "fits" for a warm-up that does not.
- * A threshold of 0 means "compact at the window" (same as before).
- */
-internal fun warmUpBudget(window: Int?, compactThreshold: Int?, ratio: Double, fixedTokens: Int): Int? {
-    val w = window?.takeIf { it > 0 } ?: return null
-    val threshold = compactThreshold ?: return null
-    if (fixedTokens <= 0) return null
-    val line = if (threshold > 0) threshold else w
-    return (line / ratio).toInt() - fixedTokens
 }

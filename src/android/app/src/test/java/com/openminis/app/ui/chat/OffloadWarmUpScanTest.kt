@@ -33,19 +33,19 @@ class OffloadWarmUpScanTest {
     )
 
     @Test fun `sent warm-up messages are kept and pruned ones are not`() {
-        val (idx, pruned) = ChatViewModel.warmUpScanIndices(history, priorIdx = 0, anchorIdx = 7, drop = null)
+        val (idx, pruned) = CompactionHistory().warmUpScanIndices(history, priorIdx = 0, anchorIdx = 7, drop = null)
         assertEquals(listOf(1, 4, 5, 6, 7), idx)
         assertEquals(setOf("big"), pruned)
     }
 
     @Test fun `a decided per-marker trim drops the oldest kept messages`() {
-        val (idx, _) = ChatViewModel.warmUpScanIndices(history, 0, 7, drop = 2)
+        val (idx, _) = CompactionHistory().warmUpScanIndices(history, 0, 7, drop = 2)
         assertEquals(listOf(5, 6, 7), idx)
-        val (all, _) = ChatViewModel.warmUpScanIndices(history, 0, 7, drop = 99)
+        val (all, _) = CompactionHistory().warmUpScanIndices(history, 0, 7, drop = 99)
         assertTrue(all.isEmpty())
     }
 
     @Test fun `no warm-up when the walk-back found nothing`() {
-        assertTrue(ChatViewModel.warmUpScanIndices(history, priorIdx = 8, anchorIdx = 7, drop = null).first.isEmpty())
+        assertTrue(CompactionHistory().warmUpScanIndices(history, priorIdx = 8, anchorIdx = 7, drop = null).first.isEmpty())
     }
 }
