@@ -3,6 +3,7 @@ package com.openminis.app.provider
 import com.openminis.app.data.model.LLMMessage
 import com.openminis.app.data.model.LLMModel
 import com.openminis.app.provider.openai.OpenAIProvider
+import com.openminis.app.provider.openai.buildCodexImageBody
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -20,10 +21,7 @@ import org.junit.Test
  * chooses, or silently route sunburst/flare to the default model — and both
  * failures look like a correct request in the logs.
  *
- * `buildCodexImageBody` is private and the Codex constructor hardcodes
- * chatgpt.com, so this reaches it reflectively rather than through
- * MockWebServer. That is the honest trade: it tests body construction, not the
- * transport.
+ * The assertions exercise the request body encoder used by the Codex stream.
  */
 class CodexImageModelTest {
 
@@ -40,11 +38,8 @@ class CodexImageModelTest {
             oauthTokenProvider = { "test-token" },
             model = imageModel(modelId),
         )
-        val m = OpenAIProvider::class.java
-            .getDeclaredMethod("buildCodexImageBody", List::class.java)
-            .apply { isAccessible = true }
         val messages = listOf(LLMMessage(role = LLMMessage.Role.USER, content = "a red bicycle"))
-        return m.invoke(provider, messages) as JSONObject
+        return provider.buildCodexImageBody(messages)
     }
 
     private fun imageTool(body: JSONObject): JSONObject =
