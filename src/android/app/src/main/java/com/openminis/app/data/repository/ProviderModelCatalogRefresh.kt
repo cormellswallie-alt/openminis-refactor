@@ -1,4 +1,5 @@
 package com.openminis.app.data.repository
+import com.openminis.app.data.repository.ProviderRepository.Companion.lastFetchKey
 import com.openminis.app.data.db.compositeEntryKey
 import com.openminis.app.data.db.toProviderConfig
 import com.openminis.app.data.db.toSnapshot

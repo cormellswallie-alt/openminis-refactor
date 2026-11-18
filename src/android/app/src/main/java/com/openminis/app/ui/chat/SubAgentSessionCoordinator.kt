@@ -1,5 +1,6 @@
 package com.openminis.app.ui.chat
 
+import com.openminis.app.data.model.ThinkingLevel
 import android.content.Context
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.isActive

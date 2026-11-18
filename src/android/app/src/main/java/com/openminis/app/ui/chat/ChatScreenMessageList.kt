@@ -148,6 +148,7 @@ internal fun ChatScreenMessageList(
     deleteFromHereTargetIdState: MutableState<String?>,
     error: String?,
     flatItems: List<FlatChatItem>,
+    grayedMap: Map<String, Boolean>,
     hasOlderMessages: Boolean,
     inputFocusRequester: androidx.compose.ui.focus.FocusRequester,
     inputText: String,
@@ -180,6 +181,22 @@ internal fun ChatScreenMessageList(
     var lastColdPrewarmMs by lastColdPrewarmMsState
     var listRootCoords by listRootCoordsState
     var userScrolledAway by userScrolledAwayState
+
+    fun FlatChatItem.isCompacted(): Boolean = when (this) {
+        is FlatChatItem.UserBubble -> grayedMap[originalMessageId(message.id)] == true
+        is FlatChatItem.AgentCallbackCard -> grayedMap[originalMessageId(message.id)] == true
+        is FlatChatItem.ScheduledTaskCardItem -> grayedMap[originalMessageId(message.id)] == true
+        is FlatChatItem.AssistantHeader -> grayedMap[originalMessageId(messageId)] == true
+        is FlatChatItem.AssistantText -> grayedMap[originalMessageId(messageId)] == true
+        is FlatChatItem.AssistantMarkdownBlock -> grayedMap[originalMessageId(messageId)] == true
+        is FlatChatItem.AssistantThinking -> grayedMap[originalMessageId(messageId)] == true
+        is FlatChatItem.AssistantToolUse -> grayedMap[originalMessageId(messageId)] == true
+        is FlatChatItem.AssistantInfo -> false  // system rows never grayed
+        is FlatChatItem.AssistantTyping -> false
+        is FlatChatItem.AssistantError -> grayedMap[originalMessageId(messageId)] == true
+        is FlatChatItem.AssistantUsage -> grayedMap[originalMessageId(messageId)] == true
+        is FlatChatItem.AssistantLegacyContent -> grayedMap[originalMessageId(messageId)] == true
+    }
 
     LazyColumn(
         state = listState,

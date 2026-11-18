@@ -156,7 +156,7 @@ import com.openminis.app.ui.theme.ExpressiveLoadingIndicator
 import com.openminis.app.ui.theme.MaterialShapes
 import com.openminis.app.ui.theme.toShape
 
-private data class CategoryStyle(val icon: ImageVector, val color: Color)
+internal data class CategoryStyle(val icon: ImageVector, val color: Color)
 
 internal fun categoryStyle(category: String?): CategoryStyle {
     return when (category?.lowercase()) {
