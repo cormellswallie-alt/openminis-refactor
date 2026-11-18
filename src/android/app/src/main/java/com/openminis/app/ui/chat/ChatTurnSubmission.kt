@@ -222,7 +222,7 @@ internal fun ChatViewModel.submitPromptImpl(
             // found no user message and the chat stayed "New Chat". Safe mode
             // skips the load entirely, so there is nothing to wait for there.
             if (!sessionLoaded.value && !com.openminis.app.crash.CrashFrequencyDetector.isSafeMode()) {
-                AppLogger.info(TAG_STREAM, "send waiting for session load (sid=${this@sendMessageImpl.activeSessionId})")
+                AppLogger.info(TAG_STREAM, "send waiting for session load (sid=${this@sendMessage.activeSessionId})")
                 sessionLoaded.first { it }
             }
             // Ensure session exists in DB (creates on first message for draft sessions)

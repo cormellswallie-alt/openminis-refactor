@@ -513,4 +513,8 @@ internal suspend fun OpenAIProvider.editImageImpl(
     }
 
 private fun Request.Builder.applyOpenAIImageAuth(token: String, azure: Boolean): Request.Builder =
-    if (azure) header("api-key", token) else header("Authorization", "Bearer $token")
+    when {
+        token.isEmpty() -> this
+        azure -> header("api-key", token)
+        else -> header("Authorization", "Bearer $token")
+    }
