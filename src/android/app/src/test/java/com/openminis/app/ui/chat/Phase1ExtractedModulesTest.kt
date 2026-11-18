@@ -133,7 +133,7 @@ class Phase1ExtractedModulesTest {
             ),
         )
 
-        val uiMessages = ChatMessageMapper.run { rows.toChatMessages() }
+        val uiMessages = ChatMessageMapper.toChatMessages(rows, java.io.File("/tmp"))
         assertEquals(2, uiMessages.size)
         assertEquals("Hello", uiMessages[0].content)
         assertEquals("assistant", uiMessages[1].role)

@@ -277,7 +277,7 @@ class SessionTitleGenerator(
         }
     }
 
-    private fun buildGroupContext(): List<String> {
+    private suspend fun buildGroupContext(): List<String> {
         val rendered = chatRepository.listFolders()
             .map { f -> f to ChatViewModel.promptSafe(f.name, GROUP_NAME_MAX) }
             .filter { (_, n) -> n.isNotEmpty() }
@@ -328,7 +328,7 @@ class SessionTitleGenerator(
         append(titleLanguageDirective())
     }
 
-    private fun assignFolderIfUnfiled(sessionId: String, folderName: String) {
+    private suspend fun assignFolderIfUnfiled(sessionId: String, folderName: String) {
         val match = chatRepository.findFolderByName(folderName)
             ?: chatRepository.listFolders().filter {
                 ChatViewModel.promptSafe(it.name, GROUP_NAME_MAX)
@@ -363,7 +363,7 @@ class SessionTitleGenerator(
             return
         }
         val raw = messages.firstOrNull { it.role == "user" }?.content ?: ""
-        val cleaned = ChatMessageMapper.stripAttachedFilesXml(raw)
+        val cleaned = ChatPayloadCodec.stripAttachedFilesXml(raw)
             .replace(Regex("\\s+"), " ")
             .trim()
         if (cleaned.isEmpty()) {

@@ -14884,15 +14884,15 @@ class ChatViewModel(
     }
 
     private fun buildSystemPrompt(): String? =
-        ChatSystemPromptAssembler.buildBasePrompt(
+        ChatSystemPromptAssembler.build(
             context = context,
-            sessionId = activeSessionId,
+            activeSessionId = activeSessionId,
             helperConfig = helperConfig,
             memoryEnabled = _memoryEnabled.value,
             providerRepository = providerRepository,
-            memoryRepository = memoryRepository,
             skillRepository = skillRepository,
             mcpRepository = mcpRepository,
+            memoryRepository = memoryRepository,
         )
 
     // ─── Legacy tool execution methods (kept for compatibility) ───────────
@@ -15447,12 +15447,14 @@ class ChatViewModel(
     private fun generateSessionTitleIfNeeded() {
         sessionTitleGenerator.generateIfNeeded(
             sessionId = realSessionId.ifEmpty { sessionId },
+            activeSessionId = activeSessionId,
             currentTitle = _sessionTitle.value,
             selectedGroupId = _selectedGroupId.value,
             activeEntryId = _activeEntryId.value,
             currentModelId = currentModel?.id,
             currentProvider = currentProvider,
             messagesSnapshot = _messages.value,
+            readLatestMessages = { _messages.value },
             onTitleAndCategoryUpdated = { title, category ->
                 if (_sessionTitle.value == UNTITLED_SESSION_TITLE || _sessionTitle.value.isEmpty()) {
                     _sessionTitle.value = title
@@ -16058,10 +16060,10 @@ class ChatViewModel(
     private fun escapeJson(text: String): String = ChatPayloadCodec.escapeJson(text)
 
     private fun List<MessageEntity>.toChatMessages(): List<ChatMessage> =
-        ChatMessageMapper.run { this@toChatMessages.toChatMessages() }
+        ChatMessageMapper.toChatMessages(this, mediaStore.mediaBaseDir)
 
     private fun MessageEntity.toLLMMessage(): LLMMessage =
-        ChatMessageMapper.run { this@toLLMMessage.toLLMMessage() }
+        ChatMessageMapper.toLLMMessage(this, mediaStore.mediaBaseDir, ::visionPlaceholderFor)
 
     private fun extractPartialStringValue(key: String, json: String): String? =
         ChatPayloadCodec.extractPartialStringValue(key, json)

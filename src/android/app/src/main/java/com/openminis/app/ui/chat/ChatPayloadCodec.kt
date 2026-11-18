@@ -146,6 +146,13 @@ object ChatPayloadCodec {
         append("]")
     }
 
+    /** Serialize tool execution results into a user-role `parts_json` array, or null if none. */
+    fun buildToolResultPartsJson(parts: List<AgentContentPart>): String? {
+        val results = parts.filterIsInstance<AgentContentPart.ToolResult>()
+        if (results.isEmpty()) return null
+        return buildToolResultsPartsJson(results)
+    }
+
     /** Serialize tool execution results into a user-role `parts_json` array. */
     fun buildToolResultsPartsJson(results: List<AgentContentPart.ToolResult>): String = buildString {
         append("[")
@@ -161,6 +168,39 @@ object ChatPayloadCodec {
             )
         }
         append("]")
+    }
+
+    /** Serialize text-only assistant parts (for interrupted turn snapshots). */
+    fun buildTextOnlyAssistantPartsJson(parts: List<AgentContentPart>): String {
+        val sb = StringBuilder("[")
+        var first = true
+        for (p in parts) {
+            if (p !is AgentContentPart.Text) continue
+            if (!first) sb.append(',') else first = false
+            sb.append("""{"type":"text","value":""")
+            sb.append(escapeJson(p.text))
+            sb.append('}')
+        }
+        sb.append(']')
+        return sb.toString()
+    }
+
+    /** Human-readable fallback title for a tool call when `tool_title` is omitted. */
+    fun friendlyToolTitle(toolName: String): String = when (toolName) {
+        "shell_execute" -> "Execute Shell"
+        "file_read" -> "Read File"
+        "file_write" -> "Write File"
+        "file_edit" -> "Edit File"
+        "browser_use" -> "Browse Web"
+        "read_image" -> "Read Image"
+        "memory_write" -> "Write Memory"
+        "memory_get" -> "Read Memory"
+        "web_search" -> "Search Web"
+        "ask_user" -> "Ask User"
+        else -> toolName
+            .split('_')
+            .filter { it.isNotEmpty() }
+            .joinToString(" ") { it.replaceFirstChar { ch -> ch.uppercase() } }
     }
 
     /** Serialize token usage & optional stream timing / calibration suffix to JSON. */
