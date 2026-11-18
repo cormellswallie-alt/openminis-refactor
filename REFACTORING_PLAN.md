@@ -39,24 +39,18 @@
 
 - `ToolCallPrecheck` 集中处理参数修复、截断写入拒绝及必填参数校验。
 - `ChatToolDispatcher` 负责工具分发、开关检查、文件和沙箱执行、浏览器、图像读取、交互问卷和记忆记录。子 Agent 调度通过回调连接会话。
-- **目标**：从 `ChatViewModel` 剥离约 **3,500 行** 工具执行与子任务编排代码。
-- **核心动作**：
-  - 抽离 `ChatToolDispatcher`：将巨型 `when (toolName)` 工具分发、参数预检（Preflight Validation）、记忆读写记录、文件与沙箱执行桥接独立成可注入组件。
-  - 抽离 `SubAgentSessionCoordinator`：封装 `subagent_task` 派发、排队恢复、中断子任务扫描（`resumeInterruptedChild`）与 Steer 消息队列。
-
+- `SubAgentSessionCoordinator` 负责状态查询和控制、中断任务扫描与恢复、队列重新进入、新任务发起与后台运行。父会话通过回调发布界面和持久化结果。
 ---
 
 ### Phase 4：流式 Agent Loop 核心引擎与 Provider 协议层标准化
-- **目标**：将 `ChatViewModel` 压缩至 **< 2,500 行** 纯粹的 UI 状态容器；同时治理 `OpenAIProvider.kt`（4,206 行）与 `ProviderRepository.kt`（3,931 行）。
-- **核心动作**：
-  - 抽离 `AgentStreamEngine`：独立管理多轮流式请求循环、5xx 退避重试阶梯、模型组无缝 Fallback 与中途切模型状态机。
-  - 拆分 `OpenAIProvider`：分离标准 Chat Completions、OpenAI Responses API、厂商方言补丁（Copilot / OpenRouter / DeepSeek / Reasoning 解析）与图像生成编辑模块。
-  - 拆分 `ProviderRepository`：分离实例/密钥 CRUD、模型组路由解析与远程模型目录刷新。
+- `AgentStreamEngine` 执行多轮流式请求，处理服务端重试、模型组回退和运行中切换模型。
+- 会话加载、模型绑定、发送队列、历史编辑、附件准备、压缩入口和消息发布各有独立文件。`ChatViewModel` 保留会话状态和现有调用入口，从原版 17,704 行降至 2,470 行。
+- OpenAI 的 Chat Completions 和 Responses 各自编码请求并解析 SSE。厂商方言、图像请求和传输诊断独立维护，`OpenAIProvider` 保留公开接口。
+- `ProviderRepository` 保留配置状态、持久化锁和公开 API。供应商与密钥操作、模型路由、远程目录刷新、导入和导出移入独立文件。
 
 ---
 
 ### Phase 5：Compose 巨型 UI 屏幕组件化拆分
-- **目标**：拆解 `ChatScreen.kt`（8,002 行）、`StreamingMarkdownText.kt`（4,593 行）与 `SessionListScreen.kt`（3,549 行）。
-- **核心动作**：
-  - 将 `ChatScreen` 拆分为顶栏模型胶囊、消息流列表、底部多模态输入台（Composer）、斜杠命令面板与悬浮回底控件。
-  - 模块化 Markdown 流式块级解析与代码块语法高亮渲染器。
+- `ChatScreen` 使用独立的顶栏、消息列表、多模态输入台、斜杠命令面板和悬浮滚动按钮。
+- 流式 Markdown 的块级、行内解析、缓存、表格和代码块渲染各有独立文件。
+- 会话列表将日期与文件夹分组、列表行、工作区操作及编辑和导出弹窗拆为独立组件。

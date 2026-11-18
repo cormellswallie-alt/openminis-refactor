@@ -2,12 +2,10 @@ package com.openminis.app.data.repository
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Base64
 import com.openminis.app.backup.BackupSecrets
 import com.openminis.app.data.db.ProviderConfigDao
 import com.openminis.app.data.db.ProviderConfigMetaKeys
 import com.openminis.app.data.db.ProviderConfigSnapshot
-import com.openminis.app.data.db.ProviderThinkingRuleEntity
 import com.openminis.app.provider.thinking.ThinkingRule
 import com.openminis.app.provider.thinking.ThinkingRuleCoding
 import com.openminis.app.provider.thinking.ThinkingRuleResolver
@@ -18,19 +16,15 @@ import com.openminis.app.data.db.toSnapshot
 import com.openminis.app.data.model.ImageEndpointMode
 import com.openminis.app.data.model.LLMModel
 import com.openminis.app.data.model.ModelEntry
-import com.openminis.app.data.model.ModelOverrides
 import com.openminis.app.data.model.ModelGroup
 import com.openminis.app.data.model.ProviderConfig
-import com.openminis.app.data.model.ProviderCredential
 import com.openminis.app.data.model.ProviderInstance
 import com.openminis.app.data.model.ProviderType
-import com.openminis.app.data.model.RoutingStrategy
 import com.openminis.app.data.model.SubAgentDefinition
 import com.openminis.app.data.model.SubAgentRoster
 import com.openminis.app.logging.AppLogger
 import com.openminis.app.data.model.SystemVoiceIds
 import com.openminis.app.data.model.ThinkingLevel
-import com.openminis.app.data.model.VoiceProviderTemplate
 import com.openminis.app.data.model.hasImageInput
 import com.openminis.app.data.model.hasVoiceModality
 import com.openminis.app.data.model.isVoiceCandidate
@@ -38,14 +32,6 @@ import com.openminis.app.data.model.isVoiceInputCandidate
 import com.openminis.app.data.model.isVoiceOutputCandidate
 import com.openminis.app.data.model.isVoiceTemplateSeedShape
 import com.openminis.app.data.model.withInferredVoiceModality
-import com.openminis.app.provider.ModelReleaseIndex
-import com.openminis.app.provider.ModelsDevApi
-import com.openminis.app.provider.anthropic.AnthropicModelsApi
-import com.openminis.app.provider.gemini.GeminiModelsApi
-import com.openminis.app.provider.openai.OpenAIModelsApi
-import com.openminis.app.provider.openrouter.OpenRouterModelsApi
-import org.json.JSONArray
-import org.json.JSONObject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -57,15 +43,15 @@ import kotlinx.serialization.json.Json
 // Modality bit layout — must match src/ios/Providers/LLMTypes.swift
 // ModelModality OptionSet rawValue exactly. Used by export/import to
 // transmit modality info as a single Int that iOS can decode.
-private const val MODALITY_BIT_TEXT_IN = 1 shl 0
-private const val MODALITY_BIT_TEXT_OUT = 1 shl 1
-private const val MODALITY_BIT_IMG_IN = 1 shl 2
-private const val MODALITY_BIT_PDF_IN = 1 shl 3
-private const val MODALITY_BIT_AUD_IN = 1 shl 4
-private const val MODALITY_BIT_VID_IN = 1 shl 5
-private const val MODALITY_BIT_IMG_OUT = 1 shl 6
-private const val MODALITY_BIT_AUD_OUT = 1 shl 7
-private const val MODALITY_BIT_VID_OUT = 1 shl 8
+internal const val MODALITY_BIT_TEXT_IN = 1 shl 0
+internal const val MODALITY_BIT_TEXT_OUT = 1 shl 1
+internal const val MODALITY_BIT_IMG_IN = 1 shl 2
+internal const val MODALITY_BIT_PDF_IN = 1 shl 3
+internal const val MODALITY_BIT_AUD_IN = 1 shl 4
+internal const val MODALITY_BIT_VID_IN = 1 shl 5
+internal const val MODALITY_BIT_IMG_OUT = 1 shl 6
+internal const val MODALITY_BIT_AUD_OUT = 1 shl 7
+internal const val MODALITY_BIT_VID_OUT = 1 shl 8
 
 /**
  * [T-codex-dynamic-discovery GH#319] The Codex discovery endpoint rejected the
@@ -84,7 +70,7 @@ private const val MODALITY_BIT_VID_OUT = 1 shl 8
 class CodexDiscoveryAuthException(val status: Int) :
     Exception("Codex model discovery rejected the credential (HTTP $status)")
 
-class ProviderRepository(private val context: Context) {
+class ProviderRepository(internal val context: Context) {
 
     // [T-android-thinking-level-arch] coerceInputValues makes kotlinx.serialization
     // fall back to a property's DEFAULT when it can't decode the wire value —
@@ -97,13 +83,13 @@ class ProviderRepository(private val context: Context) {
     // values — coerceInputValues is the piece that handles those. Fields carrying
     // ThinkingLevel are nullable with a null default, so an unknown value coerces
     // cleanly to null.
-    private val json = Json {
+    internal val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
         coerceInputValues = true
     }
 
-    private val prefs: SharedPreferences = context.getSharedPreferences("provider_config", Context.MODE_PRIVATE)
+    internal val prefs: SharedPreferences = context.getSharedPreferences("provider_config", Context.MODE_PRIVATE)
 
     // [T-android-provider-room-store] Per-row provider config DB. Lives in
     // its own provider.db file so a downgrade to a build that doesn't know
@@ -112,12 +98,12 @@ class ProviderRepository(private val context: Context) {
     // still written on every save so older builds keep reading current
     // config — losing nothing on downgrade. See [loadConfig] for the
     // downgrade-and-back-up reconciliation logic.
-    private val providerDao: ProviderConfigDao =
+    internal val providerDao: ProviderConfigDao =
         ProviderDatabase.getInstance(context).providerConfigDao()
 
     companion object {
         /** [T-sub-agents-v1] Log category for roster repairs. */
-        private const val SUB_AGENT_LOG = "SubAgents"
+        internal const val SUB_AGENT_LOG = "SubAgents"
 
         /**
          * Per-instance model-cache TTL. Matches iOS's daily calendar-day
@@ -126,7 +112,7 @@ class ProviderRepository(private val context: Context) {
          * [triggerBackgroundRefreshIfStale] to decide whether a UI-triggered
          * stale-while-revalidate refresh should fire.
          */
-        private const val MODEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000L
+        internal const val MODEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000L
 
         /**
          * [T-android-models-refresh-window] How long a whole-app model refresh
@@ -136,7 +122,7 @@ class ProviderRepository(private val context: Context) {
          * used by the stale-while-revalidate path. This one gates the
          * launch/foreground sweep across every enabled instance.
          */
-        private const val MODELS_REFRESH_WINDOW_MS = 6 * 60 * 60 * 1000L
+        internal const val MODELS_REFRESH_WINDOW_MS = 6 * 60 * 60 * 1000L
 
         /**
          * [T-android-model-absence-grace] How long a catalog model may stay
@@ -157,7 +143,7 @@ class ProviderRepository(private val context: Context) {
         internal const val MODEL_ABSENCE_GRACE_MS = 7L * 24 * 60 * 60 * 1000
 
         /** Per-instance `lastFetchAt` pref key. */
-        private fun lastFetchKey(instanceId: String) = "modelsLastFetchAt_$instanceId"
+        internal fun lastFetchKey(instanceId: String) = "modelsLastFetchAt_$instanceId"
 
         /** [T-newchat-default-model-fallback-android] Global last-used model entry id. */
         private const val KEY_LAST_USED_ENTRY = "lastUsedModelEntryId"
@@ -176,17 +162,6 @@ class ProviderRepository(private val context: Context) {
         }
     }
 
-    /** Record the time of a successful model fetch for [instanceId]. */
-    private fun markInstanceFetched(instanceId: String) {
-        prefs.edit().putLong(lastFetchKey(instanceId), System.currentTimeMillis()).apply()
-    }
-
-    /** Whether the cached model list for [instanceId] is older than the TTL. */
-    private fun isInstanceStale(instanceId: String): Boolean {
-        val last = prefs.getLong(lastFetchKey(instanceId), 0L)
-        return last == 0L || (System.currentTimeMillis() - last) > MODEL_CACHE_TTL_MS
-    }
-
     /**
      * Clear the stored `lastFetchAt` for [instanceId] so the next
      * [triggerBackgroundRefreshIfStale] / [refreshAllModelsIfNeeded] call
@@ -195,11 +170,9 @@ class ProviderRepository(private val context: Context) {
      * credential swap). Mirrors iOS's implicit invalidation on
      * `updateInstance` / `removeInstance`.
      */
-    fun invalidateModelCache(instanceId: String) {
-        prefs.edit().remove(lastFetchKey(instanceId)).apply()
-    }
+    fun invalidateModelCache(instanceId: String) = invalidateModelCacheImpl(instanceId)
 
-    private val encryptedPrefs: SharedPreferences by lazy {
+    internal val encryptedPrefs: SharedPreferences by lazy {
         // T-android-keystore-aead-fail: route through the self-healing
         // factory so a corrupted master key on Samsung One UI / Android
         // 16 doesn't crash the app at first read.
@@ -216,7 +189,7 @@ class ProviderRepository(private val context: Context) {
     // Reactive consumers (config.collectAsState) update automatically on emit;
     // action-time `config.value` reads tolerate the brief empty window (a send
     // before load just has no model entry, exactly like a fresh install).
-    private val _config = MutableStateFlow(ProviderConfig())
+    internal val _config = MutableStateFlow(ProviderConfig())
     val config: StateFlow<ProviderConfig> = _config.asStateFlow()
 
     /**
@@ -331,7 +304,7 @@ class ProviderRepository(private val context: Context) {
      * `ConcurrentModificationException → ArrayList.next` crash captured on
      * Pixel 6 / 4a.
      */
-    private val configLock = Any()
+    internal val configLock = Any()
 
     private fun loadConfig(): ProviderConfig = runBlocking { loadConfigSuspending() }
 
@@ -611,7 +584,7 @@ class ProviderRepository(private val context: Context) {
         if (!configLoadComplete.isCompleted) configLoadComplete.complete(Unit)
     }
 
-    private fun saveConfig(config: ProviderConfig) {
+    internal fun saveConfig(config: ProviderConfig) {
         // [T-android-provider-room-store] Double-write: DB + legacy JSON
         // mirror, both produced inside the same configLock window. The
         // mirror keeps older app builds able to read current config on
@@ -708,7 +681,7 @@ class ProviderRepository(private val context: Context) {
      * closes the loop: a mutator never touches a published object, so whatever
      * a reader is iterating stays frozen for the life of that iteration.
      */
-    private fun workingCopy(): ProviderConfig {
+    internal fun workingCopy(): ProviderConfig {
         val live = _config.value
         return live.copy(
             instances = live.instances.toMutableList(),
@@ -732,61 +705,7 @@ class ProviderRepository(private val context: Context) {
         )
     }
 
-    fun addInstance(instance: ProviderInstance): Unit = synchronized(configLock) {
-        ensureConfigLoaded()
-        val config = workingCopy()
-        config.instances.add(instance)
-        // Seed built-in model entries ONLY when the seed is appropriate for this
-        // instance. Mirrors iOS ProviderConfigStore.addInstance:
-        //   - OAuth instances always get seeded (their /v1/models often requires
-        //     a manual token or isn't reachable, so the static list is the
-        //     baseline UX).
-        //   - API-key instances on a third-party OpenAI-compatible base URL
-        //     (e.g. xAI Grok https://api.x.ai, vLLM, Ollama, LiteLLM, DeepSeek
-        //     via OpenAI shim) MUST NOT inherit `LLMModel.allOpenAI` — that's
-        //     where the "Refresh on Grok returns GPT-5.5/5.3-codex" bug came
-        //     from. For these, leave entries empty and let refreshModels()
-        //     populate from the upstream /v1/models call.
-        //   - API-key instances on an official endpoint (no customBaseURL, or
-        //     a customBase that points at the canonical host) keep the seed so
-        //     UI isn't blank during the first refresh round-trip.
-        val shouldSeed = instance.credentialType == ProviderCredential.oauth ||
-            (!isThirdPartyOpenAICompat(instance) && !isThirdPartyGeminiCompat(instance))
-        if (shouldSeed) {
-            val entries = instance.providerType.builtInModels.map { model ->
-                ModelEntry(providerInstanceId = instance.id, baseModel = model)
-            }
-            config.modelEntries.addAll(entries)
-        } else {
-            android.util.Log.i(
-                "ProviderRepo",
-                "[ModelList] addInstance: skip built-in seed for third-party compatible base " +
-                    "(type=${instance.providerType} label=${instance.label} base=${instance.customBaseURL}) — " +
-                    "models will populate from upstream /models on refresh",
-            )
-        }
-        // [T-android-provider-voice] Seed voice-template mock models when the
-        // base URL matches a voice vendor (MiMo / MiniMax / Doubao …). These
-        // vendors have no /v1/models for their voices, so the template list is
-        // the only source. Mirrors iOS addInstance + VoiceProviderTemplate.
-        val voiceSeeds = VoiceProviderTemplate.mockEntries(instance)
-            .filter { seed ->
-                config.modelEntries.none {
-                    it.providerInstanceId == instance.id && it.baseModel.id == seed.baseModel.id
-                }
-            }
-        if (voiceSeeds.isNotEmpty()) {
-            config.modelEntries.addAll(voiceSeeds)
-            android.util.Log.i(
-                "ProviderRepo",
-                "[Voice] addInstance seeded ${voiceSeeds.size} voice-template models for ${instance.label}",
-            )
-        }
-        saveConfig(config)
-        // Stale from the start so the next background sweep (or an explicit
-        // triggerBackgroundRefreshIfStale call) will fetch it.
-        invalidateModelCache(instance.id)
-    }
+    fun addInstance(instance: ProviderInstance): Unit = addInstanceImpl(instance)
 
     /**
      * [T-android-provider-voice] Reconcile voice-template seed entries on every
@@ -804,143 +723,11 @@ class ProviderRepository(private val context: Context) {
      *    modality from /v1/models; restore the template's authoritative
      *    modality when it diverged.
      */
-    fun ensureVoiceTemplateModels() = synchronized(configLock) {
-        ensureConfigLoaded()
-        val config = workingCopy()
-        var changed = false
-        for (instance in config.instances) {
-            val tpl = VoiceProviderTemplate.template(instance.customBaseURL) ?: continue
-            val templateById = tpl.mockModels.associateBy { it.id }
-            val instanceEntries = config.modelEntries.filter { it.providerInstanceId == instance.id }
-            val existingIds = instanceEntries.map { it.baseModel.id }.toSet()
+    fun ensureVoiceTemplateModels() = ensureVoiceTemplateModelsImpl()
 
-            // Remove stale template seeds (exact seed shape only) not in the
-            // current template version.
-            val staleSeedIds = instanceEntries
-                .filter { it.baseModel.isVoiceTemplateSeedShape }
-                .map { it.baseModel.id }
-                .filter { it !in templateById }
-            if (staleSeedIds.isNotEmpty()) {
-                config.modelEntries.removeAll {
-                    it.providerInstanceId == instance.id && it.baseModel.id in staleSeedIds
-                }
-                changed = true
-                android.util.Log.i("ProviderRepo", "[VoiceTemplateMigrate] ${instance.label}: removed stale voice entries: ${staleSeedIds.sorted()}")
-            }
+    fun updateInstance(instance: ProviderInstance): Unit = updateInstanceImpl(instance)
 
-            // Add template models missing from this instance.
-            val toAdd = templateById.keys - existingIds
-            if (toAdd.isNotEmpty()) {
-                val newEntries = tpl.mockModels
-                    .filter { it.id in toAdd }
-                    .map { ModelEntry(providerInstanceId = instance.id, baseModel = it) }
-                config.modelEntries.addAll(newEntries)
-                changed = true
-                android.util.Log.i("ProviderRepo", "[VoiceTemplateMigrate] ${instance.label}: added ${newEntries.size} new entries: ${toAdd.sorted()}")
-            }
-
-            // Heal corrupted modality on surviving template entries.
-            for (i in config.modelEntries.indices) {
-                val e = config.modelEntries[i]
-                if (e.providerInstanceId != instance.id) continue
-                val tplModel = templateById[e.baseModel.id] ?: continue
-                if (e.baseModel.inputModalities == tplModel.inputModalities &&
-                    e.baseModel.outputModalities == tplModel.outputModalities
-                ) continue
-                android.util.Log.i("ProviderRepo", "[VoiceTemplateMigrate] ${instance.label}: healing modality for ${e.baseModel.id}")
-                config.modelEntries[i] = e.copy(baseModel = tplModel)
-                changed = true
-            }
-        }
-        if (changed) saveConfig(config)
-    }
-
-    /**
-     * Whether [instance] points at a third-party OpenAI-compatible host
-     * (xAI Grok, vLLM, Ollama, LiteLLM, DeepSeek via OpenAI shim, etc.).
-     * For these instances we must never substitute `LLMModel.allOpenAI` as a
-     * fallback / seed — those are GPT-only IDs that don't exist upstream.
-     * Mirrors iOS `ProviderConfigStore.isThirdPartyOpenAICompat`.
-     */
-    private fun isThirdPartyOpenAICompat(instance: ProviderInstance): Boolean {
-        if (instance.providerType != ProviderType.openAI) return false
-        val custom = instance.customBaseURL?.lowercase() ?: return false
-        val officialHosts = listOf("api.openai.com", "chatgpt.com")
-        return officialHosts.none { custom.contains(it) }
-    }
-
-    private fun isThirdPartyGeminiCompat(instance: ProviderInstance): Boolean {
-        if (instance.providerType != ProviderType.gemini) return false
-        val custom = instance.customBaseURL?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return false
-        return !custom.contains("generativelanguage.googleapis.com")
-    }
-
-    fun updateInstance(instance: ProviderInstance): Unit = synchronized(configLock) {
-        ensureConfigLoaded()
-        val config = workingCopy()
-        val idx = config.instances.indexOfFirst { it.id == instance.id }
-        if (idx >= 0) {
-            val prior = config.instances[idx]
-            // [T-android-image-endpoint-mode] If the base URL or v1-suffix
-            // changed, the previously probed image endpoint may not exist on the
-            // new upstream — drop the cached resolution so auto mode re-probes.
-            // Mirrors iOS ProviderConfigStore.updateInstance. Only touch it when
-            // the caller didn't already set it (e.g. the UI clears it itself when
-            // the user forces a non-auto mode).
-            if ((prior.customBaseURL != instance.customBaseURL ||
-                    prior.appendV1Suffix != instance.appendV1Suffix) &&
-                instance.imageEndpointResolved != null
-            ) {
-                instance.imageEndpointResolved = null
-            }
-            config.instances[idx] = instance
-            saveConfig(config)
-            // Any change that could move the model list (base URL, credential
-            // swap, enabled flag, API format) invalidates the cache. Cheap to
-            // over-invalidate.
-            if (prior.effectiveBaseURL != instance.effectiveBaseURL ||
-                prior.credentialType != instance.credentialType ||
-                prior.isEnabled != instance.isEnabled ||
-                prior.useResponsesAPI != instance.useResponsesAPI
-            ) {
-                invalidateModelCache(instance.id)
-            }
-        }
-    }
-
-    fun removeInstance(instanceId: String): Unit = synchronized(configLock) {
-        ensureConfigLoaded()
-        invalidateModelCache(instanceId)
-        val config = workingCopy()
-        val removedEntryIds = config.modelEntries
-            .filter { it.providerInstanceId == instanceId }
-            .map { it.id }
-            .toSet()
-        config.instances.removeAll { it.id == instanceId }
-        config.modelEntries.removeAll { it.providerInstanceId == instanceId }
-
-        if (removedEntryIds.isNotEmpty()) {
-            for (group in config.modelGroups) {
-                group.memberEntryIds.removeAll { it in removedEntryIds }
-            }
-            config.agentLoopModelEntryIds.removeAll { it in removedEntryIds }
-        }
-        val emptyGroupIds = config.modelGroups.filter { it.memberEntryIds.isEmpty() }.map { it.id }.toSet()
-        if (emptyGroupIds.isNotEmpty()) {
-            config.modelGroups.removeAll { it.id in emptyGroupIds }
-            if (config.defaultPrimaryGroupId in emptyGroupIds) config.defaultPrimaryGroupId = null
-            if (config.defaultSubGroupId in emptyGroupIds) config.defaultSubGroupId = null
-        }
-
-        saveConfig(config)
-        deleteApiKey(instanceId)
-        // [T-android-thinking-rules-phase2] The instance is gone — drop its custom
-        // rules from Room and the resolver cache (they can never fire again).
-        runCatching {
-            runBlocking { providerDao.deleteThinkingRulesForInstance(instanceId) }
-            ThinkingRuleResolver.setCustomRules(instanceId, emptyList())
-        }
-    }
+    fun removeInstance(instanceId: String): Unit = removeInstanceImpl(instanceId)
 
     /**
      * [T-android-image-endpoint-mode] Persist the endpoint that last worked for
@@ -958,16 +745,7 @@ class ProviderRepository(private val context: Context) {
     // object. Called from ModelUseOffloadHandler on an offload worker thread
     // during image generation, so the unsynchronized write had no
     // happens-before with main-thread readers.
-    fun setImageEndpointResolved(instanceId: String, endpoint: ImageEndpointMode): Unit =
-        synchronized(configLock) {
-            ensureConfigLoaded()
-            val config = workingCopy()
-            val idx = config.instances.indexOfFirst { it.id == instanceId }
-            if (idx < 0) return@synchronized
-            if (config.instances[idx].imageEndpointResolved == endpoint) return@synchronized
-            config.instances[idx] = config.instances[idx].copy(imageEndpointResolved = endpoint)
-            saveConfig(config)
-        }
+    fun setImageEndpointResolved(instanceId: String, endpoint: ImageEndpointMode): Unit = setImageEndpointResolvedImpl(instanceId, endpoint)
 
     fun instance(id: String): ProviderInstance? =
         _config.value.instances.find { it.id == id }
@@ -1026,10 +804,7 @@ class ProviderRepository(private val context: Context) {
      * entry — or null when the recorded id was deleted / hidden / its provider
      * disabled. Callers treat null as "fall through to the next tier".
      */
-    fun lastUsedVisibleEntry(): ModelEntry? {
-        val id = lastUsedEntryId ?: return null
-        return allVisibleEntries().firstOrNull { it.id == id }
-    }
+    fun lastUsedVisibleEntry(): ModelEntry? = lastUsedVisibleEntryImpl()
 
     /**
      * [T-newchat-default-model-fallback-android] Final-tier default for a new
@@ -1044,19 +819,7 @@ class ProviderRepository(private val context: Context) {
      * no text model (all image/audio), we still land on the newest text model
      * from the next provider rather than returning null.
      */
-    fun newestProviderNewestTextEntry(): ModelEntry? {
-        val config = _config.value
-        val enabledProviders = config.instances
-            .filter { it.isEnabled }
-            .sortedByDescending { it.createdAt }
-        for (instance in enabledProviders) {
-            val textEntry = config.modelEntries
-                .filter { it.providerInstanceId == instance.id && !it.isHidden && it.model.isTextOutput }
-                .lastOrNull()
-            if (textEntry != null) return textEntry
-        }
-        return null
-    }
+    fun newestProviderNewestTextEntry(): ModelEntry? = newestProviderNewestTextEntryImpl()
 
     /**
      * [T-disabled-provider-via-group-android] Members of [group] whose
@@ -1072,32 +835,10 @@ class ProviderRepository(private val context: Context) {
      * instance are also filtered — orphaned ids would otherwise pin the
      * group to a model that can't be instantiated.
      */
-    fun enabledMemberEntries(group: ModelGroup): List<ModelEntry> {
-        val config = _config.value
-        val enabledIds = config.instances.filter { it.isEnabled }.map { it.id }.toSet()
-        return group.memberEntryIds.mapNotNull { entryId ->
-            val entry = config.modelEntries.find { it.id == entryId }
-            // [T-android-model-absence-grace] Skip a model the provider has
-            // stopped listing. The entry is deliberately RETAINED (with its
-            // overrides) through the grace window so it can come back intact,
-            // but routing must not pick it meanwhile — the request would go to
-            // a model the endpoint no longer serves. Same treatment as a
-            // disabled provider: filtered here, at the one choke point every
-            // resolve/display path already goes through.
-            if (entry != null &&
-                entry.providerInstanceId in enabledIds &&
-                !entry.isUnavailableFromProvider
-            ) {
-                entry
-            } else {
-                null
-            }
-        }
-    }
+    fun enabledMemberEntries(group: ModelGroup): List<ModelEntry> = enabledMemberEntriesImpl(group)
 
     /** Convenience: first enabled member of [group] in declaration order. */
-    fun firstEnabledMemberEntry(group: ModelGroup): ModelEntry? =
-        enabledMemberEntries(group).firstOrNull()
+    fun firstEnabledMemberEntry(group: ModelGroup): ModelEntry? = firstEnabledMemberEntryImpl(group)
 
     /**
      * [T-android-group-resolve-skip-uncredentialed] Whether [instance] has ANY
@@ -1116,33 +857,7 @@ class ProviderRepository(private val context: Context) {
      * read, so an expired-but-present token still counts as credentialed and
      * the refresh happens later on the request path (same as iOS).
      */
-    fun hasAnyCredential(instance: ProviderInstance): Boolean {
-        // API-key path, including the keyless-by-design compat endpoints that
-        // [usableApiKey] already models via allowsEmptyAPIKey.
-        if (usableApiKey(instance) != null) return true
-        // [T-android-copilot-not-connected] OAuth path — ask the instance's own
-        // manager FIRST, because not every provider stores its credential in
-        // the shared `oauth_tokens_<id>` blob.
-        //
-        // This used to go straight to the static prefs read below. That read
-        // knows only an instance id, so it cannot dispatch on provider type,
-        // and Copilot — whose credential is the two-tier pair under its own
-        // keys — was reported as having none. The provider was therefore never
-        // constructed and sending a message answered "No provider configured",
-        // on a session whose header showed the model and a green dot.
-        //
-        // The static read stays as the fallback: it covers provider types
-        // `forInstance` deliberately omits (notably gemini), which would
-        // otherwise be misreported as uncredentialed.
-        // [T-oauth-keep-credentials] A token bundle whose refresh was rejected
-        // is kept (never auto-deleted) but is not usable, so routing skips it
-        // just as it skipped the deleted bundle before. (needsReauth is already
-        // false when a manual bearer is stored — that credential still works.)
-        if (com.openminis.app.auth.OAuthManager.needsReauth(context, instance.id)) return false
-        val mgr = com.openminis.app.auth.OAuthManager.forInstance(context, instance)
-        if (mgr != null && mgr.isAuthenticated()) return true
-        return com.openminis.app.auth.OAuthManager.hasStoredCredential(context, instance.id)
-    }
+    fun hasAnyCredential(instance: ProviderInstance): Boolean = hasAnyCredentialImpl(instance)
 
     /**
      * [T-android-group-resolve-skip-uncredentialed] Members of [group] that are
@@ -1159,18 +874,7 @@ class ProviderRepository(private val context: Context) {
      * Order is preserved from [ModelGroup.memberEntryIds] so "primary = first
      * member" still holds — the filter removes candidates, it never reorders.
      */
-    fun availableMemberEntries(group: ModelGroup): List<ModelEntry> {
-        val config = _config.value
-        return group.memberEntryIds.mapNotNull { entryId ->
-            val entry = config.modelEntries.find { it.id == entryId } ?: return@mapNotNull null
-            if (entry.isHidden) return@mapNotNull null
-            val instance = config.instances.find { it.id == entry.providerInstanceId }
-                ?: return@mapNotNull null
-            if (!instance.isEnabled) return@mapNotNull null
-            if (!hasAnyCredential(instance)) return@mapNotNull null
-            entry
-        }
-    }
+    fun availableMemberEntries(group: ModelGroup): List<ModelEntry> = availableMemberEntriesImpl(group)
 
     /**
      * [T-android-regenerate-title-submodel] The dedicated title-generation
@@ -1181,275 +885,16 @@ class ProviderRepository(private val context: Context) {
      * (ChatViewModel.resolveTitleProvider) and the manual Regenerate path
      * (SessionListViewModel.regenerateTitle), mirroring iOS resolveSubEntry.
      */
-    fun resolveTitleSubEntry(): ModelEntry? {
-        val subGroupId = defaultSubGroupId ?: return null
-        val group = group(subGroupId) ?: return null
-        // [T-android-group-resolve-skip-uncredentialed] Routing decision, so it
-        // needs the credential-aware filter: firstEnabledMemberEntry would hand
-        // back a member whose provider has no credential and title generation
-        // would fail on it instead of using the next usable member.
-        return availableMemberEntries(group).firstOrNull()
-    }
+    fun resolveTitleSubEntry(): ModelEntry? = resolveTitleSubEntryImpl()
 
     /**
      * [T-disabled-provider-via-group-android] True when [entryId] resolves
      * to an entry whose provider instance is currently enabled. Used by the
      * settings UI to dim members that won't be reachable at runtime.
      */
-    fun isEntryProviderEnabled(entryId: String): Boolean {
-        val config = _config.value
-        val entry = config.modelEntries.find { it.id == entryId } ?: return false
-        val instance = config.instances.find { it.id == entry.providerInstanceId } ?: return false
-        return instance.isEnabled
-    }
+    fun isEntryProviderEnabled(entryId: String): Boolean = isEntryProviderEnabledImpl(entryId)
 
-    fun replaceEntries(instanceId: String, models: List<LLMModel>) = synchronized(configLock) {
-        ensureConfigLoaded()
-        // Hot path for concurrent autoRefreshModels coroutines (one per
-        // enabled instance) — without this lock, two replaceEntries() calls
-        // race on the shared config.modelEntries ArrayList. The working copy
-        // additionally keeps this refresh off the list Compose is iterating.
-        // [DIAG-restore] Function entry: exactly what was passed in.
-        android.util.Log.i(
-            "ProviderRepo",
-            "[Restore][DIAG] replaceEntries ENTER instanceId=$instanceId models=" +
-                models.joinToString { m -> "(id=${m.id}, displayName=${m.displayName})" },
-        )
-        val config = workingCopy()
-        val existing = config.modelEntries.filter { it.providerInstanceId == instanceId }
-        val existingEntryIds = existing.map { it.id }.toSet()
-
-        // [DIAG-restore] Snapshot of the provider's modelEntries as they stood
-        // right before this refresh, i.e. what removeAll below is meant to wipe.
-        android.util.Log.i(
-            "ProviderRepo",
-            "[Restore][DIAG] replaceEntries existing(before) instanceId=$instanceId count=${existing.size}: " +
-                existing.joinToString { e ->
-                    "(baseModel.id=${e.baseModel.id}, displayName=${e.baseModel.displayName}, uuid=${e.id}, isCustom=${e.isCustom})"
-                },
-        )
-
-        // Build lookup: baseModel.id → existing entry (prefer non-custom if duplicates exist)
-        val existingByModelId = mutableMapOf<String, ModelEntry>()
-        for (entry in existing) {
-            val key = entry.baseModel.id
-            val current = existingByModelId[key]
-            if (current == null || current.isCustom) {
-                existingByModelId[key] = entry
-            }
-        }
-
-        // Build new entries, carrying forward uuid / overrides / isHidden from prior entries
-        val refreshedModelIds = models.map { it.id }.toSet()
-        // [T-android-provider-voice] Template-sourced voice models carry an
-        // authoritative modality that API-inferred modality (typically no audio
-        // bits) must never overwrite. Mirrors iOS replaceEntries
-        // templateModalityById guard (d55cd821).
-        val instanceBaseURL = config.instances.firstOrNull { it.id == instanceId }?.customBaseURL
-        val voiceTemplate = VoiceProviderTemplate.template(instanceBaseURL)
-        val templateVoiceModelById = voiceTemplate?.mockModels
-            ?.filter { it.hasVoiceModality }
-            ?.associateBy { it.id }
-            ?: emptyMap()
-        val newEntries = models.map { model ->
-            val prior = existingByModelId[model.id]
-            // [DIAG-restore] Lookup outcome for this model.id against the
-            // existing-entries map built above — the crux of the "duplicate
-            // instead of replace" investigation: was `model.id` recognized as
-            // already having an entry, and if so, whose?
-            android.util.Log.i(
-                "ProviderRepo",
-                "[Restore][DIAG] replaceEntries lookup key=${model.id} hit=${prior != null}" +
-                    (if (prior != null) " prior.baseModel.id=${prior.baseModel.id}" else ""),
-            )
-            // Dedicated ASR/TTS id/name patterns fill the exact voice shape when
-            // the API returned no modality info; the template's shape wins last.
-            var resolved = model.withInferredVoiceModality()
-            templateVoiceModelById[model.id]?.let { tplModel ->
-                resolved = resolved.copy(
-                    inputModalities = tplModel.inputModalities,
-                    outputModalities = tplModel.outputModalities,
-                )
-            }
-            // [fix] Preserve a prior entry's human-readable displayName when the API
-            // returns a bare model id as the displayName. Prevents regressions like:
-            //   prior: displayName="DeepSeek V4 Pro"  →  refresh  →  displayName="deepseek-v4-pro"
-            val resolvedDisplayName = when {
-                model.displayName.isBlank() || model.displayName == model.id ->
-                    // Remote gave no meaningful name — keep prior's good name if available
-                    prior?.baseModel?.displayName
-                        ?.takeIf { it.isNotBlank() && it != model.id }
-                        ?: model.displayName
-                else -> model.displayName  // Remote gave a real name; use it
-            }
-            resolved = resolved.copy(displayName = resolvedDisplayName)
-            ModelEntry(
-                providerInstanceId = instanceId,
-                baseModel = resolved,
-                overrides = prior?.overrides ?: ModelOverrides(),
-                isCustom = false,
-                isHidden = prior?.isHidden ?: false,
-                uuid = prior?.id ?: java.util.UUID.randomUUID().toString(),
-                userModifiedAt = prior?.userModifiedAt,
-                // [T-android-model-absence-grace] Listed again ⇒ clear any
-                // absence mark. A model that comes back is indistinguishable
-                // from one that never left, overrides included.
-                absentSince = null,
-            )
-        }
-
-        // Keep custom entries that weren't in the refreshed list
-        val remainingCustom = existing.filter { it.isCustom && it.baseModel.id !in refreshedModelIds }
-        if (remainingCustom.isNotEmpty()) {
-            // [DIAG-restore] "preserve part of the old records" branch #1: custom
-            // entries not present in the refreshed list are kept as-is.
-            android.util.Log.i(
-                "ProviderRepo",
-                "[Restore][DIAG] replaceEntries remainingCustom BRANCH HIT instanceId=$instanceId count=${remainingCustom.size}: " +
-                    remainingCustom.joinToString { e -> "(baseModel.id=${e.baseModel.id}, uuid=${e.id})" },
-            )
-        }
-
-        // [T-android-provider-voice] Preserve voice-template SEED entries the
-        // /models list didn't return. Vendors like MiMo never expose their
-        // ASR/TTS voices via /v1/models, so without this every refresh wipes
-        // the seeds (iOS regression cffbec0e: MiMo launch model count 15→11).
-        // Only genuine template members are protected — never stray audio
-        // entries. Mirrors iOS replaceEntries preservedVoice.
-        val preservedVoice = existing.filter { e ->
-            !e.isCustom &&
-                e.baseModel.id !in refreshedModelIds &&
-                e.baseModel.id in templateVoiceModelById
-        }
-        if (preservedVoice.isNotEmpty()) {
-            // [DIAG-restore] "preserve part of the old records" branch #2:
-            // voice-template seed entries not returned by /models.
-            android.util.Log.i(
-                "ProviderRepo",
-                "[Restore][DIAG] replaceEntries preservedVoice BRANCH HIT instanceId=$instanceId count=${preservedVoice.size}: " +
-                    preservedVoice.joinToString { e -> "(baseModel.id=${e.baseModel.id}, uuid=${e.id})" },
-            )
-        }
-
-        // [T-android-model-absence-grace] Catalog entries the provider did NOT
-        // list this time are KEPT, marked unavailable, and only deleted once the
-        // absence has outlived MODEL_ABSENCE_GRACE_MS. Mirrors iOS
-        // replaceEntries (T-model-absence-grace).
-        //
-        // Previously they were deleted on the spot, which conflated two
-        // different facts: "this response did not mention the model" and "this
-        // model is gone". Relay/aggregator endpoints drop a model from
-        // /v1/models transiently and list it again minutes later — and the
-        // deletion took the user's overrides with it, permanently.
-        //
-        // isCustom entries (remainingCustom) and voice-template seeds
-        // (preservedVoice) already had their own protection; this extends the
-        // same courtesy to ordinary provider-supplied entries, which is where
-        // user overrides actually live. Excludes both of those sets so an entry
-        // is never added twice.
-        val nowMs = System.currentTimeMillis()
-        val absentCatalog = existing.filter { e ->
-            !e.isCustom &&
-                e.baseModel.id !in refreshedModelIds &&
-                e.baseModel.id !in templateVoiceModelById
-        }
-        val keptAbsent = mutableListOf<ModelEntry>()
-        val expiredAbsent = mutableListOf<ModelEntry>()
-        for (entry in absentCatalog) {
-            val since = entry.absentSince ?: nowMs
-            if (nowMs - since > MODEL_ABSENCE_GRACE_MS) {
-                expiredAbsent.add(entry)
-            } else {
-                // First miss stamps the clock; later misses keep it, so the
-                // window measures real elapsed absence rather than restarting.
-                keptAbsent.add(entry.copy(absentSince = since))
-            }
-        }
-        if (keptAbsent.isNotEmpty()) {
-            android.util.Log.i(
-                "ProviderRepo",
-                "[ModelList] replaceEntries kept ${keptAbsent.size} unlisted catalog entr(ies) within the " +
-                    "${MODEL_ABSENCE_GRACE_MS / 3_600_000}h grace window: ${keptAbsent.map { it.baseModel.id }.take(10)}",
-            )
-        }
-        if (expiredAbsent.isNotEmpty()) {
-            android.util.Log.i(
-                "ProviderRepo",
-                "[ModelList] replaceEntries dropped ${expiredAbsent.size} catalog entr(ies) absent beyond the " +
-                    "grace window: ${expiredAbsent.map { it.baseModel.id }.take(10)}",
-            )
-        }
-
-        val entriesToRemove = config.modelEntries.filter { it.providerInstanceId == instanceId }
-        // [DIAG-restore] Exactly what removeAll below is about to delete —
-        // if this list is non-empty but stale entries still show up afterward,
-        // the predicate itself (providerInstanceId matching) is the suspect.
-        android.util.Log.i(
-            "ProviderRepo",
-            "[Restore][DIAG] replaceEntries removeAll about to remove instanceId=$instanceId count=${entriesToRemove.size} ids=" +
-                entriesToRemove.map { it.baseModel.id },
-        )
-        config.modelEntries.removeAll { it.providerInstanceId == instanceId }
-        // [DIAG-restore] Post-removeAll / pre-addAll: should be 0 for this
-        // provider if the providerInstanceId filter above actually took effect.
-        val remainingAfterRemove = config.modelEntries.count { it.providerInstanceId == instanceId }
-        android.util.Log.i(
-            "ProviderRepo",
-            "[Restore][DIAG] replaceEntries post-removeAll instanceId=$instanceId remaining=$remainingAfterRemove (expected 0)",
-        )
-        config.modelEntries.addAll(newEntries)
-        config.modelEntries.addAll(remainingCustom)
-        config.modelEntries.addAll(keptAbsent)
-        if (preservedVoice.isNotEmpty()) {
-            config.modelEntries.addAll(preservedVoice)
-            android.util.Log.i("ProviderRepo", "[ModelList] replaceEntries preserved ${preservedVoice.size} voice-template seed entries: ${preservedVoice.map { it.baseModel.id }.take(10)}")
-        }
-        // [DIAG-restore] Final state for this provider after addAll(newEntries)
-        // + addAll(remainingCustom) + addAll(preservedVoice) — the ground truth
-        // for whether a duplicate now exists.
-        val finalForInstance = config.modelEntries.filter { it.providerInstanceId == instanceId }
-        android.util.Log.i(
-            "ProviderRepo",
-            "[Restore][DIAG] replaceEntries FINAL instanceId=$instanceId count=${finalForInstance.size}: " +
-                finalForInstance.joinToString { e ->
-                    "(baseModel.id=${e.baseModel.id}, displayName=${e.baseModel.displayName}, uuid=${e.id})"
-                },
-        )
-
-        // Prune stale group member references
-        val survivingEntryIds = config.modelEntries.map { it.id }.toSet()
-        val prunedEntryIds = existingEntryIds - survivingEntryIds
-        if (prunedEntryIds.isNotEmpty()) {
-            val suspiciousShrink = existing.size >= 4 && models.size * 2 < existing.size
-            if (suspiciousShrink) {
-                android.util.Log.w("ProviderRepo", "[ModelList] replaceEntries SUSPICIOUS SHRINK before=${existing.size} after=${models.size} — group references PRESERVED as stale")
-            } else {
-                for (i in config.modelGroups.indices) {
-                    val before = config.modelGroups[i].memberEntryIds.size
-                    config.modelGroups[i].memberEntryIds.removeAll { it in prunedEntryIds }
-                    val removed = before - config.modelGroups[i].memberEntryIds.size
-                    if (removed > 0) {
-                        android.util.Log.i("ProviderRepo", "[ModelList] replaceEntries pruned $removed stale refs from group '${config.modelGroups[i].name}'")
-                    }
-                }
-                // T171: same cascade for agent-loop direct-entry pins —
-                // mirrors iOS ProviderConfigStore.replaceEntries (L716).
-                // Skipped under the suspicious-shrink branch alongside the
-                // group-member preservation, so a transient API hiccup
-                // never silently nukes the user's curated agent-loop set.
-                val agentBefore = config.agentLoopModelEntryIds.size
-                config.agentLoopModelEntryIds.removeAll { it in prunedEntryIds }
-                val agentRemoved = agentBefore - config.agentLoopModelEntryIds.size
-                if (agentRemoved > 0) {
-                    android.util.Log.i("ProviderRepo", "[ModelList] replaceEntries pruned $agentRemoved stale agent-loop entry pins")
-                }
-            }
-        }
-
-        saveConfig(config)
-        // Stamp so staleness checks know this instance just refreshed.
-        markInstanceFetched(instanceId)
-    }
+    fun replaceEntries(instanceId: String, models: List<LLMModel>) = replaceEntriesImpl(instanceId, models)
 
     // --- Model Entry management ---
     //
@@ -1666,52 +1111,7 @@ class ProviderRepository(private val context: Context) {
      * concern — it guarantees the StateFlow re-emits even though a pure
      * permutation compares equal under data-class structural equality.
      */
-    fun reorderInstances(newOrder: List<String>): Unit = synchronized(configLock) {
-        ensureConfigLoaded()
-        val config = workingCopy()
-        val current = config.instances.toList()
-        if (current.isEmpty()) return
-
-        val byId = current.associateBy { it.id }
-        val seen = LinkedHashSet<String>()
-        val reordered = ArrayList<ProviderInstance>(current.size)
-        for (id in newOrder) {
-            val inst = byId[id] ?: continue      // drop unknown ids
-            if (!seen.add(id)) continue          // drop duplicates
-            reordered.add(inst)
-        }
-        // Anything the caller didn't mention keeps its existing relative order.
-        for (inst in current) {
-            if (seen.add(inst.id)) reordered.add(inst)
-        }
-
-        // No-op guard: skip the DB write + StateFlow churn when nothing moved.
-        if (reordered.map { it.id } == current.map { it.id }) return
-
-        // [T-android-reorder-unlocked-mutation] Mutate under configLock.
-        //
-        // `config.instances` is the shared MutableList inside _config.value,
-        // and clear()/addAll() ran unprotected here — exactly the window the
-        // configLock KDoc above was written to close (it cites the
-        // "ConcurrentModificationException → ArrayList.next" crash seen on
-        // Pixel 6 / 4a). Concurrent readers iterate that same list with no
-        // lock: hasFoldedShadowDuplicates() and shadowVoiceProviders() are
-        // called from ProviderListScreen during composition — on the main
-        // thread, and recomposition fires precisely BECAUSE this reorder just
-        // emitted — while the background model-refresh fan-out reads it too.
-        //
-        // The empty window was the worse half: a saveConfig snapshotting
-        // between clear() and addAll() would persist ZERO instances to Room
-        // and the JSON mirror, wiping the user's providers.
-        //
-        // synchronized is reentrant, so the nested saveConfig (which takes the
-        // same lock) is fine. Matches ensureVoiceTemplateModels / replaceEntries.
-        synchronized(configLock) {
-            config.instances.clear()
-            config.instances.addAll(reordered)
-            saveConfig(config)
-        }
-    }
+    fun reorderInstances(newOrder: List<String>): Unit = reorderInstancesImpl(newOrder)
 
     /**
      * [T-android-modelgroup-reorder] Reorder the user's Model Groups
@@ -1762,31 +1162,7 @@ class ProviderRepository(private val context: Context) {
      * and filters to entries of enabled provider instances. Mirrors iOS
      * ProviderConfigStore.resolvedAgentLoopEntries.
      */
-    fun resolvedAgentLoopEntries(): List<ModelEntry> {
-        val config = _config.value
-        val enabledIds = config.instances.filter { it.isEnabled }.map { it.id }.toSet()
-        val seen = mutableSetOf<String>()
-        val out = mutableListOf<ModelEntry>()
-
-        fun consider(entry: ModelEntry) {
-            if (entry.providerInstanceId !in enabledIds) return
-            if (!seen.add(entry.id)) return
-            out.add(entry)
-        }
-
-        // Individual entries first (preserves the order the user arranged in UI)
-        for (id in config.agentLoopModelEntryIds) {
-            config.modelEntries.find { it.id == id }?.let(::consider)
-        }
-        // Then group members, in group order
-        for (gid in config.agentLoopGroupIds) {
-            val group = config.modelGroups.find { it.id == gid } ?: continue
-            for (memberId in group.memberEntryIds) {
-                config.modelEntries.find { it.id == memberId }?.let(::consider)
-            }
-        }
-        return out
-    }
+    fun resolvedAgentLoopEntries(): List<ModelEntry> = resolvedAgentLoopEntriesImpl()
 
     fun group(id: String): ModelGroup? =
         _config.value.modelGroups.find { it.id == id }
@@ -1926,30 +1302,7 @@ class ProviderRepository(private val context: Context) {
      * members). Returns [] when no group is bound or no member is usable — the
      * caller (ReadImageTool) then returns a clear failure text.
      */
-    fun resolveVisionCandidates(loadBalanceSeed: Int = 0): List<Pair<ProviderInstance, ModelEntry>> {
-        ensureConfigLoaded()
-        val config = _config.value
-
-        fun providerEntry(memberId: String): Pair<ProviderInstance, ModelEntry>? {
-            val entry = config.modelEntries.find { it.id == memberId } ?: return null
-            val inst = config.instances.find { it.id == entry.providerInstanceId } ?: return null
-            if (!inst.isEnabled || !entry.model.hasImageInput) return null
-            return inst to entry
-        }
-
-        val gid = config.visionGroupId ?: return emptyList()
-        val group = config.modelGroups.find { it.id == gid } ?: return emptyList()
-        var members = group.memberEntryIds.mapNotNull { providerEntry(it) }
-        if (group.strategy == RoutingStrategy.loadBalance && members.size > 1) {
-            val offset = kotlin.math.abs(loadBalanceSeed) % members.size
-            members = members.drop(offset) + members.take(offset)
-        }
-        val out = mutableListOf<Pair<ProviderInstance, ModelEntry>>()
-        for (m in members) {
-            if (out.none { it.second.id == m.second.id }) out.add(m)
-        }
-        return out
-    }
+    fun resolveVisionCandidates(loadBalanceSeed: Int = 0): List<Pair<ProviderInstance, ModelEntry>> = resolveVisionCandidatesImpl(loadBalanceSeed)
 
     // --- Thinking rules (custom) [T-android-thinking-rules-phase2] ---
     //
@@ -2153,37 +1506,7 @@ class ProviderRepository(private val context: Context) {
         val isSystem: Boolean get() = entry == null
     }
 
-    fun resolveVoiceInputChoice(): VoiceInputChoice {
-        ensureConfigLoaded()
-        val config = _config.value
-
-        fun systemChoice(memberId: String): VoiceInputChoice = VoiceInputChoice(
-            systemPreferOffline = memberId.endsWith("/${SystemVoiceIds.SYSTEM_ASR_OFFLINE}"),
-            entry = null,
-        )
-
-        fun providerEntry(memberId: String): Pair<ProviderInstance, ModelEntry>? {
-            val entry = config.modelEntries.find { it.id == memberId } ?: return null
-            val inst = config.instances.find { it.id == entry.providerInstanceId } ?: return null
-            if (!inst.isEnabled || !entry.model.isVoiceInputCandidate) return null
-            return inst to entry
-        }
-
-        voiceInputOverrideEntryId?.let { override ->
-            if (override.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID)) return systemChoice(override)
-            providerEntry(override)?.let { return VoiceInputChoice(null, it) }
-            // Stale override (entry removed) — fall through to the group.
-        }
-        val gid = config.voiceInputGroupId
-        val group = gid?.let { g -> config.modelGroups.find { it.id == g } }
-        if (group != null) {
-            for (memberId in group.memberEntryIds) {
-                if (memberId.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID)) return systemChoice(memberId)
-                providerEntry(memberId)?.let { return VoiceInputChoice(null, it) }
-            }
-        }
-        return VoiceInputChoice(systemPreferOffline = null, entry = null)
-    }
+    fun resolveVoiceInputChoice(): VoiceInputChoice = resolveVoiceInputChoiceImpl()
 
     /** Bound Voice Input group's display name, or null (chip's "Group · Model"). */
     fun voiceInputGroupName(): String? {
@@ -2212,40 +1535,7 @@ class ProviderRepository(private val context: Context) {
      * System override returns [] — the caller uses the System engine directly.
      * System sentinel group members are skipped: they never serve cloud ASR.
      */
-    fun resolveVoiceInputCandidates(loadBalanceSeed: Int = 0): List<Pair<ProviderInstance, ModelEntry>> {
-        ensureConfigLoaded()
-        val config = _config.value
-
-        fun providerEntry(memberId: String): Pair<ProviderInstance, ModelEntry>? {
-            val entry = config.modelEntries.find { it.id == memberId } ?: return null
-            val inst = config.instances.find { it.id == entry.providerInstanceId } ?: return null
-            if (!inst.isEnabled || !entry.model.isVoiceInputCandidate) return null
-            return inst to entry
-        }
-
-        val out = mutableListOf<Pair<ProviderInstance, ModelEntry>>()
-        voiceInputOverrideEntryId?.let { override ->
-            // Explicit System override → System engine, no cloud candidates.
-            if (override.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID)) return emptyList()
-            providerEntry(override)?.let { out.add(it) }
-            // Stale override (entry removed) — fall through to the group.
-        }
-        val gid = config.voiceInputGroupId
-        val group = gid?.let { g -> config.modelGroups.find { it.id == g } }
-        if (group != null) {
-            var members = group.memberEntryIds
-                .filter { !it.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID) }
-                .mapNotNull { providerEntry(it) }
-            if (group.strategy == RoutingStrategy.loadBalance && members.size > 1) {
-                val offset = kotlin.math.abs(loadBalanceSeed) % members.size
-                members = members.drop(offset) + members.take(offset)
-            }
-            for (m in members) {
-                if (out.none { it.second.id == m.second.id }) out.add(m)
-            }
-        }
-        return out
-    }
+    fun resolveVoiceInputCandidates(loadBalanceSeed: Int = 0): List<Pair<ProviderInstance, ModelEntry>> = resolveVoiceInputCandidatesImpl(loadBalanceSeed)
 
     // --- Voice OUTPUT resolution [T-android-voice-output-resolver] ---
     //
@@ -2296,36 +1586,7 @@ class ProviderRepository(private val context: Context) {
      * `isVoiceInputCandidate` on the input side) — a model that only *accepts* audio must never be picked to
      * *produce* it.
      */
-    fun resolveVoiceOutputChoice(): VoiceOutputChoice {
-        ensureConfigLoaded()
-        val config = _config.value
-
-        fun providerEntry(memberId: String): Pair<ProviderInstance, ModelEntry>? {
-            val entry = config.modelEntries.find { it.id == memberId } ?: return null
-            val inst = config.instances.find { it.id == entry.providerInstanceId } ?: return null
-            if (!inst.isEnabled || !entry.model.isVoiceOutputCandidate) return null
-            return inst to entry
-        }
-
-        voiceOutputOverrideEntryId?.let { override ->
-            if (override.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID)) {
-                return VoiceOutputChoice(isSystemEngine = true, entry = null)
-            }
-            providerEntry(override)?.let { return VoiceOutputChoice(false, it) }
-            // Stale override (entry removed) — fall through to the group.
-        }
-        val gid = config.voiceOutputGroupId
-        val group = gid?.let { g -> config.modelGroups.find { it.id == g } }
-        if (group != null) {
-            for (memberId in group.memberEntryIds) {
-                if (memberId.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID)) {
-                    return VoiceOutputChoice(isSystemEngine = true, entry = null)
-                }
-                providerEntry(memberId)?.let { return VoiceOutputChoice(false, it) }
-            }
-        }
-        return VoiceOutputChoice(isSystemEngine = true, entry = null)
-    }
+    fun resolveVoiceOutputChoice(): VoiceOutputChoice = resolveVoiceOutputChoiceImpl()
 
     /**
      * [T-android-voice-picker-active] Which MEMBER of a bound voice group is
@@ -2344,23 +1605,7 @@ class ProviderRepository(private val context: Context) {
      * member; the badge answers "which one leads", which is what the row's
      * fallback-strategy chip already promises.
      */
-    fun activeVoiceGroupMemberId(output: Boolean): String? {
-        ensureConfigLoaded()
-        val config = _config.value
-        val gid = if (output) config.voiceOutputGroupId else config.voiceInputGroupId
-        val group = config.modelGroups.find { it.id == gid } ?: return null
-        for (memberId in group.memberEntryIds) {
-            // System sentinels are always usable — the on-device engine needs
-            // no instance and is never disabled.
-            if (memberId.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID)) return memberId
-            val entry = config.modelEntries.find { it.id == memberId } ?: continue
-            val inst = config.instances.find { it.id == entry.providerInstanceId } ?: continue
-            if (!inst.isEnabled) continue
-            val usable = if (output) entry.model.isVoiceOutputCandidate else entry.model.isVoiceInputCandidate
-            if (usable) return memberId
-        }
-        return null
-    }
+    fun activeVoiceGroupMemberId(output: Boolean): String? = activeVoiceGroupMemberIdImpl(output)
 
     /** Bound Voice Output group's display name, or null. */
     fun voiceOutputGroupName(): String? {
@@ -2373,8 +1618,7 @@ class ProviderRepository(private val context: Context) {
      * read-aloud should use the on-device engine. Counterpart of
      * [resolveVoiceInputEntry].
      */
-    fun resolveVoiceOutputEntry(): Pair<ProviderInstance, ModelEntry>? =
-        resolveVoiceOutputChoice().entry
+    fun resolveVoiceOutputEntry(): Pair<ProviderInstance, ModelEntry>? = resolveVoiceOutputEntryImpl()
 
     // --- Shadow Voice Providers [T-android-provider-voice] ---
     // Port of iOS [T-mimo-shadow-voice]: a "Voice Service" is NOT a stored
@@ -2485,7 +1729,6 @@ class ProviderRepository(private val context: Context) {
         return false
     }
 
-
     /**
      * [T-provider-refresh-outlives-screen] (GH#265) Background work owned by
      * the repository — it outlives any screen that starts it. See
@@ -2526,414 +1769,7 @@ class ProviderRepository(private val context: Context) {
         instance: ProviderInstance,
         forceRefresh: Boolean = false,
         onVendorError: ((String) -> Unit)? = null,
-    ) {
-        // [T-android-refresh-models-empty-key] usableApiKey, NOT loadApiKey.
-        //
-        // A self-hosted OpenAI/Anthropic-compatible endpoint (ollama, LM
-        // Studio, LiteLLM, an unauthenticated internal gateway) legitimately
-        // has no key, so nothing is stored and `loadApiKey` returns null. Step
-        // 1 below is gated on `apiKey != null`, so refresh skipped the provider
-        // call entirely and fell through to the models.dev lookup — which knows
-        // nothing about a private host — leaving the user with a failure whose
-        // message described the fallback, not the server they were pointing at.
-        //
-        // `usableApiKey` substitutes "" exactly where an empty key is a valid
-        // configuration (`ProviderInstance.allowsEmptyAPIKey`: apiKey mode +
-        // custom base URL + OpenAI/Anthropic family). It still returns null for
-        // an official endpoint with no key, and for an OAuth instance with no
-        // token — both of which must keep short-circuiting — so the "provider
-        // types that genuinely require a key" case is unchanged.
-        //
-        // This also makes refresh agree with the send path: ChatViewModel and
-        // VisionGroupResolver already resolve credentials through
-        // `usableApiKey`, so a keyless local server could be chatted with but
-        // not refreshed. That inconsistency was the bug.
-        var apiKey = usableApiKey(instance)
-
-        // [T-android-copilot-models-fallback] Copilot holds NO api key, and the
-        // `apiKey != null` conditions below (this refresh, and the whole Step-1
-        // vendor fetch) therefore skipped it entirely — so `/models` was never
-        // called and the list silently came from the models.dev fallback
-        // instead. That fallback lists the whole Copilot catalogue rather than
-        // this ACCOUNT's entitlement, which is how a free account ended up
-        // being offered gpt-5.5 and getting `model_not_supported` on send. It
-        // also marks every entry reasoning-capable, since it is a generic
-        // catalogue rather than the server's answer.
-        //
-        // Its session token is minted on demand and deliberately NOT mirrored
-        // into the api-key store (T-android-copilot-oauth-only), so it is
-        // resolved here into the local `apiKey` only — the Copilot branch below
-        // ignores the value and asks its own manager anyway; what matters is
-        // that it is non-null so the fetch runs at all.
-        if (instance.providerType == ProviderType.githubCopilot && apiKey == null) {
-            apiKey = try {
-                com.openminis.app.auth.CopilotOAuthManager(context, instance.id).validAccessToken()
-            } catch (e: Exception) {
-                android.util.Log.w("ProviderRepo", "Copilot session token unavailable: ${e.message}")
-                null
-            }
-        }
-
-        // For OAuth providers, try to refresh the token before using it (mirrors iOS validAccessToken)
-        if (instance.credentialType == com.openminis.app.data.model.ProviderCredential.oauth &&
-            apiKey != null && instance.providerType != ProviderType.githubCopilot
-        ) {
-            try {
-                val manager = com.openminis.app.auth.OAuthManager.forInstance(context, instance)
-                val freshToken = manager?.validAccessToken()
-                if (freshToken != null && freshToken != apiKey) {
-                    saveApiKey(instance.id, freshToken)
-                    apiKey = freshToken
-                    android.util.Log.i("ProviderRepo", "refreshModels: OAuth token refreshed")
-                }
-            } catch (e: Exception) {
-                android.util.Log.w("ProviderRepo", "OAuth token refresh failed: ${e.message}")
-            }
-        }
-
-        android.util.Log.i("ProviderRepo", "refreshModels: id=${instance.id} type=${instance.providerType} credential=${instance.credentialType} hasKey=${apiKey != null} keyLen=${apiKey?.length ?: 0} baseURL=${instance.effectiveBaseURL}")
-
-        // [T-codex-dynamic-discovery GH#319] OpenAI Codex OAuth: three-tier
-        // discovery, replacing what used to be an unconditional return of the
-        // compiled-in list.
-        //
-        //   1. the Codex backend's own /backend-api/codex/models — authoritative
-        //      for THIS account, so a model the user's plan just gained shows up
-        //      without an app update;
-        //   2. models.dev, via the shared Step-3 fallback below;
-        //   3. the compiled-in list (`fetchModelsOAuth`), which still ships and
-        //      is still correct — it is now the floor, not the ceiling.
-        //
-        // The ordering is the same shape the xAI path already uses
-        // ([T-provider-dynamic-catalog-reconcile]): try live, fall back to
-        // built-in, and never let a failed fetch EMPTY a working picker.
-        if (instance.providerType == ProviderType.openAI
-            && instance.credentialType == ProviderCredential.oauth
-        ) {
-            val discovered = discoverCodexModels(instance, apiKey, forceRefresh)
-            if (discovered != null) {
-                replaceEntries(instance.id, discovered)
-                return
-            }
-            // Tier 3 before tier 2 on this path, deliberately: the built-in
-            // Codex list is hand-verified against a live ChatGPT-account token
-            // ([T-codex-oauth-model-prune] pruned the ids the backend refuses),
-            // whereas models.dev's "openai" provider entry describes the
-            // API-KEY catalog — it would hand a Codex user gpt-4o and friends,
-            // every one of which errors on this auth path. So models.dev is
-            // only reached if even the built-in list is somehow empty.
-            val builtIn = OpenAIModelsApi.fetchModelsOAuth()
-            if (builtIn.isNotEmpty()) {
-                android.util.Log.i("ProviderRepo", "Codex discovery unavailable — using built-in list (${builtIn.size})")
-                replaceEntries(instance.id, builtIn)
-                return
-            }
-        }
-
-        // Step 1: Try provider API (requires API key)
-        val customBase = instance.customBaseURL
-        val isThirdParty = customBase != null
-            && !customBase.lowercase().let {
-                it.contains("api.openai.com") ||
-                    it.contains("chatgpt.com") ||
-                    it.contains("openrouter.ai") ||
-                    it.contains("generativelanguage.googleapis.com") ||
-                    it.contains("api.anthropic.com")
-            }
-
-        if (apiKey != null) {
-            val baseURL = instance.effectiveBaseURL
-            val models = try {
-                when (instance.providerType) {
-                    ProviderType.anthropic -> AnthropicModelsApi.fetchModels(
-                        apiKey, baseURL,
-                        isOAuth = instance.credentialType == com.openminis.app.data.model.ProviderCredential.oauth,
-                        // [T-provider-custom-user-agent] models-list UA override.
-                        customUserAgent = instance.customUserAgent,
-                    )
-                    ProviderType.gemini -> GeminiModelsApi.fetchModels(
-                        apiKey = apiKey,
-                        baseURL = instance.customBaseURL?.trim()?.takeIf { it.isNotEmpty() },
-                        isOAuth = instance.credentialType == com.openminis.app.data.model.ProviderCredential.oauth,
-                        context = context,
-                        forceRefresh = forceRefresh,
-                        customUserAgent = instance.customUserAgent,
-                    )
-                    // [T-provider-custom-user-agent] models-list UA override.
-                    // [T-android-provider-type-parity] openAIResponses lists
-                    // models from the same /v1/models endpoint — only the
-                    // completion endpoint differs.
-                    ProviderType.openAI, ProviderType.openAIResponses ->
-                        OpenAIModelsApi.fetchModels(apiKey, baseURL, customUserAgent = instance.customUserAgent)
-                    ProviderType.openRouter -> OpenRouterModelsApi.fetchModels(apiKey)
-                    // [T-provider-dynamic-catalog-reconcile] xAI: fetch the live
-                    // catalog, fall back to the built-in list.
-                    //
-                    // This used to return the static list unconditionally, with
-                    // a comment saying a dynamic endpoint was hypothetical ("if
-                    // xAI later exposes a dynamic /v1/models endpoint this is
-                    // the place"). It exists and is OpenAI-compatible: an
-                    // unauthenticated GET https://api.x.ai/v1/models answers 401
-                    // with `{"code":"invalid-argument","error":"Incorrect API
-                    // key…"}` — an auth challenge, not a 404. So the built-in
-                    // set was the ONLY set anyone could ever get, on both the
-                    // OAuth and the API-key path, and any model shipped after a
-                    // release (GH#265: grok-4.6) stayed invisible until the app
-                    // itself was updated. Manual Refresh could not help because
-                    // it runs this same code.
-                    //
-                    // `fetchModels` treats api.x.ai as a custom base, so on any
-                    // failure it returns EMPTY rather than a wrong-vendor guess;
-                    // the `models.isNotEmpty()` gate below then leaves the
-                    // seeded catalog in place. That makes the live call additive
-                    // — it can enrich the list but never empty it.
-                    //
-                    // The `?:` default is load-bearing, not cosmetic: an xAI
-                    // instance added through the OAuth button carries no
-                    // customBaseURL, so `effectiveBaseURL` is null — and
-                    // `OpenAIModelsApi.buildURL(null)` resolves to
-                    // api.openai.com/v1/models. Passing the null straight
-                    // through would send an xAI token to OpenAI and, on the
-                    // official-endpoint path, fall back to `LLMModel.allOpenAI`,
-                    // i.e. show GPT models under a Grok provider. That is the
-                    // same class of bug the addInstance seeding comment already
-                    // warns about ("Refresh on Grok returns GPT-5.5").
-                    ProviderType.xAI -> OpenAIModelsApi.fetchModels(
-                        apiKey,
-                        baseURL ?: "https://api.x.ai/v1",
-                        customUserAgent = instance.customUserAgent,
-                    )
-                        // [T-provider-default-modality-key] The OpenAI-compatible
-                        // fetcher labels every non-OpenAI base "Custom", the tag
-                        // for a relay of unknown capability, which has no
-                        // modality default. These are xAI's own models: label
-                        // them "xAI" like the built-in catalog does, so a Grok
-                        // too new for models.dev still gets the provider's vision
-                        // default. models.dev enrichment is unchanged: neither
-                        // label is in its provider map.
-                        .map { it.copy(provider = "xAI") }
-                        .ifEmpty { com.openminis.app.provider.xai.XAIModelsApi.fetchModelsOAuth() }
-                    // [T-kimi-oauth] Kimi Code: unlike Codex OAuth, the Kimi
-                    // OAuth token CAN call the models endpoint — real fetch
-                    // from GET /coding/v1/models (OpenAI-compatible shape).
-                    // The upstream lineup shifts across generations, so the
-                    // live list replaces the minimal built-in fallback.
-                    ProviderType.kimiCode -> OpenAIModelsApi.fetchModels(
-                        apiKey,
-                        baseURL ?: "${com.openminis.app.auth.KimiDeviceFlow.CODING_API_BASE}/v1",
-                        customUserAgent = instance.customUserAgent,
-                    )
-                        // [T-provider-default-modality-key] Kimi's own models,
-                        // not a relay's: same relabel as xAI above.
-                        .map { it.copy(provider = "Kimi") }
-                    // [T-copilot-provider] Copilot's own /models, not the
-                    // OpenAI-compatible helper: the call needs the short-lived
-                    // session token plus the editor-identity headers, and the
-                    // response is filtered to `model_picker_enabled` so the
-                    // picker never offers an embedding or internal model that
-                    // would fail on first send.
-                    ProviderType.githubCopilot -> {
-                        if (context == null) emptyList() else {
-                            // [T-android-copilot-model-capabilities] Carry the
-                            // window/output/vision/reasoning fields Copilot
-                            // already reports. Dropping them left every Copilot
-                            // model with a null context window, which silently
-                            // disables everything that reasons about context
-                            // size (compaction threshold, fallback guard).
-                            com.openminis.app.auth.CopilotOAuthManager(context, instance.id)
-                                .fetchModelsDetailed()
-                                .map { m ->
-                                    LLMModel(
-                                        id = m.id,
-                                        displayName = m.displayName,
-                                        provider = "GitHub Copilot",
-                                        contextWindow = m.contextWindow,
-                                        maxOutputTokens = m.maxOutputTokens,
-                                        supportsReasoning = m.supportsReasoning,
-                                        // [T-android-copilot-reasoning-fields]
-                                        // Copilot states the tiers it accepts
-                                        // (low/medium/high/xhigh/max); passing
-                                        // them through lets the request builder
-                                        // clamp onto a real set instead of
-                                        // guessing.
-                                        reasoningEffortValues = m.reasoningEffortValues,
-                                        // Vision is a modality list here, not a
-                                        // flag; iOS expresses the same thing as
-                                        // modalityOverride = .vision.
-                                        //
-                                        // [T-android-copilot-textonly-explicit]
-                                        // "No" is written as text-only, not null,
-                                        // as iOS writes .textOnly. Null means
-                                        // "undeclared", and since 6b0681e10 the
-                                        // "GitHub Copilot" provider default fills
-                                        // an undeclared list with vision, which
-                                        // turned every model Copilot reports as
-                                        // text-only into an image-input model:
-                                        // photos went raw to an endpoint that
-                                        // cannot read them instead of through
-                                        // the Vision Group.
-                                        inputModalities = if (m.supportsVision) {
-                                            listOf("text", "image")
-                                        } else listOf("text"),
-                                    )
-                                }
-                        }
-                    }
-                    // [T-android-provider-type-parity] No models endpoint to
-                    // query for a type this build cannot drive; the instance
-                    // keeps whatever entries the restore brought with it.
-                    ProviderType.antigravity, ProviderType.unsupported -> emptyList()
-                }
-            } catch (e: Exception) {
-                // Rethrow only if THIS coroutine was cancelled (the onboarding
-                // page's budget ran out); an inner timeout is an ordinary
-                // failure and still falls through to models.dev as before.
-                kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                android.util.Log.e("ProviderRepo", "refreshModels fetch error: ${e.message}", e)
-                onVendorError?.invoke(e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName)
-                emptyList()
-            }
-            android.util.Log.i("ProviderRepo", "refreshModels: got ${models.size} models")
-            // [DIAG-restore] Step1 (vendor API) raw model list — id + displayName —
-            // exactly as returned before it reaches replaceEntries.
-            android.util.Log.i(
-                "ProviderRepo",
-                "[Restore][DIAG] refreshModels STEP1(vendor-api) id=${instance.id} models=" +
-                    models.joinToString { m -> "(id=${m.id}, displayName=${m.displayName})" },
-            )
-
-            // Step 2: If API returned results, use them
-            if (models.isNotEmpty()) {
-                replaceEntries(instance.id, models)
-                return
-            }
-        }
-
-        // Step 3: Fallback to models.dev by base URL.
-        // We try this even for third-party hosts (DashScope/Bailian, etc.) — the
-        // models.dev registry covers many "Anthropic-compatible" or "OpenAI-compatible"
-        // gateways by hostname, and when there's no match `fetchModels` returns
-        // empty so the existing list (vLLM/Ollama on a private host) is preserved.
-        val fallbackBaseURL = modelsDevBaseURL(instance)
-        val fallbackModels = ModelsDevApi.fetchModels(fallbackBaseURL)
-        if (fallbackModels.isNotEmpty()) {
-            android.util.Log.i("ProviderRepo", "models.dev fallback returned ${fallbackModels.size} models for ${instance.label}")
-            // [DIAG-restore] Step3 (models.dev fallback) raw model list.
-            android.util.Log.i(
-                "ProviderRepo",
-                "[Restore][DIAG] refreshModels STEP3(models.dev-fallback) id=${instance.id} models=" +
-                    fallbackModels.joinToString { m -> "(id=${m.id}, displayName=${m.displayName})" },
-            )
-            replaceEntries(instance.id, fallbackModels)
-        } else if (isThirdParty) {
-            android.util.Log.i("ProviderRepo", "Third-party endpoint, no models.dev match — preserving existing models for ${instance.label}")
-        }
-    }
-
-    /**
-     * [T-codex-dynamic-discovery GH#319] Tier 1 of the Codex OAuth chain.
-     *
-     * @return the live catalog, or null meaning "learned nothing — caller
-     *   should fall back". Null covers offline, a non-auth HTTP error, an
-     *   unparseable body and an empty result alike: in every one of those the
-     *   right move is to keep showing models, not to blank the picker.
-     *
-     * @throws CodexDiscoveryAuthException when the backend rejected the
-     *   CREDENTIAL. That one case is NOT folded into null on a user-initiated
-     *   refresh, because GH#319 asks for it explicitly: "认证失败(token过期等)要
-     *   如实报告为认证错误，不要伪装成'刷新成功但列表为空'". Silently falling
-     *   back would redisplay the old list and read as success while the account
-     *   is in fact signed out.
-     */
-    private suspend fun discoverCodexModels(
-        instance: ProviderInstance,
-        accessToken: String?,
-        forceRefresh: Boolean,
-    ): List<LLMModel>? {
-        if (accessToken.isNullOrBlank()) return null
-        val ctx = context
-
-        // accountId comes from the id_token parsed at login, so this is a
-        // local read — no extra round trip, and no new auth logic (GH#319
-        // requirement 1 is explicit that authentication stays where it is).
-        val accountId = try {
-            com.openminis.app.auth.OpenAIOAuthManager(ctx, instance.id).accountId
-        } catch (e: Exception) {
-            android.util.Log.w("ProviderRepo", "Codex accountId unavailable: ${e.message}")
-            null
-        }
-
-        val result = com.openminis.app.provider.openai.CodexModelsApi.fetchModels(
-            accessToken = accessToken,
-            accountId = accountId,
-            // Same constant the inference request advertises — see
-            // OpenAIProvider.CODEX_CLIENT_VERSION.
-            clientVersion = com.openminis.app.provider.openai.OpenAIProvider.CODEX_CLIENT_VERSION,
-            context = ctx,
-            forceRefresh = forceRefresh,
-        )
-
-        return when (result) {
-            is com.openminis.app.provider.openai.CodexModelsApi.Result.Success -> {
-                // The image models are NOT in the discovery response — they are
-                // not chat SKUs — but they are real and routable on this auth
-                // path (OpenAIProvider's Codex image_generation branch). Merge
-                // them back or a successful discovery would silently delete
-                // three working models from the picker.
-                val imageModels = OpenAIModelsApi.codexImageModels()
-                val discoveredIds = result.models.map { it.id }.toSet()
-                android.util.Log.i(
-                    "ProviderRepo",
-                    "Codex discovery: ${result.models.size} live models for ${instance.label}",
-                )
-                result.models + imageModels.filter { it.id !in discoveredIds }
-            }
-            is com.openminis.app.provider.openai.CodexModelsApi.Result.AuthFailed -> {
-                if (forceRefresh) throw CodexDiscoveryAuthException(result.status)
-                android.util.Log.w(
-                    "ProviderRepo",
-                    "Codex discovery auth failure (HTTP ${result.status}) on background refresh — falling back",
-                )
-                null
-            }
-            is com.openminis.app.provider.openai.CodexModelsApi.Result.Failed -> {
-                android.util.Log.i(
-                    "ProviderRepo",
-                    "Codex discovery unavailable (${result.reason}) for ${instance.label}",
-                )
-                null
-            }
-        }
-    }
-
-    /**
-     * Auto-refresh variant: skips instances where the user has added custom models,
-     * so we never overwrite hand-edited entries. Mirrors iOS `autoRefreshModels(for:)`.
-     */
-    private suspend fun autoRefreshModels(instance: ProviderInstance) {
-        // [DIAG-restore] How many entries this provider already has, and
-        // whether the isCustom-skip branch below will fire, BEFORE refreshModels
-        // (and therefore replaceEntries) runs. Ties a restored-then-duplicated
-        // provider back to whether autoRefresh even reached replaceEntries.
-        val existingCountBeforeRefresh = _config.value.modelEntries.count { it.providerInstanceId == instance.id }
-        val hasCustom = _config.value.modelEntries.any {
-            it.providerInstanceId == instance.id && it.isCustom
-        }
-        android.util.Log.i(
-            "ProviderRepo",
-            "[Restore][DIAG] autoRefreshModels ENTER id=${instance.id} label=${instance.label} " +
-                "existingEntries=$existingCountBeforeRefresh hasCustom=$hasCustom",
-        )
-        if (hasCustom) {
-            android.util.Log.i("ProviderRepo", "[ModelList] autoRefresh SKIP ${instance.label} — has custom models")
-            android.util.Log.i(
-                "ProviderRepo",
-                "[Restore][DIAG] autoRefreshModels SKIP-branch HIT id=${instance.id} — refreshModels/replaceEntries NOT called",
-            )
-            return
-        }
-        refreshModels(instance)
-    }
+    ) = refreshModelsImpl(instance, forceRefresh, onVendorError)
 
     /**
      * Stale-while-revalidate helper for UI code. Callers (e.g. the model
@@ -2948,14 +1784,7 @@ class ProviderRepository(private val context: Context) {
      * This helper bypasses the daily flag because it runs per-instance — it's
      * meant for targeted "user is looking at this picker now" revalidation.
      */
-    fun triggerBackgroundRefreshIfStale(scope: kotlinx.coroutines.CoroutineScope) {
-        val stale = _config.value.instances.filter { it.isEnabled && isInstanceStale(it.id) }
-        if (stale.isEmpty()) return
-        android.util.Log.i("ProviderRepo", "[ModelList] SWR refresh — ${stale.size} stale instance(s)")
-        for (instance in stale) {
-            scope.launch { autoRefreshModels(instance) }
-        }
-    }
+    fun triggerBackgroundRefreshIfStale(scope: kotlinx.coroutines.CoroutineScope) = triggerBackgroundRefreshIfStaleImpl(scope)
 
     /**
      * Refresh model lists for all enabled instances, at most once per
@@ -2967,105 +1796,12 @@ class ProviderRepository(private val context: Context) {
      * rather than the next day.
      * Refreshes run in parallel; failures are logged but don't block other instances.
      */
-    fun refreshAllModelsIfNeeded(scope: kotlinx.coroutines.CoroutineScope) {
-        // [T-android-startup-prefs-stall] EVERYTHING here, including the
-        // daily-flag read, must happen inside the coroutine.
-        //
-        // `prefs.getLong` looks free but blocks in
-        // SharedPreferencesImpl.awaitLoadedLocked until the prefs file has been
-        // parsed off disk. This is called straight from MinisApp.onCreate, so
-        // that wait lands on the main thread during cold start: HangDetector
-        // caught it stalling ~9.6s on a Pixel 4a with a large prefs file,
-        // immediately before the model-sort stall in the same launch.
-        //
-        // The early-return-before-launch shape is what made it main-thread
-        // work; moving the read inside costs nothing, because every branch of
-        // this function was already asynchronous.
-        scope.launch {
-            val key = "lastModelsRefreshDate"
-            val lastMs = prefs.getLong(key, 0L)
-            val now = System.currentTimeMillis()
-            // [T-android-models-refresh-window] A ROLLING WINDOW, not a
-            // calendar day.
-            //
-            // The old gate was `isSameCalendarDay`, so a model a provider
-            // enabled during the day could not appear until the next one.
-            // Reported on iOS (fe625d5fd): GitHub turned on gpt-6-astra
-            // account-wide mid-morning, the app had already refreshed at 09:55,
-            // and it made ZERO further /models calls until a manual refresh at
-            // 22:20 — which then returned it. Nothing was whitelisted; the app
-            // simply would not ask again that day.
-            //
-            // Six hours bounds the cost at four calls per provider per day of
-            // continuous use while cutting the worst-case staleness from ~24h
-            // to ~6h.
-            val elapsed = now - lastMs
-            if (lastMs > 0L && elapsed < MODELS_REFRESH_WINDOW_MS) {
-                android.util.Log.i(
-                    "ProviderRepo",
-                    "[ModelList] refreshAllModelsIfNeeded SKIP — refreshed ${elapsed / 60_000}m ago " +
-                        "(window ${MODELS_REFRESH_WINDOW_MS / 60_000}m)",
-                )
-                return@launch
-            }
-
-            // [T-android-startup-config-stall] Config now loads asynchronously,
-            // so at cold start `_config.value` may still be the empty
-            // placeholder when this fires from MinisApp.onCreate. Wait for the
-            // load before reading the enabled-instance set, otherwise the daily
-            // refresh would no-op on "no enabled instances" and skip this
-            // launch entirely. Runs on the caller's (IO) scope — does not touch
-            // the main thread.
-            awaitConfigLoaded()
-            val enabled = _config.value.instances.filter { it.isEnabled }
-            if (enabled.isEmpty()) {
-                android.util.Log.i("ProviderRepo", "[ModelList] refreshAllModelsIfNeeded SKIP — no enabled instances")
-                return@launch
-            }
-
-            android.util.Log.i("ProviderRepo", "[ModelList] refreshAllModelsIfNeeded FIRE — ${enabled.size} instances")
-            android.util.Log.i(
-                "ProviderRepo",
-                "[Restore][DIAG] refreshAllModelsIfNeeded enabled providers: " +
-                    enabled.joinToString { ei -> "(id=${ei.id}, label=${ei.label})" },
-            )
-            prefs.edit().putLong(key, now).apply()
-
-            for (instance in enabled) {
-                scope.launch { autoRefreshModels(instance) }
-            }
-        }
-    }
-
-    /** Resolve the models.dev lookup base URL for an instance. */
-    private fun modelsDevBaseURL(instance: ProviderInstance): String {
-        instance.effectiveBaseURL?.let { return it }
-        return when (instance.providerType) {
-            ProviderType.anthropic -> "https://api.anthropic.com/v1"
-            ProviderType.gemini -> "https://generativelanguage.googleapis.com"
-            // [T-android-provider-type-parity] Responses API instances point at
-            // the same OpenAI host; only the completion path differs.
-            ProviderType.openAI, ProviderType.openAIResponses -> "https://api.openai.com/v1"
-            ProviderType.openRouter -> "https://openrouter.ai/api/v1"
-            ProviderType.xAI -> "https://api.x.ai/v1"
-            ProviderType.kimiCode -> "${com.openminis.app.auth.KimiDeviceFlow.CODING_API_BASE}/v1"
-            // [T-copilot-provider] No /v1 suffix — Copilot serves
-            // /chat/completions and /models straight off the API root.
-            ProviderType.githubCopilot -> com.openminis.app.auth.CopilotDeviceFlow.API_BASE
-            // No canonical host for a type this build cannot drive. Callers
-            // reaching here have already exhausted effectiveBaseURL.
-            ProviderType.antigravity, ProviderType.unsupported -> "https://api.openai.com/v1"
-        }
-    }
+    fun refreshAllModelsIfNeeded(scope: kotlinx.coroutines.CoroutineScope) = refreshAllModelsIfNeededImpl(scope)
 
     // API Key management
-    fun saveApiKey(instanceId: String, key: String) {
-        encryptedPrefs.edit().putString("apikey_$instanceId", key).apply()
-    }
+    fun saveApiKey(instanceId: String, key: String) = saveApiKeyImpl(instanceId, key)
 
-    fun loadApiKey(instanceId: String): String? {
-        return encryptedPrefs.getString("apikey_$instanceId", null)
-    }
+    fun loadApiKey(instanceId: String): String? = loadApiKeyImpl(instanceId)
 
     /**
      * [T-empty-key-compat-endpoints] The credential the ROUTING layers should
@@ -3079,9 +1815,7 @@ class ProviderRepository(private val context: Context) {
     fun usableApiKey(instance: ProviderInstance): String? =
         loadApiKey(instance.id) ?: if (instance.allowsEmptyAPIKey) "" else null
 
-    fun deleteApiKey(instanceId: String) {
-        encryptedPrefs.edit().remove("apikey_$instanceId").apply()
-    }
+    fun deleteApiKey(instanceId: String) = deleteApiKeyImpl(instanceId)
 
     // -- Import / Export --
 
@@ -3092,7 +1826,7 @@ class ProviderRepository(private val context: Context) {
      * login/logout/manual-bearer UI paths). Used only by the export/import
      * round-trip so we don't widen forInstance's shared behavior.
      */
-    private fun oauthManagerFor(
+    internal fun oauthManagerFor(
         instance: ProviderInstance,
     ): com.openminis.app.auth.OAuthManager? = when (instance.providerType) {
         ProviderType.anthropic -> com.openminis.app.auth.ClaudeOAuthManager(context, instance.id)
@@ -3104,175 +1838,7 @@ class ProviderRepository(private val context: Context) {
     }
 
     /** Export an instance as shareable JSON (includes base64-encoded API key). */
-    fun exportInstanceJSON(instanceId: String): String? {
-        ensureConfigLoaded()
-        val instance = instance(instanceId) ?: return null
-        val entries = visibleEntries(instanceId) + _config.value.modelEntries.filter {
-            it.providerInstanceId == instanceId && it.isHidden
-        }
-
-        val obj = JSONObject().apply {
-            put("providerType", instance.providerType.name)
-            put("label", instance.label)
-            put("credentialType", instance.credentialType.name)
-            val modelsArr = JSONArray()
-            for (entry in entries) {
-                modelsArr.put(JSONObject().apply {
-                    put("modelId", entry.baseModel.id)
-                    put("displayName", entry.baseModel.displayName)
-                    put("isHidden", entry.isHidden)
-                    if (entry.isCustom) put("isCustom", true)
-                    entry.baseModel.contextWindow?.let { put("contextWindow", it) }
-                    entry.baseModel.maxOutputTokens?.let { put("maxOutputTokens", it) }
-                    entry.baseModel.supportsReasoning?.let { put("supportsReasoning", it) }
-                    entry.baseModel.interleavedReasoningField?.let { put("interleavedReasoningField", it) }
-                    // [T-provider-export-model-overrides] Serialize the FULL
-                    // ModelOverrides layer, not just displayName/maxOutputTokens.
-                    // contextWindow / supportsReasoning / modality (input+output)
-                    // were previously dropped — a hand-corrected proxied model
-                    // lost those edits on round-trip. Each key is additive +
-                    // optional: older builds ignore unknown keys, and import
-                    // below reads each independently so a partial override
-                    // object restores exactly the fields present.
-                    //
-                    // For cross-platform interop with iOS we ALSO write a
-                    // `modalityOverride` bitfield (Int, matching
-                    // ios/Providers/LLMTypes.swift ModelModality OptionSet):
-                    // textInput=1, textOutput=2, imageInput=4, pdfInput=8,
-                    // audioInput=16, videoInput=32, imageOutput=64,
-                    // audioOutput=128, videoOutput=256. Android natively
-                    // carries inputModalities/outputModalities as string lists;
-                    // the bitfield is purely an interop wire-format that iOS
-                    // can consume directly. On import, the native list fields
-                    // win when present (Android↔Android lossless), bitfield is
-                    // the iOS→Android fallback.
-                    if (!entry.overrides.isEmpty) {
-                        val o = JSONObject()
-                        entry.overrides.displayName?.let { o.put("displayName", it) }
-                        entry.overrides.maxOutputTokens?.let { o.put("maxOutputTokens", it) }
-                        entry.overrides.contextWindow?.let { o.put("contextWindow", it) }
-                        entry.overrides.supportsReasoning?.let { o.put("supportsReasoning", it) }
-                        entry.overrides.inputModalities?.let {
-                            o.put("inputModalities", JSONArray(it))
-                        }
-                        entry.overrides.outputModalities?.let {
-                            o.put("outputModalities", JSONArray(it))
-                        }
-                        // [T-android-model-custom-params] The per-model
-                        // request-tuning layer. This export path is
-                        // field-by-field rather than whole-object serialization,
-                        // so a new field that is not written here is silently
-                        // dropped on backup even though it decodes fine
-                        // everywhere else. Each key stays additive + optional,
-                        // matching the keys above: an older build ignores what
-                        // it does not know, and the import side reads each
-                        // independently.
-                        // [T-provider-export-thinking-ceiling] The user's
-                        // per-model thinking CEILING. kotlinx carries it (so
-                        // backup keeps it) but this hand-written list did not,
-                        // so sharing a provider silently reset the recipient's
-                        // ceiling to "inherit the catalog rule". Written as the
-                        // LOWERCASE level id to match iOS's ThinkingLevel
-                        // rawValue on the shared wire — thinkingLevelFromWire
-                        // reads either casing back.
-                        entry.overrides.maxThinkingLevel?.let {
-                            o.put("maxThinkingLevel", it.name.lowercase())
-                        }
-                        entry.overrides.temperature?.let { o.put("temperature", it) }
-                        entry.overrides.topP?.let { o.put("topP", it) }
-                        entry.overrides.customHeaders?.let { headers ->
-                            if (headers.isNotEmpty()) {
-                                val h = JSONObject()
-                                for ((k, v) in headers) h.put(k, v)
-                                o.put("customHeaders", h)
-                            }
-                        }
-                        entry.overrides.extraBodyParams?.let { extra ->
-                            // JsonObject -> org.json via its serialized form, so
-                            // nested structure survives instead of being
-                            // flattened to a toString().
-                            runCatching { JSONObject(extra.toString()) }
-                                .getOrNull()
-                                ?.let { o.put("extraBodyParams", it) }
-                        }
-                        val bitfield = modalityBitfieldFromLists(
-                            entry.overrides.inputModalities,
-                            entry.overrides.outputModalities,
-                        )
-                        if (bitfield != 0) o.put("modalityOverride", bitfield)
-                        put("overrides", o)
-                    }
-                    // Mirror iOS export of baseModel.modalityOverride — when
-                    // the base model itself carries explicit modality info,
-                    // serialize an interop bitfield so iOS can faithfully
-                    // restore it. Android's native baseModel uses string
-                    // lists too; this is purely additive for iOS readers.
-                    run {
-                        val bf = modalityBitfieldFromLists(
-                            entry.baseModel.inputModalities,
-                            entry.baseModel.outputModalities,
-                        )
-                        if (bf != 0) put("modalityOverride", bf)
-                    }
-                    entry.baseModel.inputModalities?.let {
-                        put("inputModalities", JSONArray(it))
-                    }
-                    entry.baseModel.outputModalities?.let {
-                        put("outputModalities", JSONArray(it))
-                    }
-                })
-            }
-            put("models", modelsArr)
-            loadApiKey(instanceId)?.let { key ->
-                put("apiKey", Base64.encodeToString(key.toByteArray(), Base64.NO_WRAP))
-            }
-            // Export manual OAuth bearer token (mirrors iOS `manualOAuthToken` key).
-            // Stored per-instance via OAuthManager; only present for OAuth providers
-            // where the user pasted a static token via the Manual Bearer Token UI.
-            run {
-                val mgr = com.openminis.app.auth.OAuthManager.forInstance(context, instance)
-                val manual = mgr?.loadManualBearerToken()
-                if (!manual.isNullOrEmpty()) {
-                    put("manualOAuthToken", Base64.encodeToString(manual.toByteArray(), Base64.NO_WRAP))
-                }
-            }
-            // [T-android-provider-export-oauth-token] Export the
-            // STRUCTURED OAuth-login credential (access_token / refresh_token /
-            // expire_at) saved by the OAuth login flow under a separate pref than
-            // apiKey / manualOAuthToken. Previously omitted, so an OAuth-logged-in
-            // Claude / OpenAI / Gemini / xAI provider exported with no usable
-            // credential and imported as not-authenticated. The whole token is one
-            // JSON blob on Android (OAuthManager.loadStoredTokens); JSON-encode +
-            // base64 it under "oauthToken", matching iOS 703ff4bc's field name and
-            // the existing apiKey / manualOAuthToken base64 encoding. Covers every
-            // OAuth provider type via oauthManagerFor (not just the forInstance set).
-            run {
-                val mgr = oauthManagerFor(instance)
-                mgr?.exportStoredTokensJson()?.let { tokenJson ->
-                    put("oauthToken", Base64.encodeToString(tokenJson.toByteArray(), Base64.NO_WRAP))
-                }
-                // Gemini also stores the resolved account email + GCP project as
-                // separate OAuth strings (mirrors iOS oauthEmail / oauthGcpProject);
-                // carry them so the imported instance can call the API.
-                if (instance.providerType == ProviderType.gemini && mgr != null) {
-                    mgr.exportOAuthString("email")?.takeIf { it.isNotEmpty() }?.let {
-                        put("oauthEmail", Base64.encodeToString(it.toByteArray(), Base64.NO_WRAP))
-                    }
-                    mgr.exportOAuthString("gcp_project")?.takeIf { it.isNotEmpty() }?.let {
-                        put("oauthGcpProject", Base64.encodeToString(it.toByteArray(), Base64.NO_WRAP))
-                    }
-                }
-            }
-            instance.customBaseURL?.let { put("customBaseURL", it) }
-            if (!instance.appendV1Suffix) put("appendV1Suffix", false)
-            if (instance.useResponsesAPI) put("useResponsesAPI", true)
-            // [T-provider-custom-user-agent] Additive, optional. Only written
-            // when set; old/new readers without the key decode to null →
-            // default UA. Field name matches iOS for cross-platform interop.
-            instance.customUserAgent?.takeIf { it.isNotBlank() }?.let { put("customUserAgent", it) }
-        }
-        return obj.toString(2)
-    }
+    fun exportInstanceJSON(instanceId: String): String? = exportInstanceJSONImpl(instanceId)
 
     /**
      * [T-android-backup-secrets] Collect ONE instance's credentials for the
@@ -3284,52 +1850,7 @@ class ProviderRepository(private val context: Context) {
      */
     fun collectBackupProviderSecret(
         instance: ProviderInstance,
-    ): BackupSecrets.ProviderSecret? {
-        fun b64(s: String): String =
-            Base64.encodeToString(s.toByteArray(), Base64.NO_WRAP)
-
-        val apiKey = loadApiKey(instance.id)?.let(::b64)
-        val manualOAuth = com.openminis.app.auth.OAuthManager
-            .forInstance(context, instance)?.loadManualBearerToken()
-            ?.takeIf { it.isNotEmpty() }?.let(::b64)
-
-        var oauthToken: String? = null
-        var oauthEmail: String? = null
-        var oauthGcpProject: String? = null
-        val mgr = oauthManagerFor(instance)
-        if (mgr != null) {
-            // [T-android-copilot-backup-token] Copilot keeps its credential in
-            // its own two keys, not the generic `oauth_tokens_<id>` blob that
-            // exportStoredTokensJson reads — so without this branch the export
-            // found nothing and a restore silently produced a signed-out
-            // instance. Written in iOS CopilotTokenStorage's shape so a package
-            // from either platform restores on the other.
-            oauthToken = if (instance.providerType == ProviderType.githubCopilot) {
-                (mgr as? com.openminis.app.auth.CopilotOAuthManager)
-                    ?.exportCopilotTokensJson()?.let(::b64)
-            } else {
-                mgr.exportStoredTokensJson()?.let(::b64)
-            }
-            if (instance.providerType == ProviderType.gemini) {
-                oauthEmail = mgr.exportOAuthString("email")
-                    ?.takeIf { it.isNotEmpty() }?.let(::b64)
-                oauthGcpProject = mgr.exportOAuthString("gcp_project")
-                    ?.takeIf { it.isNotEmpty() }?.let(::b64)
-            }
-        }
-
-        val secret = BackupSecrets.ProviderSecret(
-            instanceId = instance.id,
-            label = instance.label,
-            providerType = instance.providerType.name,
-            apiKey = apiKey,
-            manualOAuthToken = manualOAuth,
-            oauthToken = oauthToken,
-            oauthEmail = oauthEmail,
-            oauthGcpProject = oauthGcpProject,
-        )
-        return if (secret.isEmpty) null else secret
-    }
+    ): BackupSecrets.ProviderSecret? = collectBackupProviderSecretImpl(instance)
 
     /**
      * [T-android-backup-secrets] Restore one instance's credentials from a
@@ -3343,60 +1864,7 @@ class ProviderRepository(private val context: Context) {
      * NOT overwritten, so restoring a backup onto its origin device reports
      * "kept" rather than "restored".
      */
-    fun restoreBackupProviderSecret(secret: BackupSecrets.ProviderSecret): Boolean {
-        fun deb64(s: String?): String? = s?.let {
-            runCatching { String(Base64.decode(it, Base64.NO_WRAP)) }.getOrNull()
-        }
-        val instance = instance(secret.instanceId) ?: return false
-        var wrote = false
-
-        deb64(secret.apiKey)?.let { key ->
-            if (loadApiKey(instance.id) == null) {
-                saveApiKey(instance.id, key)
-                wrote = true
-            }
-        }
-        deb64(secret.manualOAuthToken)?.let { tok ->
-            val mgr = com.openminis.app.auth.OAuthManager.forInstance(context, instance)
-            if (mgr != null && mgr.loadManualBearerToken().isNullOrEmpty()) {
-                mgr.saveManualBearerToken(tok)
-                wrote = true
-            }
-        }
-        val mgr = oauthManagerFor(instance)
-        if (mgr != null) {
-            deb64(secret.oauthToken)?.let { json ->
-                // [T-android-copilot-backup-token] Mirror of the export split
-                // above; the keep-existing check has to ask the same store the
-                // write would touch, or a signed-in device would be reported as
-                // restored (or a signed-out one skipped).
-                val copilotMgr = (mgr as? com.openminis.app.auth.CopilotOAuthManager)
-                    ?.takeIf { instance.providerType == ProviderType.githubCopilot }
-                if (copilotMgr != null) {
-                    if (copilotMgr.exportCopilotTokensJson().isNullOrEmpty()) {
-                        copilotMgr.importCopilotTokensJson(json)
-                        wrote = true
-                    }
-                } else if (mgr.exportStoredTokensJson().isNullOrEmpty()) {
-                    mgr.importStoredTokensJson(json)
-                    wrote = true
-                }
-            }
-            if (instance.providerType == ProviderType.gemini) {
-                deb64(secret.oauthEmail)?.let {
-                    if (mgr.exportOAuthString("email").isNullOrEmpty()) {
-                        mgr.importOAuthString("email", it); wrote = true
-                    }
-                }
-                deb64(secret.oauthGcpProject)?.let {
-                    if (mgr.exportOAuthString("gcp_project").isNullOrEmpty()) {
-                        mgr.importOAuthString("gcp_project", it); wrote = true
-                    }
-                }
-            }
-        }
-        return wrote
-    }
+    fun restoreBackupProviderSecret(secret: BackupSecrets.ProviderSecret): Boolean = restoreBackupProviderSecretImpl(secret)
 
     /**
      * [T-android-backup-restore-order] Non-destructive, ORDER-PRESERVING union
@@ -3423,149 +1891,7 @@ class ProviderRepository(private val context: Context) {
      * counting iOS uses (fix 93cad55ae: union-by-id already-present is SKIPPED,
      * not "updated").
      */
-    fun mergeBackupProviderConfig(remote: ProviderConfig): Pair<Int, Int> {
-        ensureConfigLoaded()
-        return synchronized(configLock) {
-            val local = _config.value
-            val before = local.instances.size
-
-            // [DIAG-restore] Snapshot of the incoming backup payload, before any
-            // merging happens, to compare against what actually lands post-merge.
-            android.util.Log.i(
-                "ProviderRepo",
-                "[Restore][DIAG] remote.instances count=${remote.instances.size}: " +
-                    remote.instances.joinToString { ri -> "(id=${ri.id}, label=${ri.label}, type=${ri.providerType})" },
-            )
-            android.util.Log.i(
-                "ProviderRepo",
-                "[Restore][DIAG] remote.modelEntries count=${remote.modelEntries.size}",
-            )
-            for (re in remote.modelEntries) {
-                android.util.Log.i(
-                    "ProviderRepo",
-                    "[Restore][DIAG] remote entry providerInstanceId=${re.providerInstanceId} " +
-                        "baseModel.id=${re.baseModel.id} baseModel.displayName=${re.baseModel.displayName} uuid=${re.id}",
-                )
-            }
-
-            val orderedInstances = mutableListOf<ProviderInstance>()
-            val placedInstances = mutableSetOf<String>()
-            for (ri in remote.instances) {
-                val existing = local.instances.firstOrNull { it.id == ri.id }
-                orderedInstances.add(existing ?: ri)
-                placedInstances.add(ri.id)
-            }
-            for (li in local.instances) {
-                if (li.id !in placedInstances) orderedInstances.add(li)
-            }
-
-            val mergedEntries = local.modelEntries.toMutableList()
-            // [fix] Use (providerInstanceId, baseModel.id) as dedup key instead of
-            // UUID, because iOS and Android generate independent UUIDs for the same
-            // logical model entry. Using UUID caused iOS backup entries to be appended
-            // alongside existing local entries, producing duplicates.
-            val entryKeys = mergedEntries.map { it.providerInstanceId to it.baseModel.id }.toMutableSet()
-            for (entry in remote.modelEntries) {
-                val key = entry.providerInstanceId to entry.baseModel.id
-                if (key !in entryKeys) {
-                    mergedEntries.add(entry)
-                    entryKeys.add(key)
-                } else {
-                    // Same provider + model already exists locally. If the local entry has a
-                    // degraded displayName (equal to the raw model id), and the backup carries a
-                    // better human-readable name, patch the local entry in-place rather than
-                    // adding a duplicate.
-                    val localIdx = mergedEntries.indexOfFirst {
-                        it.providerInstanceId == entry.providerInstanceId &&
-                            it.baseModel.id == entry.baseModel.id
-                    }
-                    if (localIdx >= 0) {
-                        val local = mergedEntries[localIdx]
-                        val localDisplayName = local.baseModel.displayName
-                        val remoteDisplayName = entry.baseModel.displayName
-                        if ((localDisplayName.isBlank() || localDisplayName == local.baseModel.id) &&
-                            remoteDisplayName.isNotBlank() && remoteDisplayName != entry.baseModel.id
-                        ) {
-                            mergedEntries[localIdx] = local.copy(
-                                baseModel = local.baseModel.copy(displayName = remoteDisplayName),
-                            )
-                        }
-                    }
-                }
-            }
-
-            val orderedGroups = mutableListOf<ModelGroup>()
-            val placedGroups = mutableSetOf<String>()
-            for (rg in remote.modelGroups) {
-                val existing = local.modelGroups.firstOrNull { it.id == rg.id }
-                orderedGroups.add(existing ?: rg)
-                placedGroups.add(rg.id)
-            }
-            for (lg in local.modelGroups) {
-                if (lg.id !in placedGroups) orderedGroups.add(lg)
-            }
-
-            val mergedAgentEntries =
-                (local.agentLoopModelEntryIds + remote.agentLoopModelEntryIds).distinct()
-            val mergedAgentGroups =
-                (local.agentLoopGroupIds + remote.agentLoopGroupIds).distinct()
-
-            // [T-subagent-sync-dedupe] Merge the sub agent roster too. Without
-            // this the local roster was kept wholesale and the package's
-            // discarded, so an agent created on another device never arrived —
-            // silent non-propagation rather than data loss, but equally wrong.
-            //
-            // Deduping is by NAME, not id: the model emits a name and
-            // SubAgentRoster.resolve matches on it, so two rows that differ
-            // only by id (the same agent created independently on two devices)
-            // would cost a roster slot each, be paid for on every turn, and
-            // leave the second permanently unreachable.
-            val mergedSubAgents = local.subAgents.toMutableList()
-            for (r in remote.subAgents) {
-                val clash = mergedSubAgents.any {
-                    it.id == r.id || SubAgentRoster.nameKey(it.name) == SubAgentRoster.nameKey(r.name)
-                }
-                if (!clash) mergedSubAgents.add(r)
-            }
-            val normalizedSubAgents = SubAgentRoster.normalize(mergedSubAgents) {
-                AppLogger.info(SUB_AGENT_LOG, it)
-            }
-
-            val merged = local.copy(
-                instances = orderedInstances,
-                modelEntries = mergedEntries,
-                modelGroups = orderedGroups,
-                subAgents = normalizedSubAgents.toMutableList(),
-                agentLoopModelEntryIds = mergedAgentEntries.toMutableList(),
-                agentLoopGroupIds = mergedAgentGroups.toMutableList(),
-            )
-            saveConfig(merged)
-            val after = orderedInstances.size
-            android.util.Log.i(
-                "ProviderRepo",
-                "[Restore] provider merge: instances $before→$after " +
-                    "entries=${mergedEntries.size} groups=${orderedGroups.size}",
-            )
-            // [DIAG-restore] Final merged state actually persisted to disk.
-            android.util.Log.i(
-                "ProviderRepo",
-                "[Restore][DIAG] orderedInstances count=${orderedInstances.size}: " +
-                    orderedInstances.joinToString { oi -> "(id=${oi.id}, label=${oi.label}, type=${oi.providerType})" },
-            )
-            android.util.Log.i(
-                "ProviderRepo",
-                "[Restore][DIAG] mergedEntries count=${mergedEntries.size}",
-            )
-            for (me in mergedEntries) {
-                android.util.Log.i(
-                    "ProviderRepo",
-                    "[Restore][DIAG] merged entry providerInstanceId=${me.providerInstanceId} " +
-                        "baseModel.id=${me.baseModel.id} baseModel.displayName=${me.baseModel.displayName} uuid=${me.id}",
-                )
-            }
-            before to after
-        }
-    }
+    fun mergeBackupProviderConfig(remote: ProviderConfig): Pair<Int, Int> = mergeBackupProviderConfigImpl(remote)
 
     /**
      * [T-android-backup-thinking-rules] Restore custom thinking rules by
@@ -3583,245 +1909,18 @@ class ProviderRepository(private val context: Context) {
      * carried in `data/sub_agents.jsonl` (iOS writes them only there). Rules in
      * [SubAgentRoster.mergeBackup]. Returns (written, skipped).
      */
-    fun restoreBackupSubAgents(incoming: List<SubAgentDefinition>): Pair<Int, Int> = synchronized(configLock) {
-        if (incoming.isEmpty()) return@synchronized 0 to 0
-        ensureConfigLoaded()
-        val config = workingCopy()
-        val merged = SubAgentRoster.mergeBackup(config.subAgents, incoming) { AppLogger.info(SUB_AGENT_LOG, it) }
-        if (merged.written > 0) {
-            config.subAgents.clear()
-            config.subAgents.addAll(merged.roster)
-            saveConfig(config)
-        }
-        merged.written to merged.skipped
-    }
+    fun restoreBackupSubAgents(incoming: List<SubAgentDefinition>): Pair<Int, Int> = restoreBackupSubAgentsImpl(incoming)
 
     fun restoreBackupThinkingRules(
         rules: List<com.openminis.app.backup.BackupThinkingRuleRecord>,
-    ): Pair<Int, Int> = runBlocking {
-        if (rules.isEmpty()) return@runBlocking 0 to 0
-        val existing = providerDao.loadAllThinkingRules().map { it.id }.toSet()
-        var written = 0
-        var skipped = 0
-        for (r in rules) {
-            if (r.id in existing) { skipped++; continue }
-            providerDao.upsertThinkingRule(
-                com.openminis.app.data.db.ProviderThinkingRuleEntity(
-                    id = r.id,
-                    providerInstanceId = r.instanceId,
-                    label = r.label,
-                    scopeKind = r.scopeKind,
-                    scopePattern = r.scopePattern,
-                    wireFormatJson = r.wireFormatJson.takeIf { it.isNotBlank() && it != "{}" },
-                    reasoningEchoJson = null,
-                    sortOrder = r.sortOrder,
-                )
-            )
-            written++
-        }
-        loadAllThinkingRulesIntoCache()
-        written to skipped
-    }
+    ): Pair<Int, Int> = restoreBackupThinkingRulesImpl(rules)
 
     /**
      * Import a provider from exported JSON. Returns the new instance label on success.
      * - Auto-renames on label conflict
      * - Decodes base64-encoded API key (falls back to plain text)
      */
-    fun importInstanceJSON(jsonStr: String): String? {
-        ensureConfigLoaded()
-        val dict = try { JSONObject(jsonStr) } catch (_: Exception) { return null }
-        val providerTypeRaw = dict.optString("providerType", "").ifEmpty { return null }
-        val providerType = try { ProviderType.valueOf(providerTypeRaw) } catch (_: Exception) { return null }
-        val label = dict.optString("label", "").ifEmpty { return null }
-
-        val credentialType = try {
-            ProviderCredential.valueOf(dict.optString("credentialType", "apiKey"))
-        } catch (_: Exception) { ProviderCredential.apiKey }
-
-        // Resolve label conflict
-        val existingLabels = _config.value.instances.map { it.label }.toSet()
-        var resolvedLabel = label
-        if (resolvedLabel in existingLabels) {
-            var suffix = 2
-            while ("$label ($suffix)" in existingLabels) suffix++
-            resolvedLabel = "$label ($suffix)"
-        }
-
-        val customBaseURL = dict.optString("customBaseURL", "").ifEmpty { null }
-        val appendV1 = dict.optBoolean("appendV1Suffix", true)
-        val useResponsesAPI = dict.optBoolean("useResponsesAPI", false)
-        // [T-provider-custom-user-agent] Additive: old exports lack the key →
-        // empty → null → default UA. Field name matches iOS.
-        val customUserAgent = dict.optString("customUserAgent", "").ifEmpty { null }
-
-        val instance = ProviderInstance(
-            id = java.util.UUID.randomUUID().toString(),
-            label = resolvedLabel,
-            providerType = providerType,
-            credentialType = credentialType,
-            customBaseURL = customBaseURL,
-            appendV1Suffix = appendV1,
-            useResponsesAPI = useResponsesAPI,
-            customUserAgent = customUserAgent,
-        )
-        addInstance(instance)
-
-        // Decode API key (base64 or plain text)
-        val keyValue = dict.optString("apiKey", "").ifEmpty { null }
-        if (keyValue != null) {
-            val apiKey = try {
-                String(Base64.decode(keyValue, Base64.NO_WRAP))
-            } catch (_: Exception) {
-                keyValue // plain text fallback
-            }
-            saveApiKey(instance.id, apiKey)
-        }
-
-        // Decode manual OAuth bearer token (mirrors iOS `manualOAuthToken`).
-        // base64-encoded UTF-8 string, with plain-text fallback for older exports.
-        val manualTokenValue = dict.optString("manualOAuthToken", "").ifEmpty { null }
-        if (manualTokenValue != null) {
-            val manualToken = try {
-                String(Base64.decode(manualTokenValue, Base64.NO_WRAP))
-            } catch (_: Exception) {
-                manualTokenValue
-            }
-            val mgr = com.openminis.app.auth.OAuthManager.forInstance(context, instance)
-            mgr?.saveManualBearerToken(manualToken)
-        }
-
-        // [T-android-provider-export-oauth-token] Restore the
-        // structured OAuth-login credential so the imported instance is
-        // authenticated. Decode base64 → JSON → write back via the OAuth
-        // manager. Mirrors iOS 703ff4bc; purely additive alongside the
-        // apiKey / manualOAuthToken restore above.
-        val oauthTokenValue = dict.optString("oauthToken", "").ifEmpty { null }
-        if (oauthTokenValue != null) {
-            val tokenJson = try {
-                String(Base64.decode(oauthTokenValue, Base64.NO_WRAP))
-            } catch (_: Exception) {
-                oauthTokenValue // plain-text fallback for hand-edited exports
-            }
-            oauthManagerFor(instance)?.importStoredTokensJson(tokenJson)
-        }
-        // Gemini account email + GCP project (base64-encoded OAuth strings).
-        if (instance.providerType == ProviderType.gemini) {
-            val mgr = oauthManagerFor(instance)
-            dict.optString("oauthEmail", "").ifEmpty { null }?.let { b64 ->
-                val email = try { String(Base64.decode(b64, Base64.NO_WRAP)) } catch (_: Exception) { b64 }
-                mgr?.importOAuthString("email", email)
-            }
-            dict.optString("oauthGcpProject", "").ifEmpty { null }?.let { b64 ->
-                val project = try { String(Base64.decode(b64, Base64.NO_WRAP)) } catch (_: Exception) { b64 }
-                mgr?.importOAuthString("gcp_project", project)
-            }
-        }
-
-        // Import models (replace built-in defaults)
-        val models = dict.optJSONArray("models")
-        if (models != null && models.length() > 0) {
-            val entries = mutableListOf<ModelEntry>()
-            for (i in 0 until models.length()) {
-                val m = models.getJSONObject(i)
-                val modelId = m.optString("modelId", "")
-                if (modelId.isEmpty()) continue
-                val displayName = m.optString("displayName", modelId)
-                val isCustom = m.optBoolean("isCustom", false)
-                val isHidden = m.optBoolean("isHidden", false)
-                val contextWindow = if (m.has("contextWindow")) m.optInt("contextWindow").takeIf { it > 0 } else null
-                val maxOutputTokens = if (m.has("maxOutputTokens")) m.optInt("maxOutputTokens").takeIf { it > 0 } else null
-                val supportsReasoning = if (m.has("supportsReasoning")) m.optBoolean("supportsReasoning") else null
-                val interleavedReasoningField = m.optString("interleavedReasoningField", "").ifEmpty { null }
-                // [T-provider-export-model-overrides] Restore baseModel
-                // modalities. Android-native list fields win when present;
-                // otherwise fall back to iOS's `modalityOverride` bitfield so
-                // a provider exported on iOS retains its capability info.
-                val (baseIn, baseOut) = readModalitiesWithBitfieldFallback(m)
-                val model = LLMModel(
-                    id = modelId,
-                    displayName = displayName,
-                    provider = providerType.displayName,
-                    contextWindow = contextWindow,
-                    maxOutputTokens = maxOutputTokens,
-                    supportsReasoning = supportsReasoning,
-                    interleavedReasoningField = interleavedReasoningField,
-                    inputModalities = baseIn,
-                    outputModalities = baseOut,
-                )
-                val overridesObj = m.optJSONObject("overrides")
-                val overrides = if (overridesObj != null) {
-                    // [T-provider-export-model-overrides] Read the full
-                    // overrides layer. Each key is read independently — a
-                    // missing key (old export, partial object) simply stays
-                    // null → the field falls back to baseModel / defaults.
-                    val (ovIn, ovOut) = readModalitiesWithBitfieldFallback(overridesObj)
-                    ModelOverrides(
-                        displayName = overridesObj.optString("displayName", "").ifEmpty { null },
-                        maxOutputTokens = if (overridesObj.has("maxOutputTokens")) overridesObj.optInt("maxOutputTokens").takeIf { it > 0 } else null,
-                        contextWindow = if (overridesObj.has("contextWindow")) overridesObj.optInt("contextWindow").takeIf { it > 0 } else null,
-                        supportsReasoning = if (overridesObj.has("supportsReasoning")) overridesObj.optBoolean("supportsReasoning") else null,
-                        inputModalities = ovIn,
-                        outputModalities = ovOut,
-                        // [T-provider-export-thinking-ceiling] Symmetric with
-                        // the export above; absent key stays null ("inherit the
-                        // catalog rule"), like every sibling field.
-                        maxThinkingLevel = thinkingLevelFromWire(
-                            overridesObj.optString("maxThinkingLevel", ""),
-                        ),
-                        // [T-android-model-custom-params] Symmetric with the
-                        // export above. `has()` is checked before reading so an
-                        // absent key stays null ("inherit") rather than
-                        // collapsing to 0.0 / empty — 0.0 is a real temperature
-                        // and must not be synthesized from absence.
-                        temperature = if (overridesObj.has("temperature")) {
-                            overridesObj.optDouble("temperature").takeIf { !it.isNaN() }
-                        } else null,
-                        topP = if (overridesObj.has("topP")) {
-                            overridesObj.optDouble("topP").takeIf { !it.isNaN() }
-                        } else null,
-                        customHeaders = overridesObj.optJSONObject("customHeaders")?.let { h ->
-                            buildMap {
-                                for (k in h.keys()) put(k, h.optString(k, ""))
-                            }.takeIf { it.isNotEmpty() }
-                        },
-                        extraBodyParams = overridesObj.optJSONObject("extraBodyParams")?.let { ex ->
-                            runCatching {
-                                kotlinx.serialization.json.Json
-                                    .parseToJsonElement(ex.toString())
-                                    as? kotlinx.serialization.json.JsonObject
-                            }.getOrNull()
-                        },
-                    )
-                } else {
-                    ModelOverrides()
-                }
-                entries.add(ModelEntry(
-                    providerInstanceId = instance.id,
-                    baseModel = model,
-                    overrides = overrides,
-                    isCustom = isCustom,
-                    isHidden = isHidden,
-                ))
-            }
-            // Import replaces built-in entries directly (not via replaceEntries which takes LLMModel list).
-            // [T-android-provider-mutator-lock] Lock + working copy, like every
-            // other mutator. This function is the actual provider.import /
-            // Share-import path, and it read `_config.value` back — the object
-            // addInstance had just PUBLISHED — and mutated its live list. That
-            // is the exact race behind both device CMEs; the earlier sweep
-            // missed it because the audit went by function name and this one
-            // isn't called add*/update*/remove*.
-            synchronized(configLock) {
-                val cfg = workingCopy()
-                cfg.modelEntries.removeAll { it.providerInstanceId == instance.id }
-                cfg.modelEntries.addAll(entries)
-                saveConfig(cfg)
-            }
-        }
-
-        return resolvedLabel
-    }
+    fun importInstanceJSON(jsonStr: String): String? = importInstanceJSONImpl(jsonStr)
 
     // -- Modality interop with iOS ----------------------------------------
     //
@@ -3841,91 +1940,4 @@ class ProviderRepository(private val context: Context) {
     // forbids a second companion object, and ProviderRepository already
     // has one).
 
-    private fun modalityBitfieldFromLists(
-        inputs: List<String>?,
-        outputs: List<String>?,
-    ): Int {
-        var bits = 0
-        inputs?.forEach { raw ->
-            when (raw.lowercase()) {
-                "text" -> bits = bits or MODALITY_BIT_TEXT_IN
-                "image" -> bits = bits or MODALITY_BIT_IMG_IN
-                "pdf" -> bits = bits or MODALITY_BIT_PDF_IN
-                "audio" -> bits = bits or MODALITY_BIT_AUD_IN
-                "video" -> bits = bits or MODALITY_BIT_VID_IN
-            }
-        }
-        outputs?.forEach { raw ->
-            when (raw.lowercase()) {
-                "text" -> bits = bits or MODALITY_BIT_TEXT_OUT
-                "image" -> bits = bits or MODALITY_BIT_IMG_OUT
-                "audio" -> bits = bits or MODALITY_BIT_AUD_OUT
-                "video" -> bits = bits or MODALITY_BIT_VID_OUT
-            }
-        }
-        return bits
-    }
-
-    private fun modalityListsFromBitfield(bits: Int): Pair<List<String>?, List<String>?> {
-        if (bits == 0) return null to null
-        val inputs = buildList {
-            if (bits and MODALITY_BIT_TEXT_IN != 0) add("text")
-            if (bits and MODALITY_BIT_IMG_IN != 0) add("image")
-            if (bits and MODALITY_BIT_PDF_IN != 0) add("pdf")
-            if (bits and MODALITY_BIT_AUD_IN != 0) add("audio")
-            if (bits and MODALITY_BIT_VID_IN != 0) add("video")
-        }
-        val outputs = buildList {
-            if (bits and MODALITY_BIT_TEXT_OUT != 0) add("text")
-            if (bits and MODALITY_BIT_IMG_OUT != 0) add("image")
-            if (bits and MODALITY_BIT_AUD_OUT != 0) add("audio")
-            if (bits and MODALITY_BIT_VID_OUT != 0) add("video")
-        }
-        return inputs.ifEmpty { null } to outputs.ifEmpty { null }
-    }
-
-    /**
-     * Read modality info from a JSON object. Returns (inputs, outputs):
-     *   - native `inputModalities` / `outputModalities` list keys take
-     *     precedence (Android-original export — lossless).
-     *   - if neither list is present, decode iOS's `modalityOverride`
-     *     bitfield as the fallback.
-     *   - if neither shape is present, returns null pair (caller treats
-     *     as "no modality info" → baseModel defaults apply).
-     */
-    private fun readModalitiesWithBitfieldFallback(
-        obj: JSONObject,
-    ): Pair<List<String>?, List<String>?> {
-        val nativeIn = obj.optJSONArray("inputModalities")?.let { arr ->
-            (0 until arr.length()).mapNotNull { arr.optString(it).takeIf { s -> s.isNotEmpty() } }.takeIf { it.isNotEmpty() }
-        }
-        val nativeOut = obj.optJSONArray("outputModalities")?.let { arr ->
-            (0 until arr.length()).mapNotNull { arr.optString(it).takeIf { s -> s.isNotEmpty() } }.takeIf { it.isNotEmpty() }
-        }
-        if (nativeIn != null || nativeOut != null) return nativeIn to nativeOut
-        if (!obj.has("modalityOverride")) return null to null
-        val bits = obj.optInt("modalityOverride", 0)
-        return modalityListsFromBitfield(bits)
-    }
-
-    /**
-     * [T-provider-export-thinking-ceiling] Decode a `maxThinkingLevel` wire
-     * token from a provider export.
-     *
-     * Deliberately NOT `ThinkingLevel.decoded`, which clamps an unrecognized
-     * token to XHIGH: that is the right answer when reading data THIS app
-     * persisted, but wrong for a foreign payload. A level a newer build (or a
-     * newer iOS build) invented must come back null — "inherit the catalog
-     * rule" — rather than silently pinning the user's ceiling to XHigh.
-     *
-     * Case-insensitive because the two platforms spell the same level
-     * differently in their own persistence: iOS Codable writes the lowercase
-     * `ThinkingLevel.rawValue` ("xhigh"), kotlinx writes the enum NAME
-     * ("XHIGH"). The shared wire uses the lowercase form; accepting either
-     * keeps an older Android export (if any) and any iOS payload readable.
-     */
-    private fun thinkingLevelFromWire(raw: String): ThinkingLevel? {
-        if (raw.isEmpty()) return null
-        return ThinkingLevel.entries.firstOrNull { it.name.equals(raw, ignoreCase = true) }
-    }
 }
