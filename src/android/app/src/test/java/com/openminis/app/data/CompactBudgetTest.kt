@@ -1,6 +1,6 @@
 package com.openminis.app.data
 
-import com.openminis.app.ui.chat.ChatViewModel
+import com.openminis.app.ui.chat.CompactionSummary
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -32,7 +32,7 @@ class CompactBudgetTest {
         // exactly the bug this replaced.
         assertTrue(
             "idle timeout must fire long before the total ceiling",
-            ChatViewModel.COMPACT_IDLE_TIMEOUT_MS < ChatViewModel.COMPACT_MAX_TOTAL_MS,
+            CompactionSummary.COMPACT_IDLE_TIMEOUT_MS < CompactionSummary.COMPACT_MAX_TOTAL_MS,
         )
     }
 
@@ -43,9 +43,9 @@ class CompactBudgetTest {
         // socket error with no message instead of our own "stalled" path.
         val providerReadTimeoutMs = 10 * 60 * 1000L
         assertTrue(
-            "idle timeout (${ChatViewModel.COMPACT_IDLE_TIMEOUT_MS}ms) must be under " +
+            "idle timeout (${CompactionSummary.COMPACT_IDLE_TIMEOUT_MS}ms) must be under " +
                 "the provider read timeout (${providerReadTimeoutMs}ms)",
-            ChatViewModel.COMPACT_IDLE_TIMEOUT_MS < providerReadTimeoutMs,
+            CompactionSummary.COMPACT_IDLE_TIMEOUT_MS < providerReadTimeoutMs,
         )
     }
 
@@ -58,17 +58,17 @@ class CompactBudgetTest {
         val largestObservedGapMs = 2_400L // the widest inter-event gap in that log
         assertTrue(
             "a continuously-streaming run must not trip the idle timer",
-            largestObservedGapMs < ChatViewModel.COMPACT_IDLE_TIMEOUT_MS,
+            largestObservedGapMs < CompactionSummary.COMPACT_IDLE_TIMEOUT_MS,
         )
         assertTrue(
             "and it must finish well inside the total ceiling",
-            reportedRunMs < ChatViewModel.COMPACT_MAX_TOTAL_MS,
+            reportedRunMs < CompactionSummary.COMPACT_MAX_TOTAL_MS,
         )
     }
 
     @Test
     fun `total ceiling is the 15 minute backstop`() {
-        assertEquals(15 * 60 * 1000L, ChatViewModel.COMPACT_MAX_TOTAL_MS)
+        assertEquals(15 * 60 * 1000L, CompactionSummary.COMPACT_MAX_TOTAL_MS)
     }
 
     @Test
@@ -78,8 +78,8 @@ class CompactBudgetTest {
         // more calls into the same broken pipe and burns the call budget.
         assertTrue(
             "idle timeout must not trigger the split retry",
-            !ChatViewModel.shouldSplitOnError(
-                ChatViewModel.Companion.CompactIdleTimeoutException("no data for 120s")
+            !CompactionSummary.shouldSplitOnError(
+                CompactionSummary.CompactIdleTimeoutException("no data for 120s")
             ),
         )
     }
@@ -91,14 +91,14 @@ class CompactBudgetTest {
         val depthCapWorstCase = 1 + 2 + 4 + 8
         assertTrue(
             "call budget must materially cut the depth-cap worst case",
-            ChatViewModel.MAX_COMPACT_LLM_CALLS < depthCapWorstCase,
+            CompactionSummary.MAX_COMPACT_LLM_CALLS < depthCapWorstCase,
         )
         // Still enough for a full first split (1 + 2) plus a deeper rescue,
         // so the mechanism that exists to save an over-length compaction
         // is not budgeted out of existence.
         assertTrue(
             "budget must still allow a first split plus a rescue",
-            ChatViewModel.MAX_COMPACT_LLM_CALLS >= 5,
+            CompactionSummary.MAX_COMPACT_LLM_CALLS >= 5,
         )
     }
 
@@ -110,7 +110,7 @@ class CompactBudgetTest {
         // now deliberately loose because the idle timer — not this — is what
         // catches a stuck run. What still matters is that SOME finite bound
         // exists, so a looping model cannot hold the compact lock forever.
-        val worstMs = ChatViewModel.COMPACT_MAX_TOTAL_MS
+        val worstMs = CompactionSummary.COMPACT_MAX_TOTAL_MS
         assertTrue("must stay bounded", worstMs <= 20 * 60 * 1000L)
     }
 }

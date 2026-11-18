@@ -68,7 +68,7 @@ class CompactLoopFramingTest {
         // Always-failing provider error: splits, but never past the budget.
         val always = Splitter { throw LLMError.ProviderError("too long") }
         try { always.summarize(history); assertTrue("must throw", false) } catch (e: Exception) { }
-        assertTrue("calls=${always.callsIssued.get()}", always.callsIssued.get() <= ChatViewModel.MAX_COMPACT_LLM_CALLS)
+        assertTrue("calls=${always.callsIssued.get()}", always.callsIssued.get() <= CompactionSummary.MAX_COMPACT_LLM_CALLS)
     }
 
     // ── case 2: framing markers ────────────────────────────────────────────

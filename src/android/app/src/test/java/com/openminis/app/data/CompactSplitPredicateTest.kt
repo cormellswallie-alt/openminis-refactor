@@ -1,7 +1,7 @@
 package com.openminis.app.data
 
 import com.openminis.app.data.model.LLMError
-import com.openminis.app.ui.chat.ChatViewModel.Companion.shouldSplitOnError
+import com.openminis.app.ui.chat.CompactionSummary.shouldSplitOnError
 import kotlinx.coroutines.CancellationException
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

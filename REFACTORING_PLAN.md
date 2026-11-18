@@ -9,12 +9,15 @@
 
 ## 全局五阶段重构蓝图
 
-### Phase 1：工程独立建仓、解除测试枷锁与外围纯逻辑解耦（✅ 已完成）
+### Phase 1：独立建仓、测试迁移与聊天模块拆分
+
+三个子项的代码已合入 `main`，JVM 单测已通过。独立的第一阶段 Release 构建在 APK 打包时中断，后续构建包含此阶段的全部改动。[构建记录](https://github.com/cormellswallie-alt/openminis-refactor/actions/runs/44267668981)
+
 1. **独立仓库与同机共存体系**：
    - 建立私有仓库 `openminis-refactor`，切换包名为 `com.openminis.next`，配置专属签名密钥与 CI 全自动 `:app:testDebugUnitTest` + `assembleRelease` 双重门禁。
 2. **拔除源码文本匹配锁（`ProductionSources` 清理）**：
-   - 移除 `ProductionSources.kt` 及全部 40 个纯源码行文本扫描测试，精准清洗 137 个混合测试中的文本扫描断言并保留全部真实逻辑单元测试，彻底解除函数移动与文件拆分限制。
-3. **`ChatViewModel` 首轮瘦身（净减 ~1,605 行，消除多处重复粘贴）**：
+   - 移除 `ProductionSources.kt` 和 40 个仅扫描源码文本的测试文件，同时替换或移除相关文本断言。测试目录从 427 个 Kotlin 文件缩至 387 个。
+3. **`ChatViewModel` 首轮拆分（17,704 行降至 16,101 行）**：
    - 抽离 `ChatPayloadCodec.kt`：统一流式残缺 JSON 提取、工具标题格式化、`AgentContentPart` 序列化（同步消除 `ChatToolDetailUI`、`ChatToolFormatting` 中的重复实现及废弃死代码 `persistAssistantMessage`）。
    - 抽离 `ChatMessageMapper.kt`：独立承载数据库 `MessageEntity` ↔ UI `ChatMessage` / `LLMMessage` 双向转换与 `<system-reminder>` / `<attached-files>` 清洗。
    - 抽离 `ChatSystemPromptAssembler.kt`：收拢缓存友好的动态系统提示词组装、长上下文 Persona 提醒判定，并将散落在 `ChatViewModel` 6 个不同位置的 Claude Code OAuth 系统提示词拼接收口为单一安全入口。
@@ -22,11 +25,13 @@
 
 ---
 
-### Phase 2：上下文度量与自动压缩引擎解耦（计划下一阶段）
-- **目标**：从 `ChatViewModel` 继续剥离约 **2,600 行** 上下文管理与 Compaction 状态机。
-- **核心动作**：
-  - 抽离 `ContextMeterCoordinator`：封装 Token 校准比例平滑、溢出笔记、请求前图片预算裁剪（`applyRequestImageBudget`）与超大负载卸载（`offloadLargestPartForOverflow`）。
-  - 抽离 `SessionCompactionCoordinator`：封装手动/自动压缩（`compactAll` / `compactBefore` / `revertCompact`）、分段摘要重试、孤儿 `tool_use`/`tool_result` 结对清洗（`dropOrphanedToolParts`）与 Warm-up 窗口裁剪。
+### Phase 2：上下文计量与会话压缩拆分
+
+- `ContextMeterCoordinator` 管理会话校准、实际用量采样和溢出反馈。
+- `RequestImageBudget` 管理发送前图片裁剪，`RequestPayloadRecovery` 管理请求负载诊断和溢出卸载。
+- `CompactionHistory` 管理压缩范围、历史重建、预热窗口裁剪和工具调用配对，兼容 v1 与 v2 压缩标记。
+- `CompactionSummary` 管理摘要输入、分段重试和超时策略。摘要和压缩范围测试直接调用生产代码。
+- 手动及自动压缩的生命周期、标记写入与撤销仍由 `ChatViewModel` 协调。
 
 ---
 

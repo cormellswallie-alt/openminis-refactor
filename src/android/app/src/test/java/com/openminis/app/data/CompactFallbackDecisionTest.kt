@@ -74,15 +74,15 @@ class CompactFallbackDecisionTest {
         // these, the splitter would burn the call budget halving the input
         // against a model that is refusing for a reason size cannot fix, and
         // the fallback loop would never get a turn.
-        assertFalse(ChatViewModelCompanionProbe.shouldSplit(LLMError.RateLimited()))
-        assertFalse(ChatViewModelCompanionProbe.shouldSplit(LLMError.InvalidApiKey("401")))
+        assertFalse(CompactionSummaryCompanionProbe.shouldSplit(LLMError.RateLimited()))
+        assertFalse(CompactionSummaryCompanionProbe.shouldSplit(LLMError.InvalidApiKey("401")))
         assertFalse(
-            ChatViewModelCompanionProbe.shouldSplit(
+            CompactionSummaryCompanionProbe.shouldSplit(
                 LLMError.TransientError("upstream", httpStatus = 503),
             ),
         )
         // An over-length refusal still splits — that is what splitting is for.
-        assertTrue(ChatViewModelCompanionProbe.shouldSplit(LLMError.ProviderError("too many tokens")))
+        assertTrue(CompactionSummaryCompanionProbe.shouldSplit(LLMError.ProviderError("too many tokens")))
     }
 
     /** Failed-entry avoidance used by the group re-pick. */
@@ -105,7 +105,7 @@ class CompactFallbackDecisionTest {
 }
 
 /** Reaches the companion-object predicate under test. */
-private object ChatViewModelCompanionProbe {
+private object CompactionSummaryCompanionProbe {
     fun shouldSplit(e: Throwable): Boolean =
-        com.openminis.app.ui.chat.ChatViewModel.shouldSplitOnError(e)
+        com.openminis.app.ui.chat.CompactionSummary.shouldSplitOnError(e)
 }

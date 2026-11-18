@@ -1,5 +1,9 @@
 package com.openminis.app.ui.chat
 
+import com.openminis.app.ui.chat.CompactionSummary.COMPACT_IDLE_TIMEOUT_MS
+import com.openminis.app.ui.chat.CompactionSummary.COMPACT_MAX_TOTAL_MS
+import com.openminis.app.ui.chat.CompactionSummary.MAX_COMPACT_LLM_CALLS
+import com.openminis.app.ui.chat.CompactionSummary.CompactIdleTimeoutException
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -26,7 +30,6 @@ import com.openminis.app.data.ContextOffload
 import com.openminis.app.data.ContextOverflowGuard
 import com.openminis.app.data.ContextPolicy
 import com.openminis.app.data.ContextSizeMeter
-import com.openminis.app.data.PayloadSizeAudit
 import com.openminis.app.logging.AppLogger
 import com.openminis.app.data.FileMentionIndex
 import com.openminis.app.data.db.CompactMarkerEntity
@@ -153,173 +156,6 @@ class ChatViewModel(
          *  in the tool schema (AgentTools.shellExecuteDefinition). */
         const val SHELL_TIMEOUT_MAX_SEC = 3600
         internal const val TAG = "ChatViewModel"
-
-        // ── [T-android-compact-runaway] Compaction budgets ──────────────
-        //
-        // Compaction had no ceiling of any kind. Its only time bound was the
-        // provider's OkHttp readTimeout (10 minutes on every provider), and
-        // the split-retry path could issue up to 1+2+4+8 = 15 SEQUENTIAL leaf
-        // calls before depth 3 stopped it. Slow-but-not-timing-out calls (a
-        // rate-limited or queued model at ~80s each) therefore added up to
-        // roughly 20 minutes of apparent hang — which matches the report.
-        //
-        // Three independent ceilings now bound it, because each catches a case
-        // the others miss: the call budget stops fan-out, the wall-clock
-        // timeout stops slow-but-few calls, and the existing depth cap stops
-        // recursion.
-
-        /**
-         * Leaf LLM calls one compaction may issue in total, across every
-         * segment. The depth-3 cap alone permits 15; this cuts the worst case
-         * to a third of that while still allowing a full first split (1+2) plus
-         * one deeper rescue.
-         */
-        internal const val MAX_COMPACT_LLM_CALLS = 6
-
-        /**
-         * [T-compact-idle-timeout] How long compaction may go WITHOUT receiving
-         * any new stream data before it is declared stuck.
-         *
-         * This replaced a total-elapsed budget, which was measuring the wrong
-         * thing. A healthy stream that is merely long looks identical to a hung
-         * one under a wall-clock cap: the reported run was cancelled at 150s
-         * having received 7,488 SSE events and 19,459 characters at ~40 tok/s —
-         * data was flowing the entire time, and the only thing "wrong" was that
-         * the transcript was big. Under an idle timer that run completes,
-         * because the gap between consecutive deltas never approached this
-         * value.
-         *
-         * Sized to sit under the providers' 10-minute socket readTimeout, so a
-         * genuinely dead connection is reported by us — with the lock released
-         * and a message the user can act on — rather than surfacing as a raw
-         * socket error minutes later.
-         */
-        internal const val COMPACT_IDLE_TIMEOUT_MS = 120_000L
-
-        /**
-         * Absolute ceiling on one compaction run, idle timer notwithstanding.
-         *
-         * This is a backstop for the pathological cases an idle timer cannot
-         * see — a model looping forever, or an unbounded response — where data
-         * keeps arriving and so the idle timer keeps resetting, legitimately,
-         * forever. It is deliberately generous: it must never be the limit that
-         * decides a normal slow compaction's fate, or we are back to the bug
-         * this change fixes. [COMPACT_IDLE_TIMEOUT_MS] is the working limit;
-         * this one should effectively never fire.
-         */
-        internal const val COMPACT_MAX_TOTAL_MS = 900_000L
-
-        /**
-         * [T-compact-idle-timeout] Raised when a compaction stream goes quiet
-         * for longer than [COMPACT_IDLE_TIMEOUT_MS].
-         *
-         * Deliberately NOT a TimeoutCancellationException. That type extends
-         * CancellationException, which coroutines read as "this scope is
-         * shutting down normally" — thrown from inside a flow it is
-         * indistinguishable from the user pressing Cancel, and the splitter's
-         * `catch (e: CancellationException) { throw e }` arm would re-throw it
-         * before any retry logic saw it, while the outer handler would report a
-         * silent cancel instead of a timeout. As a plain Exception it travels
-         * the normal error path and can be classified like any other failure.
-         */
-        internal class CompactIdleTimeoutException(message: String) : Exception(message)
-
-        /**
-         * Should a failed summary attempt be retried by splitting the input in
-         * half? Pure predicate, in the companion so it is testable without an
-         * Android-bound ViewModel; [isSegmentRetryableError] delegates here.
-         *
-         * Splitting only helps when the failure was caused by the SIZE of the
-         * request. Unclassified errors still split — an over-length refusal
-         * arrives as an untyped ProviderError on most providers, and a summary
-         * built from halves beats no summary — but the classes known to be
-         * size-independent are excluded, because for those a split turns one
-         * failure into up to 15 sequential slow calls. That amplification is
-         * what produced the 15-20 minute apparent hang.
-         */
-        /**
-         * [OpenMinis#377] Does this provider error say "I refuse this PARAMETER"
-         * rather than "this payload is too big"?
-         *
-         * Only ever used to STOP a retry, so it is deliberately conservative: any
-         * hint of an over-length problem disqualifies it, and an unrecognised
-         * message falls through to splitting as before.
-         */
-        internal fun looksLikeParameterRejection(error: LLMError.ProviderError): Boolean {
-            val msg = error.message?.lowercase() ?: return false
-            // Any whiff of a size problem → not ours, keep splitting.
-            val sizeMarkers = listOf(
-                "context_length", "context length", "too long", "too large",
-                "maximum context", "max_tokens", "token limit", "exceeds",
-                "reduce the length", "payload",
-            )
-            if (sizeMarkers.any { msg.contains(it) }) return false
-            // A named request parameter the endpoint will not accept. The reported
-            // case: "reasoning.effort: 'none' is not supported".
-            val paramMarkers = listOf(
-                "is not supported", "unsupported parameter", "unsupported value",
-                "invalid_request_error", "invalid parameter", "unrecognized request argument",
-                "does not support parameter", "extra_forbidden",
-            )
-            return paramMarkers.any { msg.contains(it) }
-        }
-
-        internal fun shouldSplitOnError(error: Throwable): Boolean {
-            if (error is CancellationException) return false
-            // [T-compact-idle-timeout] A stream that went silent proves nothing
-            // about payload size — the request was accepted and was streaming
-            // until the connection died. Splitting would issue two more calls
-            // into the same broken pipe and spend the call budget discovering
-            // that twice.
-            if (error is CompactIdleTimeoutException) return false
-            if (error is LLMError) {
-                return when (error) {
-                    // Never worth a smaller payload:
-                    //  - Cancelled: the user stopped it; retrying fights that.
-                    //  - NetworkError: never reached a model, size is irrelevant.
-                    //  - RateLimited (429): refusing on quota, not length —
-                    //    halving just doubles the rejected calls under backoff.
-                    //  - TransientError (5xx): server-side fault, payload
-                    //    independent; retrying smaller multiplies the outage.
-                    //  - InvalidApiKey: auth, not size.
-                    is LLMError.Cancelled,
-                    is LLMError.NetworkError,
-                    is LLMError.RateLimited,
-                    is LLMError.TransientError,
-                    is LLMError.InvalidApiKey,
-                    -> false
-                    // [OpenMinis#377] A 4xx that REJECTS THE REQUEST SHAPE cannot be
-                    // fixed by sending less of it. Reported as a compaction that halved
-                    // 963 → 481 → 240 → 120 messages and failed four times on one
-                    // unchanged parameter (`reasoning.effort:"none"` on a model that does
-                    // not accept it), spending the call budget and minutes of wall clock
-                    // before surfacing.
-                    //
-                    // NOT keyed on the status code alone, which was the first attempt and
-                    // is wrong: over-length refusals are ALSO HTTP 400
-                    // (`context_length_exceeded` on OpenAI, and the providers attach
-                    // `httpStatus = 400` to them), so a blanket 4xx block would disable
-                    // splitting for the exact case it exists to serve.
-                    //
-                    // Keyed instead on the two things that distinguish a parameter
-                    // rejection from a size rejection, both checked on the message:
-                    //  - it names a REQUEST PARAMETER as unsupported/invalid, and
-                    //  - it does NOT carry any of the over-length markers.
-                    // The negative half matters more than the positive one: this
-                    // function's history is that enumerating how each vendor words an
-                    // over-length refusal was provably incomplete (OpenMinis#133), so
-                    // anything that looks even slightly like a size problem keeps
-                    // splitting. The burden of proof stays on NOT retrying.
-                    is LLMError.ProviderError -> !looksLikeParameterRejection(error)
-                    else -> true
-                }
-            }
-            // Raw OkHttp/socket failures are the Android equivalent of iOS's
-            // NSURLErrorDomain bail-out: offline / DNS / TLS / timeout, all
-            // payload-size independent.
-            if (error is java.io.IOException) return false
-            return true
-        }
 
         /**
          * [T-android-append-to-input-eats-draft] Join the composer's current
@@ -3299,80 +3135,17 @@ class ChatViewModel(
             appendSystemInfo("Nothing to compact — the session is empty.", "compact")
             return
         }
-        // ─── v2 unified anchor model ───────────────────────────────────
-        //
-        // anchor = last active agentHistory entry. The compacted range is
-        // `[prev marker anchor + 1, anchor]` (or `[0, anchor]` if no prev),
-        // so each compact "extends" the latest summary forward to cover all
-        // new turns. effectiveAgentHistory then re-injects the LAST N
-        // user-text turns LEADING UP TO the anchor as fresh context, so the
-        // model still sees recent verbatim content alongside the summary.
-        //
-        // Mirrors iOS post-Phase-v2: anchor = last active message, no
-        // "auto-keep tail" baked into the compacted range — that's a
-        // read-side decoration done by effectiveAgentHistory.
-        //
-        // anchor must be a persisted entry (have a non-null dbMessageId).
-        // The strict iOS check also requires id ∈ rawMessages DB, but DAO
-        // is suspend and we'd have to relocate range calculation into the
-        // launch below. As a compromise we do the dbMessageId-non-empty
-        // pre-check here (catches most stale-id cases at this stage), and
-        // do the rawDbIds-membership check inside the launch before the
-        // marker is written. Mirrors iOS AIChatViewModel+Compaction.swift:
-        // 644-657 "walk back through agentHistory looking for dbMessageId
-        // AND allRaw.contains" — split across two phases to honor suspend
-        // boundaries.
-        val anchorIdx: Int = if (anchorIdxOverride != null) {
-            // compactBefore() supplied a specific anchor — walk back from
-            // there to the closest entry with a dbMessageId (mirrors the
-            // tail-walk-back logic but bounded to [0..override]).
-            var i = anchorIdxOverride.coerceIn(0, history.lastIndex)
-            while (i >= 0 && history[i].dbMessageId.isNullOrEmpty()) i -= 1
-            i
-        } else {
-            // compactAll() — walk back from the tail to the closest
-            // persisted entry. iOS compactAll calls compactBefore with the
-            // last active UI message; we go through agentHistory directly
-            // since Android's agentHistory and UI list are tighter-coupled.
-            var i = history.lastIndex
-            while (i >= 0 && history[i].dbMessageId.isNullOrEmpty()) i -= 1
-            i
-        }
-        if (anchorIdx < 0) {
+        val range = compactionHistory.rangeToCompact(history, _cachedLatestMarker, anchorIdxOverride)
+        if (range == null) {
             appendSystemInfo("Cannot compact: no persisted messages yet.", "compact")
             return
         }
-
-        // Slice to compact = (prev marker's anchor + 1) … anchorIdx inclusive.
-        // For v2 prev markers, lastCompactedMessageId IS the prev anchor —
-        // start at prevIdx + 1. For v1 prev markers, firstKeptMessageId points
-        // at "first kept" — start AT prevIdx (it was exclusive on right edge).
-        val prev = _cachedLatestMarker
-        val effectiveStartIdx: Int = if (prev == null) {
-            0
-        } else {
-            val prevAnchorOrFirstKept: String? = if (prev.version >= 2) {
-                prev.lastCompactedMessageId?.takeIf { it.isNotEmpty() }
-            } else {
-                prev.firstKeptMessageId?.takeIf { it.isNotEmpty() }
-                    ?: prev.boundaryMessageId?.takeIf { it.isNotEmpty() }
-            }
-            val prevIdx = prevAnchorOrFirstKept?.let { id ->
-                history.indexOfFirst { it.dbMessageId == id }
-            } ?: -1
-            if (prevIdx < 0) 0   // prev anchor not in current history — restart from top
-            else if (prev.version >= 2) prevIdx + 1
-            else prevIdx
-        }
-        if (effectiveStartIdx > anchorIdx) {
+        if (range.isEmpty()) {
             appendSystemInfo("Already compacted up to this point.", "compact")
             return
         }
-        val toCompact = history.subList(effectiveStartIdx, anchorIdx + 1)
-        if (toCompact.isEmpty()) {
-            appendSystemInfo("Nothing to compact.", "compact")
-            return
-        }
+        val anchorIdx = range.last
+        val toCompact = history.subList(range.first, anchorIdx + 1)
         // Past every precondition — from here the launch below owns the
         // onFinished callback.
         markStarted()
@@ -3953,6 +3726,12 @@ class ChatViewModel(
      * marker had already replaced; that's what made follow-up turns appear
      * to lose continuity (the model got confused by the dual representation).
      */
+    private fun auditOutgoingPayload(messages: List<LLMMessage>): List<LLMMessage> =
+        RequestPayloadRecovery.auditOutgoingPayload(messages, effectiveContextWindowTokens() ?: 0)
+
+    private fun offloadLargestPartForOverflow(): Boolean =
+        RequestPayloadRecovery.offloadLargestPartForOverflow(context, activeSessionId, agentHistory)
+
     /**
      * Apply the request-level image-byte budget to a fully-resolved
      * message list before handing it to a provider. Images that don't
@@ -3970,176 +3749,6 @@ class ChatViewModel(
      * Emits a one-shot [requestBudgetEvent] for the UI Snackbar so the
      * user knows older images were compacted into placeholders.
      */
-    /**
-     * [T-android-payload-size-audit] (GH#352) Report parts whose serialized
-     * size disagrees violently with what the token estimator thinks they cost.
-     *
-     * OBSERVE-ONLY on purpose. It returns [messages] untouched and never edits
-     * history: the root cause of the field report is not confirmed to be in
-     * this app (every image emit site uses a structured `image_url` /
-     * `input_image` block — see OpenAIProvider), so silently rewriting a user's
-     * conversation on a heuristic would risk breaking working sessions to fix a
-     * problem we cannot yet point at. What the app demonstrably lacked was any
-     * way to NOTICE the disagreement, and that is what this adds.
-     *
-     * The log line names the message, part kind, tool id, byte size, estimated
-     * tokens and the ratio, so the next report can be diagnosed from a log
-     * instead of needing a session export the reporter could not produce.
-     *
-     * When a part is big enough to exhaust the window on its own, the line is
-     * escalated and points at the self-heal path, which is where an actual
-     * mutation happens — and only after the provider has confirmed the overflow.
-     */
-    private fun auditOutgoingPayload(messages: List<LLMMessage>): List<LLMMessage> {
-        val window = effectiveContextWindowTokens() ?: 0
-        for ((msgIdx, msg) in messages.withIndex()) {
-            for (part in msg.contentParts) {
-                val (bytes, estTokens, kind, id) = when (part) {
-                    is AgentContentPart.ImageData ->
-                        // Base64 is what actually leaves the device, so measure
-                        // that, not the raw byte count.
-                        Quad(base64Size(part.data.size), BPETokenizer.countImageTokens(part.data), "image", null)
-                    is AgentContentPart.ToolResult -> {
-                        val imgBytes = part.imageData?.size ?: 0
-                        Quad(
-                            part.content.length + base64Size(imgBytes),
-                            BPETokenizer.countTokens(part.content) +
-                                (part.imageData?.let { BPETokenizer.countImageTokens(it) } ?: 0),
-                            "tool_result",
-                            part.id,
-                        )
-                    }
-                    is AgentContentPart.Text ->
-                        Quad(part.text.length, BPETokenizer.countTokens(part.text), "text", null)
-                    is AgentContentPart.ToolUse -> {
-                        val raw = part.input.toString()
-                        Quad(raw.length, BPETokenizer.countTokens(raw), "tool_use", part.id)
-                    }
-                }
-                val finding = PayloadSizeAudit.audit(bytes, estTokens, window)
-                if (!finding.suspicious && !finding.dangerous) continue
-                AppLogger.warning(
-                    TAG,
-                    "[PayloadAudit] GH#352 oversized part msgIdx=$msgIdx role=${msg.role} " +
-                        "kind=$kind id=${id ?: "-"} bytes=${finding.bytes} " +
-                        "estTokens=${finding.estimatedTokens} bytesPerToken=${finding.bytesPerToken} " +
-                        "window=$window suspicious=${finding.suspicious} dangerous=${finding.dangerous}" +
-                        if (finding.dangerous) {
-                            " — this part alone could exhaust the window if measured as text; " +
-                                "if the provider now 400s on context length the self-heal path " +
-                                "([T-android-context-overflow-selfheal]) will offload it."
-                        } else "",
-                )
-            }
-        }
-        return messages
-    }
-
-    /**
-     * [T-android-context-overflow-selfheal] (GH#352) Offload the single largest
-     * offloadable part in history, to unwedge a session the provider has just
-     * refused for length. Returns whether anything was offloaded.
-     *
-     * Reuses the ordinary offload machinery rather than inventing a second one:
-     * bytes go to `offloads/tools/`, the part is replaced by the same
-     * `[CONTEXT OFFLOADED] …` stub the regular path writes, and the model can
-     * fetch it back with `file_read`. Nothing is deleted.
-     *
-     * Scope is deliberately minimal — ONE part, the biggest:
-     *
-     *  - The failure this addresses is one part that dwarfs the rest (a 1 MB
-     *    image measured as text is ~960k tokens against a 1M window), so
-     *    removing the largest is usually sufficient and is the least the app
-     *    can do while still unblocking the turn.
-     *  - Stripping more, or looping until the request fits, would quietly
-     *    dismantle a conversation on the strength of an error string. If one
-     *    part is not enough the error surfaces, which is the honest outcome.
-     *  - The last 4 messages are protected exactly as in the normal offload
-     *    scan: the model needs the current turn verbatim to make sense of it.
-     */
-    private fun offloadLargestPartForOverflow(): Boolean {
-        val sid = activeSessionId
-        if (sid.isEmpty()) return false
-        val protectedCount = minOf(4, agentHistory.size)
-        val upper = agentHistory.size - protectedCount
-        if (upper <= 0) return false
-
-        var bestMsg = -1
-        var bestPart = -1
-        var bestBytes = 0
-        var bestKind = ""
-        for (msgIdx in 0 until upper) {
-            for ((partIdx, part) in agentHistory[msgIdx].contentParts.withIndex()) {
-                // Already-offloaded parts are stubs; re-offloading gains nothing.
-                val (bytes, kind) = when (part) {
-                    is AgentContentPart.ImageData -> base64Size(part.data.size) to "image"
-                    is AgentContentPart.ToolResult -> {
-                        // Shared predicate: a bare startsWith on the legacy
-                        // marker silently stopped matching the new stub format.
-                        if (ContextOffload.isOffloadPlaceholder(part.content)) continue
-                        (part.content.length + base64Size(part.imageData?.size ?: 0)) to "tool_result"
-                    }
-                    else -> continue
-                }
-                if (bytes > bestBytes) {
-                    bestBytes = bytes; bestMsg = msgIdx; bestPart = partIdx; bestKind = kind
-                }
-            }
-        }
-        // Nothing worth moving — a history of small text parts cannot be the
-        // cause of an overflow this guard can fix.
-        if (bestMsg < 0 || bestBytes < PayloadSizeAudit.MIN_BYTES_TO_AUDIT) return false
-
-        val msg = agentHistory[bestMsg]
-        val parts = msg.contentParts.toMutableList()
-        val part = parts[bestPart]
-        val tokens = countPartTokens(part)
-        val linuxPath = when (part) {
-            is AgentContentPart.ImageData -> ContextOffload.offloadImage(
-                context, sid, part.data,
-                toolId = "overflow_${bestMsg}_$bestPart",
-                mimeType = part.mimeType,
-            )
-            is AgentContentPart.ToolResult -> {
-                val imgPath = part.imageData?.let { data ->
-                    ContextOffload.offloadImage(
-                        context, sid, data,
-                        toolId = part.id,
-                        mimeType = part.imageMimeType ?: "image/png",
-                    )
-                }
-                if (part.content.length >= PayloadSizeAudit.MIN_BYTES_TO_AUDIT) {
-                    ContextOffload.offloadContent(
-                        context, sid, part.content,
-                        toolId = part.id, toolName = part.name,
-                    )
-                } else imgPath ?: ""
-            }
-            else -> ""
-        }
-        if (linuxPath.isEmpty()) return false
-
-        val stub = ContextOffload.stub(tokens, bestBytes, linuxPath)
-        parts[bestPart] = when (part) {
-            is AgentContentPart.ToolResult ->
-                part.copy(content = stub, imageData = null, imageMimeType = null)
-            else -> AgentContentPart.Text(stub)
-        }
-        agentHistory[bestMsg] = msg.copy(contentParts = parts)
-        AppLogger.warning(
-            TAG,
-            "[OverflowSelfHeal] offloaded msgIdx=$bestMsg partIdx=$bestPart kind=$bestKind " +
-                "bytes=$bestBytes (~$tokens tokens) → $linuxPath",
-        )
-        return true
-    }
-
-    /** Base64 expands 3 bytes to 4; the wire size is what the audit cares about. */
-    private fun base64Size(rawBytes: Int): Int = if (rawBytes <= 0) 0 else (rawBytes + 2) / 3 * 4
-
-    /** Local 4-tuple so the audit's per-part extraction stays one expression. */
-    private data class Quad(val a: Int, val b: Int, val c: String, val d: String?)
-
     private fun applyRequestImageBudget(messages: List<LLMMessage>): List<LLMMessage> {
         val result = RequestImageBudget.apply(messages) {
             java.io.File(context.filesDir, "minis-sessions/$activeSessionId/attachments")
@@ -8818,21 +8427,6 @@ class ChatViewModel(
             }
         }
         return (totalChars / 3.5).toInt() + imageTokens
-    }
-
-    /**
-     * Approximate token count for a single agent content part. Used to rank
-     * offload candidates by size. Matches iOS `BPETokenizer.countPartTokens`
-     * — text uses BPE, images use the grid-cell heuristic.
-     */
-    private fun countPartTokens(part: AgentContentPart): Int = when (part) {
-        is AgentContentPart.Text -> BPETokenizer.countTokens(part.text)
-        is AgentContentPart.ToolUse -> BPETokenizer.countTokens(part.input.toString())
-        is AgentContentPart.ToolResult -> {
-            BPETokenizer.countTokens(part.content) +
-                (part.imageData?.let { BPETokenizer.countImageTokens(it) } ?: 0)
-        }
-        is AgentContentPart.ImageData -> BPETokenizer.countImageTokens(part.data)
     }
 
     /**

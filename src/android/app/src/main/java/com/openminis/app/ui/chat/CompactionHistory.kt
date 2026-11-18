@@ -17,6 +17,33 @@ internal class CompactionHistory {
 
     private val warmUpDropByMarker = mutableMapOf<String, Int>()
 
+    /** Inclusive range of newly compacted history, or null without a persisted anchor. */
+    fun rangeToCompact(
+        history: List<LLMMessage>,
+        previous: CompactMarkerEntity?,
+        anchorOverride: Int?,
+    ): IntRange? {
+        if (history.isEmpty()) return null
+        var anchor = anchorOverride?.coerceIn(0, history.lastIndex) ?: history.lastIndex
+        while (anchor >= 0 && history[anchor].dbMessageId.isNullOrEmpty()) anchor--
+        if (anchor < 0) return null
+
+        // V2 markers include their anchor. V1 stores the first retained message.
+        val previousId = if (previous != null && previous.version >= 2) {
+            previous.lastCompactedMessageId?.takeIf { it.isNotEmpty() }
+        } else {
+            previous?.firstKeptMessageId?.takeIf { it.isNotEmpty() }
+                ?: previous?.boundaryMessageId?.takeIf { it.isNotEmpty() }
+        }
+        val previousIndex = previousId?.let { id -> history.indexOfFirst { it.dbMessageId == id } } ?: -1
+        val start = when {
+            previousIndex < 0 -> 0
+            previous?.version?.let { it >= 2 } == true -> previousIndex + 1
+            else -> previousIndex
+        }
+        return start..anchor
+    }
+
     fun outbound(
         agentHistory: List<LLMMessage>,
         summary: String?,
