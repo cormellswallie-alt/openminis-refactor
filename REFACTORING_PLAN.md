@@ -36,6 +36,8 @@
 ---
 
 ### Phase 3：Agent 工具调度器与子 Agent 协调器解耦
+
+- 已接入 `ToolCallPrecheck`，集中处理参数修复、截断写入拒绝及必填参数校验。
 - **目标**：从 `ChatViewModel` 剥离约 **3,500 行** 工具执行与子任务编排代码。
 - **核心动作**：
   - 抽离 `ChatToolDispatcher`：将巨型 `when (toolName)` 工具分发、参数预检（Preflight Validation）、记忆读写记录、文件与沙箱执行桥接独立成可注入组件。

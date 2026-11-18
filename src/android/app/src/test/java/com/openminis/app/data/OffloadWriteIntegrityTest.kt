@@ -3,7 +3,7 @@ package com.openminis.app.data
 import com.openminis.app.data.model.AgentContentPart
 import com.openminis.app.data.model.AgentToolDefinition
 import com.openminis.app.data.model.AgentToolParam
-import com.openminis.app.provider.ToolJsonRepair
+import com.openminis.app.ui.chat.ToolCallPrecheck
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -31,9 +31,7 @@ import java.io.File
  *  3. The `[CONTEXT OFFLOADED]` stub replacing a historical file_write's
  *     `content` must never be what a later write puts on disk.
  *
- * The refusal lives in ChatViewModel's dispatch loop (needs a ViewModel); its
- * decision is ported here and driven by the REAL ToolJsonRepair, with a
- * source-grep drift guard.
+ * Truncated-argument cases exercise the same precheck used by tool dispatch.
  */
 class OffloadWriteIntegrityTest {
 
@@ -57,12 +55,6 @@ class OffloadWriteIntegrityTest {
     )
     private val tools = listOf(fileWrite, fileEdit, fileRead)
 
-    /** Port of the dispatch-loop decision (ChatViewModel ~L11075-11085). */
-    private fun refusesTruncatedWrite(name: String, repairs: List<String>): String? {
-        val tag = repairs.firstOrNull { it.startsWith("truncation+") } ?: return null
-        return if (name == "file_write" || name == "file_edit") tag else null
-    }
-
     /** The stream tail of a write whose `content` was cut by max_tokens. */
     private val cutWriteTail = "{\"tool_title\":\"Write notes\",\"path\":\"/var/minis/workspace/notes.md\",\"content\":\"# Notes\\nline 1\\nline 2"
 
@@ -71,34 +63,35 @@ class OffloadWriteIntegrityTest {
     @Test
     fun `a max_tokens-truncated file_write is repaired into valid JSON but refused`() {
         val args = JSONObject()
-        val repairs = ToolJsonRepair.repair("file_write", args, cutWriteTail, tools)
-        assertTrue("sanity: the repair DID make it parse (tags=$repairs)", repairs.any { it.startsWith("truncation+") })
+        val prepared = ToolCallPrecheck.prepare("file_write", args, cutWriteTail, tools)
+        assertNotNull(prepared.truncationTag)
         assertEquals("/var/minis/workspace/notes.md", args.getString("path"))
         assertTrue("repaired content is the half the model got out", args.getString("content").startsWith("# Notes"))
         // …which is exactly why it must not run.
-        val tag = refusesTruncatedWrite("file_write", repairs)
-        assertNotNull("file_write with a truncation repair must be refused", tag)
-        assertNotNull(refusesTruncatedWrite("file_edit", repairs))
+        val refusal = checkNotNull(prepared.truncatedWriteRefusal)
+        assertEquals(args.getString("path"), refusal.path)
+        assertTrue(refusal.modelMessage.contains(refusal.path))
+        assertNotNull(ToolCallPrecheck.prepare("file_edit", JSONObject(), cutWriteTail, tools).truncatedWriteRefusal)
     }
 
     @Test
     fun `the same truncation on a read-class tool is allowed to run`() {
         val args = JSONObject()
-        val repairs = ToolJsonRepair.repair("file_read", args, "{\"tool_title\":\"Read\",\"path\":\"/var/minis/workspace/a.txt", tools)
-        assertTrue(repairs.any { it.startsWith("truncation+") })
-        assertNull("reads keep repair-and-run", refusesTruncatedWrite("file_read", repairs))
-        assertNull(refusesTruncatedWrite("shell_execute", repairs))
+        val prepared = ToolCallPrecheck.prepare("file_read", args, "{\"tool_title\":\"Read\",\"path\":\"/var/minis/workspace/a.txt", tools)
+        assertNotNull(prepared.truncationTag)
+        assertNull(prepared.truncatedWriteRefusal)
     }
 
     @Test
     fun `a complete write with only a shape repair is not refused`() {
         // Fuzzy key rename / type coercion fix the SHAPE of complete args, not the value.
         val args = JSONObject().put("tool_title", "w").put("path", "/x").put("contnt", "full body")
-        val repairs = ToolJsonRepair.repair("file_write", args, null, tools)
-        assertTrue(repairs.any { it.startsWith("fuzzy:") })
-        assertNull(refusesTruncatedWrite("file_write", repairs))
-        val clean = ToolJsonRepair.repair("file_write", JSONObject().put("tool_title", "w").put("path", "/x").put("content", "b"), null, tools)
-        assertTrue(clean.isEmpty())
+        val prepared = ToolCallPrecheck.prepare("file_write", args, null, tools)
+        assertTrue(prepared.repairs.any { it.startsWith("fuzzy:") })
+        assertNull(prepared.truncationTag)
+        assertNull(prepared.truncatedWriteRefusal)
+        val cleanArgs = JSONObject().put("tool_title", "w").put("path", "/x").put("content", "b")
+        assertTrue(ToolCallPrecheck.prepare("file_write", cleanArgs, null, tools).repairs.isEmpty())
     }
 
     // ── 2. readback of an offloaded file is not offloaded again ────────────
@@ -153,11 +146,6 @@ class OffloadWriteIntegrityTest {
         assertEquals(content.toByteArray(Charsets.UTF_8).size.toLong(), reported)
         assertTrue("bytes differ from chars for non-ASCII content", reported != content.length.toLong())
         assertEquals("Wrote to /x/out.md ($reported bytes)", "Wrote to /x/out.md (${f.length()} bytes)")
-        // A refused truncated write leaves the target untouched.
-        val before = f.readBytes()
-        val repairs = ToolJsonRepair.repair("file_write", JSONObject(), cutWriteTail, tools)
-        if (refusesTruncatedWrite("file_write", repairs) != null) { /* nothing written */ }
-        assertTrue(f.readBytes().contentEquals(before))
     }
 
     // ── 3b. both placeholder formats are refused ───────────────────────────

@@ -9,11 +9,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * [T-preflight-empty-string-allowed] Tests for `preflightValidateToolCall`.
- *
- * Mirrors iOS MinisTests/ToolPreflightTests.swift. The function is pure and
- * lives in ChatViewModel's companion precisely so these can run without
- * constructing a ChatViewModel.
+ * Exercises the production tool precheck, including valid empty file edits.
  */
 class ToolPreflightTest {
 
@@ -47,7 +43,7 @@ class ToolPreflightTest {
     private val tools = listOf(fileEdit, shellExecute, withToolTitle)
 
     private fun validate(name: String, json: String): String? =
-        ChatViewModel.preflightValidateToolCallImpl(name, JSONObject(json), tools)
+        ToolCallPrecheck.validate(name, JSONObject(json), tools)
 
     // ── The reported bug: empty new_string is the documented delete form ──
 
@@ -117,11 +113,11 @@ class ToolPreflightTest {
 
     @Test
     fun `the whitelist helper is scoped to the exact tool and field`() {
-        assertTrue(ChatViewModel.preflightEmptyStringAllowed("file_edit", "new_string"))
-        assertTrue(!ChatViewModel.preflightEmptyStringAllowed("file_edit", "old_string"))
+        assertTrue(ToolCallPrecheck.emptyStringAllowed("file_edit", "new_string"))
+        assertTrue(!ToolCallPrecheck.emptyStringAllowed("file_edit", "old_string"))
         // Another tool must not inherit file_edit's allowance.
-        assertTrue(!ChatViewModel.preflightEmptyStringAllowed("file_write", "new_string"))
-        assertTrue(!ChatViewModel.preflightEmptyStringAllowed("shell_execute", "command"))
+        assertTrue(!ToolCallPrecheck.emptyStringAllowed("file_write", "new_string"))
+        assertTrue(!ToolCallPrecheck.emptyStringAllowed("shell_execute", "command"))
     }
 
     // ── JSON null counts as missing ──
@@ -198,7 +194,7 @@ class ToolPreflightTest {
             required = listOf("count"),
         )
         assertNull(
-            ChatViewModel.preflightValidateToolCallImpl(
+            ToolCallPrecheck.validate(
                 "numeric_tool", JSONObject("""{"count":0}"""), listOf(numeric),
             ),
         )
