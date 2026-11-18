@@ -33,7 +33,7 @@ class CrossPlatformBackupRestoreUnitTest {
                 {
                   "uuid": "entry-1",
                   "providerInstanceId": "inst-1",
-                  "baseModel": {
+                  "model": {
                     "id": "test-gpt-custom",
                     "displayName": "Test GPT Custom",
                     "provider": "openAI"
