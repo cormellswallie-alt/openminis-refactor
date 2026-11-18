@@ -28,8 +28,6 @@ class SessionExporterTest {
     private fun text(v: String) = """{"type":"text","value":${JSONObject.quote(v)}}"""
     private fun toolUse(name: String, desc: String?) =
         """{"type":"toolUse","value":{"toolUseId":"t1","name":"$name","input":"{\"cmd\":\"ls\"}"${desc?.let { ",\"description\":\"$it\"" } ?: ""}}}"""
-    private fun toolUse(name: String, desc: String?) =
-        """{"type":"toolUse","value":{"toolUseId":"t1","name":"$name","input":"{\"cmd\":\"ls\"}"${desc?.let { ",\"description\":\"$it\"" } ?: ""}}}"""
     private fun toolResult(output: String, ok: Boolean = true) =
         """{"type":"toolResult","value":{"toolUseId":"t1","output":${JSONObject.quote(output)},"success":$ok}}"""
     private fun media(mime: String) =

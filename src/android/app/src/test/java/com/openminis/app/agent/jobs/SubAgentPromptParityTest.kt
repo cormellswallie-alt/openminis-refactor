@@ -108,7 +108,7 @@ class SubAgentPromptParityTest {
 
     @Test
     fun `an empty roster contributes nothing to the prompt`() {
-        assertEquals("", HelperRunner.subAgentRosterSection(emptyList()) { null })
+        assertEquals("", HelperRunner.subAgentRosterSection(emptyList(), groupName = { null }))
     }
 
     @Test
@@ -125,7 +125,7 @@ class SubAgentPromptParityTest {
                 modelGroupId = "grp-9", isBuiltIn = false, sortOrder = 1,
             ),
         )
-        val s = HelperRunner.subAgentRosterSection(roster) { if (it == "grp-9") "Fast Group" else null }
+        val s = HelperRunner.subAgentRosterSection(roster, groupName = { if (it == "grp-9") "Fast Group" else null })
 
         assertTrue(s.startsWith("Available sub agents (pass the name as ${SubAgentDefinition.TOOL_NAME}.agent):"))
         // An unpinned agent is the model's choice to make; a pinned one is not.
@@ -148,7 +148,7 @@ class SubAgentPromptParityTest {
                 instructions = "", modelGroupId = null, isBuiltIn = false, sortOrder = 0,
             ),
         )
-        val s = HelperRunner.subAgentRosterSection(roster) { null }
+        val s = HelperRunner.subAgentRosterSection(roster, groupName = { null })
         assertFalse("must not emit more than the bound", s.contains("d".repeat(max + 1)))
         assertTrue(s.contains("d".repeat(max)))
     }

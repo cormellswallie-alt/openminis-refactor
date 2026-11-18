@@ -213,7 +213,7 @@ class SubAgentToolSchemaTest {
                 modelGroupId = "grp", sortOrder = 2,
             ),
         )
-        val out = HelperRunner.subAgentRosterSection(roster) { if (it == "grp") "Strong Models" else null }
+        val out = HelperRunner.subAgentRosterSection(roster, groupName = { if (it == "grp") "Strong Models" else null })
         assertTrue(out.contains("subagent_task.agent"))
         assertTrue("an Auto agent invites model_choice", out.contains("Auto — you choose with model_choice"))
         assertTrue("a pinned agent names its group", out.contains("fixed — Strong Models"))
@@ -223,7 +223,7 @@ class SubAgentToolSchemaTest {
 
     @Test
     fun `an empty roster produces no section`() {
-        assertEquals("", HelperRunner.subAgentRosterSection(emptyList()) { null })
+        assertEquals("", HelperRunner.subAgentRosterSection(emptyList(), groupName = { null }))
     }
 
     @Test
@@ -231,7 +231,7 @@ class SubAgentToolSchemaTest {
         val roster = listOf(
             SubAgentDefinition(id = "b", name = "Reviewer", description = "d", modelGroupId = "gone"),
         )
-        val out = HelperRunner.subAgentRosterSection(roster) { null }
+        val out = HelperRunner.subAgentRosterSection(roster, groupName = { null })
         assertTrue(out.contains("Auto — you choose with model_choice"))
         assertFalse(out.contains("fixed —"))
     }

@@ -25,11 +25,6 @@ class BubbleRowLocatorTest {
     private val imageOnly = """[{"type":"mediaRef","value":{"path":"a.jpg","mime":"image/jpeg"}}]"""
     private val toolResult = """[{"type":"toolResult","value":{"id":"t1","content":"ok"}}]"""
 
-    private val imageOnly = """[{"type":"mediaRef","value":{"path":"a.jpg","mime":"image/jpeg"}}]"""
-    private val toolResult = """[{"type":"toolResult","value":{"id":"t1","content":"ok"}}]"""
-
-    private val toolResult = """[{"type":"toolResult","value":{"id":"t1","content":"ok"}}]"""
-
     private fun user(id: String, content: String = "x") = ChatMessage(id = id, role = "user", content = content)
     private fun assistant(id: String) = ChatMessage(id = id, role = "assistant", content = "reply")
 

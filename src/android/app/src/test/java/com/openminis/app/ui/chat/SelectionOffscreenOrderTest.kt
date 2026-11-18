@@ -26,9 +26,6 @@ class SelectionOffscreenOrderTest {
     private val m1 = "M1"
     private val m2 = "M2"
     private val a = md(m1, "p1", 0)
-    private val m2 = "M2"
-    private val a = md(m1, "p1", 0)
-    private val a = md(m1, "p1", 0)
     private val b = md(m1, "p1", 1)
     private val c = md(m1, "p1", 2)
     private val d = md(m2, "q1", 0)

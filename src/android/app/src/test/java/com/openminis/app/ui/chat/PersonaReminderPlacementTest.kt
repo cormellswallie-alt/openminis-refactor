@@ -37,7 +37,6 @@ class PersonaReminderPlacementTest {
     private val personaReminderRearmTokens = 100_000
     private val personaReminderMarker = "[Minis runtime reminder]"
     private val personaReminderScanTail = 40
-    private val personaReminderScanTail = 40
 
     private class Session(val agentHistory: MutableList<LLMMessage>) {
         var lastPersonaReminderContextTokens: Int? = null

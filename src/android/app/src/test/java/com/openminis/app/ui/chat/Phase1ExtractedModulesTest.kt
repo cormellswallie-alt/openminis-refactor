@@ -29,7 +29,7 @@ import org.junit.Test
 class Phase1ExtractedModulesTest {
 
     private class FakeNonOAuthProvider : LLMProvider {
-        override var model: LLMModel = LLMModel.gpt54
+        override var model: LLMModel = LLMModel.gpt5_4
         override suspend fun sendMessage(
             messages: List<LLMMessage>,
             systemPrompt: String?,
@@ -39,7 +39,7 @@ class Phase1ExtractedModulesTest {
             thinkingLevel: ThinkingLevel,
         ): LLMResponse = error("unused")
 
-        override fun streamMessage(
+        override fun sendMessageStream(
             messages: List<LLMMessage>,
             systemPrompt: String?,
             tools: List<AgentToolDefinition>?,
@@ -104,7 +104,7 @@ class Phase1ExtractedModulesTest {
                 sessionId = "s1",
                 role = "user",
                 partsJson = """[{"type":"text","value":"Hello\n<system-reminder>internal note</system-reminder>"}]""",
-                createdAt = "2026-11-18T00:00:00Z",
+                createdAt = 1000L,
                 sortOrder = 0,
             ),
             MessageEntity(
@@ -112,7 +112,7 @@ class Phase1ExtractedModulesTest {
                 sessionId = "s1",
                 role = "assistant",
                 partsJson = """[{"type":"toolUse","value":{"toolUseId":"t1","name":"file_read","input":"{\"path\":\"/tmp/a\"}","description":"Read file"}}]""",
-                createdAt = "2026-11-18T00:00:01Z",
+                createdAt = 1001L,
                 sortOrder = 1,
             ),
             MessageEntity(
@@ -120,7 +120,7 @@ class Phase1ExtractedModulesTest {
                 sessionId = "s1",
                 role = "user",
                 partsJson = """[{"type":"toolResult","value":{"toolUseId":"t1","name":"file_read","output":"file body","success":true}}]""",
-                createdAt = "2026-11-18T00:00:02Z",
+                createdAt = 1002L,
                 sortOrder = 2,
             ),
             MessageEntity(
@@ -128,7 +128,7 @@ class Phase1ExtractedModulesTest {
                 sessionId = "s1",
                 role = "assistant",
                 partsJson = """[{"type":"text","value":"Done reading."}]""",
-                createdAt = "2026-11-18T00:00:03Z",
+                createdAt = 1003L,
                 sortOrder = 3,
             ),
         )
@@ -142,7 +142,7 @@ class Phase1ExtractedModulesTest {
         assertNotNull(toolBlocks)
         val callBlock = toolBlocks!!.first { it.kind == "tool_use" }
         assertEquals("file body", callBlock.content)
-        assertFalse(callBlock.isRunning)
+        assertEquals(ToolBlockStatus.COMPLETED, callBlock.toolStatus)
     }
 
     @Test

@@ -32,12 +32,7 @@ class ErrorPersistCurrentTurnTest {
     private val toolResult =
         """[{"type":"toolResult","value":{"toolUseId":"t1","name":"shell","output":"ok","success":true,""" +
             """"snapshot":{"type":"text","text":"ok"}}}]"""
-    private val toolResult =
-        """[{"type":"toolResult","value":{"toolUseId":"t1","name":"shell","output":"ok","success":true,""" +
-            """"snapshot":{"type":"text","text":"ok"}}}]"""
     private val assistantText = """[{"type":"text","value":"reply"}]"""
-    private val assistantTool =
-        """[{"type":"toolUse","value":{"toolUseId":"t1","name":"shell","input":"{}"}}]"""
     private val assistantTool =
         """[{"type":"toolUse","value":{"toolUseId":"t1","name":"shell","input":"{}"}}]"""
 

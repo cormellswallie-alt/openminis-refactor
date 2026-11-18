@@ -54,7 +54,11 @@ class BackupSubAgentsTest {
 
     @Test
     fun `older Android spelling and fractional dates are accepted too`() {
-        val r = BackupSubAgentRecord("a", "x", "", "", null, 0, "2026-09-28T12:00:00.123+08:00", "HIGH")
+        val r = BackupSubAgentRecord(
+            id = "a", name = "x", subAgentDescription = "", instructions = "",
+            modelGroupId = null, sortOrder = 0, updatedAt = "2026-09-28T12:00:00.123+08:00",
+            thinkingLevelOverride = "HIGH",
+        )
         val d = BackupSubAgentMapping.fromRecord(r)!!
         assertEquals(ThinkingLevel.HIGH, d.thinkingLevelOverride)
         assertEquals(java.time.OffsetDateTime.parse("2026-09-28T12:00:00.123+08:00").toInstant().toEpochMilli(), d.updatedAt)
@@ -89,7 +93,14 @@ class BackupSubAgentsTest {
     fun `the built-in is never exported nor restored`() {
         assertEquals(listOf("c"), BackupSubAgentMapping.exportable(listOf(builtIn, def("c", "custom"))).map { it.id })
         assertNull(BackupSubAgentMapping.fromRecord(BackupSubAgentMapping.toRecord(builtIn)))
-        assertNull(BackupSubAgentMapping.fromRecord(BackupSubAgentRecord("x", " ", "", "", null, 0, "2026-01-01T00:00:00Z")))
+        assertNull(
+            BackupSubAgentMapping.fromRecord(
+                BackupSubAgentRecord(
+                    id = "x", name = " ", subAgentDescription = "", instructions = "",
+                    modelGroupId = null, sortOrder = 0, updatedAt = "2026-01-01T00:00:00Z",
+                ),
+            ),
+        )
     }
 
     // ── Merge rules (iOS importSubAgents / SubAgentRoster.merge) ────────────

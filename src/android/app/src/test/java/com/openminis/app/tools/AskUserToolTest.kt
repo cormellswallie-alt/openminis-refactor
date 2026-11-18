@@ -1,23 +1,21 @@
 package com.openminis.app.tools
 
-import org.json.JSONObject
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
  * Unit tests for [AskUserTool] ("Model Questionnaire") schema serialization,
- * tolerant input parsing, result round-tripping, and system prompt integration.
+ * tolerant input parsing, and result round-tripping.
  */
 class AskUserToolTest {
 
     @Test
-    fun `definition serializes nested questions array for OpenAI Anthropic and Gemini`() {
-        val openAiJson = JSONObject(AskUserTool.definition.toJson())
-        assertEquals("ask_user", openAiJson.getString("name"))
-        val props = openAiJson.getJSONObject("input_schema").getJSONObject("properties")
+    fun `definition serializes nested questions array for Anthropic OpenAI and Gemini`() {
+        val anthropicJson = AskUserTool.definition.toAnthropicJson()
+        assertEquals("ask_user", anthropicJson.getString("name"))
+        val props = anthropicJson.getJSONObject("input_schema").getJSONObject("properties")
         val questionsProp = props.getJSONObject("questions")
         assertEquals("array", questionsProp.getString("type"))
         val itemProps = questionsProp.getJSONObject("items").getJSONObject("properties")
@@ -25,7 +23,7 @@ class AskUserToolTest {
         assertTrue(itemProps.has("type"))
         assertTrue(itemProps.has("options"))
 
-        val geminiJson = JSONObject(AskUserTool.definition.toGeminiJson())
+        val geminiJson = AskUserTool.definition.toGeminiJson()
         assertEquals("ask_user", geminiJson.getString("name"))
         val geminiQuestions = geminiJson
             .getJSONObject("parameters")
@@ -42,7 +40,7 @@ class AskUserToolTest {
     fun `parseSpec handles structured single multi and text questions`() {
         val raw = """
             {
-              "title": "Project Setup",
+              "tool_title": "Project Setup",
               "questions": [
                 {
                   "id": "framework",
@@ -68,10 +66,10 @@ class AskUserToolTest {
 
         val spec = AskUserTool.parseSpec(raw)
         assertNotNull(spec)
-        assertEquals("Project Setup", spec!!.title)
+        assertEquals("Project Setup", spec!!.toolTitle)
         assertEquals(3, spec.questions.size)
         assertEquals(AskUserTool.QuestionKind.SINGLE_SELECT, spec.questions[0].kind)
-        assertEquals(listOf("Compose", "Views"), spec.questions[0].options)
+        assertEquals(listOf("Compose", "Views"), spec.questions[0].options.map { it.label })
         assertEquals(AskUserTool.QuestionKind.MULTI_SELECT, spec.questions[1].kind)
         assertEquals(AskUserTool.QuestionKind.TEXT, spec.questions[2].kind)
         assertEquals("com.example.app", spec.questions[2].placeholder)
@@ -82,11 +80,10 @@ class AskUserToolTest {
         val result = AskUserTool.QuestionnaireResult(
             status = "answered",
             answers = listOf(
-                AskUserTool.AnswerEntry(
+                AskUserTool.QuestionAnswer(
                     id = "framework",
                     question = "Which framework should we use?",
                     selected = listOf("Compose"),
-                    text = "Compose",
                 ),
             ),
         )
@@ -95,6 +92,6 @@ class AskUserToolTest {
         assertNotNull(parsed)
         assertEquals("answered", parsed!!.status)
         assertEquals(1, parsed.answers.size)
-        assertEquals("Compose", parsed.answers[0].text)
+        assertEquals("Compose", parsed.answers[0].displaySummary)
     }
 }
