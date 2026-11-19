@@ -47,14 +47,13 @@ fun linkifyUrls(
         while (matcher.find()) {
             val start = matcher.start()
             val end = matcher.end()
+            // The platform pattern also matches bare hostnames.
+            val length = end - start
+            val hasHttpScheme = length >= 7 && text.startsWith("http://", start, ignoreCase = true)
+            val hasHttpsScheme = length >= 8 && text.startsWith("https://", start, ignoreCase = true)
+            if (!hasHttpScheme && !hasHttpsScheme) continue
+
             val candidate = text.substring(start, end)
-            // Patterns.WEB_URL matches bare hostnames too (e.g. "example.com");
-            // skip those to keep the heuristic close to iOS — only schemes
-            // we know in-app preview can render get the underline.
-            val lower = candidate.lowercase()
-            if (!lower.startsWith("http://") && !lower.startsWith("https://")) {
-                continue
-            }
             // Append non-link gap before this match.
             if (start > cursor) append(text, cursor, start)
             withLink(

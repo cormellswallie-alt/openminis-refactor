@@ -44,9 +44,6 @@ import com.openminis.app.ui.chat.ChatViewModel.Companion.TAG_STREAM
 import com.openminis.app.ui.chat.ChatViewModel.Companion.UNTITLED_SESSION_TITLE
 
 internal fun ChatViewModel.sendMessageImpl(text: String) {
-        // [T-android-stop-sibling-subagent] New work in this session lifts the
-        // stop: delegations from here on may drive the turn again.
-        com.openminis.app.agent.jobs.AgentJobRegistry.clearDelegationMute(activeSessionId)
         sendMessage(text, skipContextCheck = false, headless = false)
     }
 
@@ -94,13 +91,8 @@ internal fun ChatViewModel.submitPromptImpl(
         val trimmed = text.trim()
         // While streaming, enqueue instead of silently dropping (iOS: send vs enqueuePrompt).
         if (_isStreaming.value) {
-            // enqueuePrompt has its own blank/attachment guard and returns Unit;
-            // the queue length is the acceptance signal (iOS does the same).
-            val before = _promptQueue.value.size
-            // [T-p2-gentle-injection] A headless send is PROGRAMMATIC: it waits
-            // for the running loop to finish instead of interrupting it.
-            enqueuePrompt(text, if (headless) QueuedPromptOrigin.PROGRAMMATIC else QueuedPromptOrigin.USER, prefill)
-            return if (_promptQueue.value.size == before + 1) SubmitOutcome.Queued
+            val origin = if (headless) QueuedPromptOrigin.PROGRAMMATIC else QueuedPromptOrigin.USER
+            return if (enqueuePromptImpl(text, origin, prefill)) SubmitOutcome.Queued
             else SubmitOutcome.Rejected("enqueue_declined")
         }
         // T180: allow attachments-only sends (no caption). Mirrors iOS, where
@@ -981,7 +973,7 @@ internal fun ChatViewModel.cancelStreamImpl() {
         // instead of leaving them stuck as dashed bubbles waiting for a manual
         // long-press retry.
         val pending = _promptQueue.value
-        if (pending.isNotEmpty()) {
+        if (pending.isNotEmpty() || streamJob?.isCompleted == false) {
             AppLogger.info(TAG_STREAM, "cancel — ${pending.size} queued prompt(s) remain, restarting drain")
             resumeQueueAfterCancel()
         }
@@ -989,19 +981,19 @@ internal fun ChatViewModel.cancelStreamImpl() {
 
 /**
      * T189: spawn a fresh agent loop to drain whatever the user queued during
-     * the cancelled stream. 200ms delay matches iOS resumeQueueAfterCancel
-     * (Task.sleep(200_000_000)) — gives the cancelled streamJob's finally block
-     * room to release the concurrency slot + write back state. Race-guards on
-     * entry: empty queue (user withdrew) or already streaming (user manually
-     * retried) → noop return.
+     * the cancelled stream. Wait for its cleanup before inspecting the queue
+     * and starting another loop. The launch also lets a model picker finish
+     * rebinding the provider before the queued turn resolves it.
      *
      * Provider / systemPrompt / fallback resolution mirrors [sendMessage]
      * verbatim (incl. OAuth token refresh + Claude Code prefix), so a queued
      * prompt drain after cancel uses the same plumbing as a fresh send.
      */
     internal fun ChatViewModel.resumeQueueAfterCancel() {
+        val previousStream = streamJob
         viewModelScope.launch {
-            kotlinx.coroutines.delay(200)
+            kotlinx.coroutines.yield()
+            previousStream?.join()
             if (_promptQueue.value.isEmpty()) return@launch
             if (_isStreaming.value) return@launch
             // [T-android-compact-queued-drain] Defer while a compact is in
@@ -1055,6 +1047,9 @@ internal fun ChatViewModel.cancelStreamImpl() {
             }
 
             val systemPrompt = systemPromptFor(provider, buildSystemPrompt())
+            if (streamJob !== previousStream || _isStreaming.value || _isCompacting.value ||
+                _promptQueue.value.isEmpty()
+            ) return@launch
 
             // T145: claim the streaming flag synchronously before launching
             // the streamJob so a concurrent send/retry tap is rejected by the

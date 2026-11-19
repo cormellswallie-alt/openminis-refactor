@@ -7,6 +7,7 @@ import com.openminis.app.data.db.CompactMarkerEntity
 import com.openminis.app.data.db.FolderEntity
 import com.openminis.app.data.db.MessageEntity
 import com.openminis.app.logging.AppLogger
+import com.openminis.app.util.formatUtcTimestamp
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonElement
@@ -14,9 +15,6 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Locale
-import java.util.TimeZone
 import java.util.UUID
 
 /**
@@ -883,8 +881,6 @@ class BackupExporter(
         }
 
         /** ISO-8601 in UTC, matching Swift's `.iso8601` date encoding strategy. */
-        fun iso8601(millis: Long): String = SimpleDateFormat(
-            "yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US
-        ).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(millis)
+        fun iso8601(millis: Long): String = formatUtcTimestamp(millis)
     }
 }

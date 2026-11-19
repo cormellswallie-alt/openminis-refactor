@@ -15,12 +15,18 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.outlined.ChecklistRtl
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 
-internal val stepTimestampFormatter: java.text.SimpleDateFormat =
-    java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+private val stepTimeZone = TimeZone.getDefault()
+private val stepTimestampFormatter = ThreadLocal.withInitial {
+    SimpleDateFormat("HH:mm:ss", Locale.US).apply { timeZone = stepTimeZone }
+}
 
 internal fun formatStepTimestamp(epochMs: Long): String =
-    stepTimestampFormatter.format(java.util.Date(epochMs))
+    stepTimestampFormatter.get()!!.format(epochMs)
 
 internal fun formatStepDuration(seconds: Long, stillRunning: Boolean): String {
     val safe = seconds.coerceAtLeast(0L)
@@ -86,17 +92,8 @@ internal fun toolIconResFor(toolName: String?): Int = when (toolName) {
 
 @androidx.annotation.ColorInt
 internal fun toolAccentColorInt(toolName: String?): Int = when (toolName) {
-    "shell_execute" -> 0xFF10B981.toInt()
-    "file_read" -> 0xFF0EA5E9.toInt()
-    "file_write" -> 0xFF4F46E5.toInt()
-    "file_edit" -> 0xFFF59E0B.toInt()
-    "browser_use" -> 0xFF3B82F6.toInt()
-    "read_image" -> 0xFF9333EA.toInt()
-    "memory_write", "memory_get" -> 0xFFEC4899.toInt()
-    "web_search" -> 0xFF06B6D4.toInt()
-    "ask_user" -> 0xFF6366F1.toInt()
     "subagent_task", "delegate_task", "agent_status" -> 0xFF8B5CF6.toInt()
-    else -> 0xFF64748B.toInt()
+    else -> toolAccentColor(toolName.orEmpty()).toArgb()
 }
 
 internal fun friendlyToolTitleFor(toolName: String?): String =

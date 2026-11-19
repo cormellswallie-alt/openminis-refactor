@@ -7,6 +7,7 @@ import com.openminis.app.data.db.ChatSessionEntity
 import com.openminis.app.data.db.MessageEntity
 import com.openminis.app.data.repository.ChatRepository
 import com.openminis.app.logging.AppLogger
+import com.openminis.app.util.formatUtcTimestamp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -21,7 +22,6 @@ import java.text.DateFormat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.TimeZone
 import java.util.UUID
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -211,8 +211,8 @@ object SessionExporter {
             val header = JSONObject().apply {
                 put("id", session.id)
                 put("modelId", session.modelId)
-                put("createdAt", iso(session.createdAt))
-                put("updatedAt", iso(session.updatedAt))
+                put("createdAt", formatUtcTimestamp(session.createdAt))
+                put("updatedAt", formatUtcTimestamp(session.updatedAt))
                 session.title?.let { put("title", it) }
                 session.category?.let { put("category", it) }
             }
@@ -260,7 +260,7 @@ object SessionExporter {
                 val msg = JSONObject().apply {
                     put("role", row.role)
                     put("parts", clean)
-                    put("createdAt", iso(row.createdAt))
+                    put("createdAt", formatUtcTimestamp(row.createdAt))
                     row.tokenUsage?.let { raw -> runCatching { JSONObject(raw) }.getOrNull()?.let { put("tokenUsage", it) } }
                     row.reasoningContent?.takeIf { it.isNotEmpty() }?.let { put("reasoning", it) }
                 }
@@ -360,8 +360,4 @@ object SessionExporter {
         mime.startsWith("video/") -> copy(videos = videos + 1)
         else -> copy(otherAttachments = otherAttachments + 1)
     }
-
-    private fun iso(ms: Long): String =
-        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
-            .format(Date(ms))
 }

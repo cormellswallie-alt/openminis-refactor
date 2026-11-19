@@ -19,23 +19,9 @@ class MediaStore(context: Context) {
         sessionId: String,
         originalFileName: String? = null,
     ): MediaRef {
-        val id = UUID.randomUUID().toString()
-        val dateDir = SimpleDateFormat("yyyy/MM/dd", Locale.US).format(Date())
-        val originalExt = originalFileName
-            ?.substringAfterLast('.', "")
-            ?.takeIf { it.length in 1..10 && it.all { c -> c.isLetterOrDigit() } }
-            ?.lowercase()
-        val ext = originalExt ?: extensionFor(mimeType)
-        val relativePath = "$dateDir/$sessionId/$id.$ext"
-        val file = File(mediaBaseDir, relativePath)
-        file.parentFile?.mkdirs()
-        file.writeBytes(data)
-        return MediaRef(
-            id = id,
-            relativePath = relativePath,
-            mimeType = mimeType,
-            originalFileName = originalFileName,
-        )
+        val ref = newMediaRef(mimeType, sessionId, originalFileName)
+        prepareDestination(ref).writeBytes(data)
+        return ref
     }
 
     /**
@@ -54,25 +40,12 @@ class MediaStore(context: Context) {
         sessionId: String,
         originalFileName: String? = null,
     ): MediaRef? {
-        val id = UUID.randomUUID().toString()
-        val dateDir = SimpleDateFormat("yyyy/MM/dd", Locale.US).format(Date())
-        val originalExt = originalFileName
-            ?.substringAfterLast('.', "")
-            ?.takeIf { it.length in 1..10 && it.all { c -> c.isLetterOrDigit() } }
-            ?.lowercase()
-        val ext = originalExt ?: extensionFor(mimeType)
-        val relativePath = "$dateDir/$sessionId/$id.$ext"
-        val file = File(mediaBaseDir, relativePath)
-        file.parentFile?.mkdirs()
+        val ref = newMediaRef(mimeType, sessionId, originalFileName)
+        val file = prepareDestination(ref)
         return try {
-            file.outputStream().use { out -> source.copyTo(out) }
-            MediaRef(
-                id = id,
-                relativePath = relativePath,
-                mimeType = mimeType,
-                originalFileName = originalFileName,
-            )
-        } catch (t: Throwable) {
+            file.outputStream().use { source.copyTo(it) }
+            ref
+        } catch (_: Throwable) {
             runCatching { file.delete() }
             null
         }
@@ -90,6 +63,29 @@ class MediaStore(context: Context) {
             }
         }
     }
+
+    private fun newMediaRef(
+        mimeType: String,
+        sessionId: String,
+        originalFileName: String?,
+    ): MediaRef {
+        val id = UUID.randomUUID().toString()
+        val dateDir = SimpleDateFormat("yyyy/MM/dd", Locale.US).format(Date())
+        val extension = originalFileName
+            ?.substringAfterLast('.', "")
+            ?.takeIf { it.length in 1..10 && it.all(Char::isLetterOrDigit) }
+            ?.lowercase()
+            ?: extensionFor(mimeType)
+        return MediaRef(
+            id = id,
+            relativePath = "$dateDir/$sessionId/$id.$extension",
+            mimeType = mimeType,
+            originalFileName = originalFileName,
+        )
+    }
+
+    private fun prepareDestination(ref: MediaRef): File =
+        File(mediaBaseDir, ref.relativePath).also { it.parentFile?.mkdirs() }
 
     private fun extensionFor(mimeType: String): String {
         return when {

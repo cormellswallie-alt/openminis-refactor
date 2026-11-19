@@ -93,6 +93,7 @@ import coil.request.ImageRequest
 import com.openminis.app.ui.DisplayBitmapLimits.limitDisplaySize
 import com.openminis.app.sandbox.PRootKernel
 import com.openminis.app.ui.theme.ChatColors
+import com.openminis.app.util.formatMinuteSecondClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -800,11 +801,8 @@ private fun openMdMediaExternally(context: Context, file: File, mime: String) {
     }
 }
 
-private fun formatMdMediaMs(ms: Int): String {
-    if (ms <= 0) return "0:00"
-    val totalSec = ms / 1000
-    return "%d:%02d".format(totalSec / 60, totalSec % 60)
-}
+private fun formatMdMediaMs(ms: Int): String =
+    if (ms <= 0) "0:00" else formatMinuteSecondClock(ms)
 
 @Composable
 private fun RenderMdVideo(block: MdBlock.Video) {

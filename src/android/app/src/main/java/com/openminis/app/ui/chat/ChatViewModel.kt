@@ -2138,7 +2138,9 @@ class ChatViewModel(
         // [T-scheduled-tool-prefill] Runs as the first turn of whichever loop
         // eventually carries this prompt (drain or mid-loop injection).
         prefill: List<com.openminis.app.scheduled.PrefilledToolCall> = emptyList(),
-    ) = enqueuePromptImpl(text, origin, prefill)
+    ) {
+        enqueuePromptImpl(text, origin, prefill)
+    }
 
     /** Remove a queued prompt and its chat message by prompt id. */
     fun removeQueuedPrompt(promptId: String) = removeQueuedPromptImpl(promptId)

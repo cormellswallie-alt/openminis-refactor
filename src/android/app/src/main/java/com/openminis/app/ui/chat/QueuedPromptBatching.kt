@@ -25,6 +25,26 @@ package com.openminis.app.ui.chat
  */
 internal object QueuedPromptBatching {
 
+    fun enqueue(queue: List<QueuedPrompt>, prompt: QueuedPrompt): List<QueuedPrompt> {
+        val taskId = prompt.scheduledTaskId ?: return queue + prompt
+        return queue.filterNot { it.scheduledTaskId == taskId } + prompt
+    }
+
+    fun restoreClaim(
+        before: List<QueuedPrompt>,
+        current: List<QueuedPrompt>,
+        claimedIds: Set<String>,
+    ): List<QueuedPrompt> {
+        val currentIds = current.mapTo(mutableSetOf()) { it.id }
+        val currentTasks = current.mapNotNullTo(mutableSetOf()) { it.scheduledTaskId }
+        val previousIds = before.mapTo(mutableSetOf()) { it.id }
+        val retained = before.filter { prompt ->
+            prompt.id in currentIds ||
+                (prompt.id in claimedIds && prompt.scheduledTaskId !in currentTasks)
+        }
+        return retained + current.filterNot { it.id in previousIds }
+    }
+
     /** What to slip in at a tool boundary; empty = nothing may go in now. */
     fun nextInsertBatch(queue: List<QueuedPrompt>): List<QueuedPrompt> {
         val first = queue.firstOrNull { it.isScheduledFire || it.origin == QueuedPromptOrigin.USER }

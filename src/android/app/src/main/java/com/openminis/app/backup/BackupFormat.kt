@@ -1,5 +1,7 @@
 package com.openminis.app.backup
 
+import com.openminis.app.util.formatUtcTimestamp
+import com.openminis.app.util.parseUtcTimestamp
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -10,11 +12,9 @@ import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.longOrNull
-import java.text.SimpleDateFormat
-import java.util.Locale
-import java.util.TimeZone
 
 /**
  * [T-android-envvar-iso8601-wire] A `createdAt`-style timestamp that WRITES an
@@ -33,25 +33,13 @@ object Iso8601MillisSerializer : KSerializer<Long> {
     override val descriptor: SerialDescriptor =
         PrimitiveSerialDescriptor("Iso8601Millis", PrimitiveKind.STRING)
 
-    private fun fmt() = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
-        timeZone = TimeZone.getTimeZone("UTC")
-    }
-
     override fun serialize(encoder: Encoder, value: Long) {
-        encoder.encodeString(fmt().format(value))
+        encoder.encodeString(formatUtcTimestamp(value))
     }
 
-    override fun deserialize(decoder: Decoder): Long {
-        // Tolerate both a JSON string (ISO-8601) and a JSON number (legacy
-        // epoch millis). Use JsonDecoder to peek at the actual element type so
-        // an old numeric package doesn't throw.
-        val jd = decoder as? JsonDecoder
-            ?: return runCatching { fmt().parse(decoder.decodeString())?.time }.getOrNull() ?: 0L
-        val el = jd.decodeJsonElement()
-        val prim = el as? JsonPrimitive ?: return 0L
-        prim.longOrNull?.let { return it } // legacy numeric epoch millis
-        val s = prim.content
-        return runCatching { fmt().parse(s)?.time }.getOrNull() ?: 0L
+    override fun deserialize(decoder: Decoder): Long = when (decoder) {
+        is JsonDecoder -> decoder.decodeBackupTimestamp() ?: 0L
+        else -> runCatching { parseUtcTimestamp(decoder.decodeString()) }.getOrNull() ?: 0L
     }
 }
 
@@ -71,17 +59,15 @@ object Iso8601MillisNullableSerializer : KSerializer<Long?> {
     }
 
     override fun deserialize(decoder: Decoder): Long? {
-        val jd = decoder as? JsonDecoder ?: return Iso8601MillisSerializer.deserialize(decoder)
-        val el = jd.decodeJsonElement()
-        if (el is kotlinx.serialization.json.JsonNull) return null
-        val prim = el as? JsonPrimitive ?: return null
-        prim.longOrNull?.let { return it }
-        return runCatching {
-            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
-                .apply { timeZone = TimeZone.getTimeZone("UTC") }
-                .parse(prim.content)?.time
-        }.getOrNull()
+        if (decoder is JsonDecoder) return decoder.decodeBackupTimestamp()
+        return Iso8601MillisSerializer.deserialize(decoder)
     }
+}
+
+private fun JsonDecoder.decodeBackupTimestamp(): Long? {
+    val value = decodeJsonElement() as? JsonPrimitive ?: return null
+    if (value == JsonNull) return null
+    return value.longOrNull ?: runCatching { parseUtcTimestamp(value.content) }.getOrNull()
 }
 
 /**

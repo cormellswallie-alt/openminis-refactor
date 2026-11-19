@@ -65,6 +65,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.openminis.app.util.formatMinuteSecondClock
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import java.io.File
@@ -98,7 +99,7 @@ fun InlineAudioPlayer(
                 mediaPlayer.setDataSource(context, Uri.parse(filePath))
             }
             mediaPlayer.prepare()
-            duration = formatDuration(mediaPlayer.duration)
+            duration = formatMinuteSecondClock(mediaPlayer.duration)
 
             mediaPlayer.setOnCompletionListener {
                 isPlaying = false
@@ -124,7 +125,7 @@ fun InlineAudioPlayer(
                 val pos = mediaPlayer.currentPosition
                 val dur = mediaPlayer.duration.coerceAtLeast(1)
                 progress = pos.toFloat() / dur
-                position = formatDuration(pos)
+                position = formatMinuteSecondClock(pos)
             } catch (_: Exception) {}
             delay(250)
         }
@@ -288,13 +289,6 @@ fun InlineVideoPlayer(
                 .height(240.dp),
         )
     }
-}
-
-private fun formatDuration(ms: Int): String {
-    val totalSec = ms / 1000
-    val min = totalSec / 60
-    val sec = totalSec % 60
-    return "%d:%02d".format(min, sec)
 }
 
 /**
@@ -555,7 +549,7 @@ private fun FullscreenVideoContent(file: File, onDismiss: () -> Unit) {
                     )
                 }
                 Text(
-                    text = formatDuration(if (scrubbing) scrubTarget.roundToInt() else positionMs),
+                    text = formatMinuteSecondClock(if (scrubbing) scrubTarget.roundToInt() else positionMs),
                     color = Color.White.copy(alpha = 0.85f),
                     fontSize = 11.sp,
                     modifier = Modifier.padding(end = 8.dp),
@@ -584,7 +578,7 @@ private fun FullscreenVideoContent(file: File, onDismiss: () -> Unit) {
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    text = formatDuration(durationMs),
+                    text = formatMinuteSecondClock(durationMs),
                     color = Color.White.copy(alpha = 0.85f),
                     fontSize = 11.sp,
                     modifier = Modifier.padding(start = 8.dp),

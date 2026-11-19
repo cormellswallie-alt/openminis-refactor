@@ -540,7 +540,6 @@ class ChatRepository(internal val dao: ChatDao) {
         reasoningContent: String? = null,
         modelSnapshot: ModelAttributionSnapshot? = null,
     ): MessageEntity {
-        val sortOrder = dao.nextSortOrder(sessionId)
         val now = System.currentTimeMillis()
         // Cap the body so a runaway tool_result (e.g. a 13 MB browser_use
         // dump — Issue #17) cannot land an oversize blob into a Room row
@@ -560,14 +559,13 @@ class ChatRepository(internal val dao: ChatDao) {
             partsJson = capped,
             createdAt = now,
             tokenUsage = tokenUsage,
-            sortOrder = sortOrder,
+            sortOrder = 0, // Assigned by the append transaction.
             reasoningContent = reasoningContent,
             modelId = modelSnapshot?.modelId,
             modelDisplayName = modelSnapshot?.displayName,
             providerType = modelSnapshot?.providerTypeRaw,
             providerInstanceId = modelSnapshot?.providerInstanceId,
         )
-        dao.insertMessage(message)
         // [T-android-preview-flicker-toolresult] Only overwrite the preview
         // when this row actually yields one. A tool-result row is
         // `[{"type":"toolResult",…}]`, a shape extractTextPreview does not
@@ -580,13 +578,7 @@ class ChatRepository(internal val dao: ChatDao) {
         //
         // The row's own timestamp is still worth recording: it is what keeps
         // the session sorted as recently-active while a long tool chain runs.
-        val preview = extractTextPreview(capped)
-        if (preview != null) {
-            dao.updateLastMessage(sessionId, preview, now)
-        } else {
-            dao.touchSession(sessionId, now)
-        }
-        return message
+        return dao.appendMessageWithPreview(message, extractTextPreview(capped))
     }
 
     /**

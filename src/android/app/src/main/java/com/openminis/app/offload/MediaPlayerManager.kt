@@ -3,6 +3,7 @@ package com.openminis.app.offload
 import android.media.MediaPlayer
 import android.util.Log
 import com.openminis.app.sandbox.PRootKernel
+import com.openminis.app.util.formatMinuteSecondClock
 import java.io.File
 
 /**
@@ -89,7 +90,7 @@ object MediaPlayerManager {
             sessions[sessionId] = session
 
             val durationMs = player.duration
-            val durationStr = formatDuration(durationMs)
+            val durationStr = formatMinuteSecondClock(durationMs)
             "Playing '$filePath' (session=$sessionId, type=$mediaType, duration=$durationStr)"
         } catch (e: Exception) {
             Log.e(TAG, "Failed to play $filePath", e)
@@ -108,7 +109,7 @@ object MediaPlayerManager {
         return try {
             session.player.pause()
             session.state = PlayerState.PAUSED
-            val pos = formatDuration(session.player.currentPosition)
+            val pos = formatMinuteSecondClock(session.player.currentPosition)
             "Paused session '$sessionId' at $pos"
         } catch (e: Exception) {
             "Error: ${e.message}"
@@ -126,7 +127,7 @@ object MediaPlayerManager {
         return try {
             session.player.start()
             session.state = PlayerState.PLAYING
-            val pos = formatDuration(session.player.currentPosition)
+            val pos = formatMinuteSecondClock(session.player.currentPosition)
             "Resumed session '$sessionId' from $pos"
         } catch (e: Exception) {
             "Error: ${e.message}"
@@ -143,7 +144,7 @@ object MediaPlayerManager {
 
         return try {
             session.player.seekTo(positionMs)
-            val pos = formatDuration(positionMs)
+            val pos = formatMinuteSecondClock(positionMs)
             "Seeked session '$sessionId' to $pos"
         } catch (e: Exception) {
             "Error: ${e.message}"
@@ -167,12 +168,12 @@ object MediaPlayerManager {
             val pos = if (session.state == PlayerState.STOPPED || session.state == PlayerState.IDLE) {
                 "N/A"
             } else {
-                formatDuration(session.player.currentPosition)
+                formatMinuteSecondClock(session.player.currentPosition)
             }
             val dur = if (session.state == PlayerState.STOPPED || session.state == PlayerState.IDLE) {
                 "N/A"
             } else {
-                formatDuration(session.player.duration)
+                formatMinuteSecondClock(session.player.duration)
             }
             "Session '$sessionId': state=${session.state}, file=${session.filePath}, " +
                 "type=${session.mediaType}, position=$pos, duration=$dur"
@@ -203,12 +204,5 @@ object MediaPlayerManager {
         } catch (e: Exception) {
             Log.w(TAG, "Error releasing player: ${e.message}")
         }
-    }
-
-    private fun formatDuration(ms: Int): String {
-        val totalSec = ms / 1000
-        val min = totalSec / 60
-        val sec = totalSec % 60
-        return "%d:%02d".format(min, sec)
     }
 }

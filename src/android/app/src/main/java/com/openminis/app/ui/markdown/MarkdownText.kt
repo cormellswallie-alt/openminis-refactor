@@ -52,6 +52,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import coil.compose.AsyncImage
 import com.openminis.app.sandbox.PRootKernel
+import com.openminis.app.util.formatMinuteSecondClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -966,10 +967,5 @@ private fun MinisAudioBlock(block: MarkdownParser.Block.Audio) {
     }
 }
 
-private fun formatMs(ms: Int): String {
-    if (ms <= 0) return "0:00"
-    val totalSec = ms / 1000
-    val m = totalSec / 60
-    val s = totalSec % 60
-    return "%d:%02d".format(m, s)
-}
+private fun formatMs(ms: Int): String =
+    if (ms <= 0) "0:00" else formatMinuteSecondClock(ms)

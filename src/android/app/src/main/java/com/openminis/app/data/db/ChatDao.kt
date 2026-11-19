@@ -6,6 +6,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.RawQuery
+import androidx.room.Transaction
 import androidx.sqlite.db.SupportSQLiteQuery
 import kotlinx.coroutines.flow.Flow
 
@@ -252,6 +253,15 @@ interface ChatDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessage(message: MessageEntity)
+
+    @Transaction
+    suspend fun appendMessageWithPreview(message: MessageEntity, preview: String?): MessageEntity {
+        val row = message.copy(sortOrder = nextSortOrder(message.sessionId))
+        insertMessage(row)
+        if (preview == null) touchSession(row.sessionId, row.createdAt)
+        else updateLastMessage(row.sessionId, preview, row.createdAt)
+        return row
+    }
 
     /**
      * [T-android-voice-correction] User messages newer than [since] (epoch ms),

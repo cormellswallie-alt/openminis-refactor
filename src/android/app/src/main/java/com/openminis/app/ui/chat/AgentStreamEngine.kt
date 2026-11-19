@@ -221,33 +221,10 @@ internal class AgentStreamEngine(private val vm: ChatViewModel) {
             // if the user picked another model mid-turn, the fallback must not
             // overwrite that choice (class provider, top bar, persisted binding).
             var classProviderAtSend = vm.currentProvider
-            val remainingFallbacks = fallbackProviders.toMutableList()
-            // [T-android-switch-model-fallback-rebind] The strategy follows a
-            // mid-turn model switch, like the fallback queue (see where the switch
-            // is applied below).
+            var loopGroupId = _selectedGroupId.value
             var loopFallbackStrategy = fallbackStrategy
             val fallbackReasons = mutableListOf<String>()
-            // [T-android-fallback-chain-refill] `remainingFallbacks` is a ONE-SHOT
-            // queue, and it is declared here — outside the turn loop — so every
-            // turn of a multi-turn tool run shares it. A long run that spent its
-            // candidates on turn 1 therefore reached turn 5 with an empty queue and
-            // threw, even though the group still had perfectly usable members that
-            // had since recovered (a 503 blip on turn 1 does not make that model
-            // dead for the next ten minutes).
-            //
-            // The fix is to treat the chain as DERIVED state rather than a
-            // consumable: remember which entries have already failed *in the
-            // current failure streak*, and rebuild the candidate list from the live
-            // group each time a fallback is needed, minus that set.
-            //
-            // Termination is what the tried-set buys: an entry only ever enters it,
-            // and rebuilding always excludes it, so the streak can visit each group
-            // member at most once before the chain comes back empty and the error
-            // is thrown. The set is CLEARED on any successful turn, which is what
-            // makes turn 5 able to use a model that failed on turn 1 — a new
-            // failure streak starts from the full group.
-            val triedEntryIds = mutableSetOf<String>()
-            _activeEntryId.value?.let { triedEntryIds.add(it) }
+            val fallbackChain = ModelFallbackChain(_activeEntryId.value, fallbackProviders)
             // [T-android-context-overflow-selfheal] (GH#352) One self-heal per run.
             // The heal offloads the single biggest part; if the request still
             // overflows after that, retrying the same move would just strip the
@@ -349,23 +326,22 @@ internal class AgentStreamEngine(private val vm: ChatViewModel) {
                         val c = vm.currentProvider
                         if (c != null && modelSwitchToApply(pendingModelSwitch, c, loopProvider)) {
                             pendingModelSwitch = false
-                            val strategy = _selectedGroupId.value
+                            val groupId = _selectedGroupId.value
+                            val entryId = _activeEntryId.value
+                            val strategy = groupId
                                 ?.let { gid -> providerRepository.config.value.modelGroups.find { it.id == gid }?.fallbackStrategy }
                                 ?: com.openminis.app.data.model.FallbackStrategy.default
-                            Triple(c, buildFallbackProviders(c), strategy)
+                            ModelSwitch(c, groupId, entryId, fallbackCandidates(c, entryId, groupId).toList(), strategy)
                         } else null
                     }
-                    val chosen = switched?.first
+                    val chosen = switched?.provider
                     if (switched != null && chosen != null) {
-                        remainingFallbacks.clear()
-                        remainingFallbacks.addAll(switched.second)
-                        loopFallbackStrategy = switched.third
+                        fallbackChain.rebind(switched.entryId, switched.candidates)
+                        loopGroupId = switched.groupId
+                        loopFallbackStrategy = switched.strategy
                         val from = loopProvider.model.displayName
                         loopProvider = chosen
                         classProviderAtSend = chosen
-                        // A new model starts a new failure streak.
-                        triedEntryIds.clear()
-                        _activeEntryId.value?.let { triedEntryIds.add(it) }
                         loopSystemPrompt = systemPromptFor(chosen, loopSystemPrompt)
                         AppLogger.info(
                             TAG_STREAM,
@@ -1331,17 +1307,7 @@ internal class AgentStreamEngine(private val vm: ChatViewModel) {
                         lastFileToolInputMs = 0L
                         lastOtherToolInputMs = 0L
                         collectDone = true
-                        // [T-android-fallback-chain-refill] A turn that streamed
-                        // cleanly ends the failure streak: whatever was wrong with
-                        // the members we skipped may well have passed, and holding
-                        // them out for the rest of a long tool run is what left
-                        // later turns with no candidates at all. Keep the CURRENT
-                        // entry in the set so an immediate re-failure still moves
-                        // off it rather than retrying the same model first.
-                        if (triedEntryIds.size > 1) {
-                            triedEntryIds.clear()
-                            _activeEntryId.value?.let { triedEntryIds.add(it) }
-                        }
+                        fallbackChain.responseSucceeded()
                         // Stream completed without error — clear any lingering retry UI state.
                         if (_autoRetryAttempt.value != 0 || _autoRetryCountdown.value != 0) {
                             _autoRetryAttempt.value = 0
@@ -1588,35 +1554,15 @@ internal class AgentStreamEngine(private val vm: ChatViewModel) {
                         // real size and compacts. Matches iOS, which never leaves a
                         // pinned model. Group sessions still fall back inside their
                         // group, as on iOS; other errors are unaffected.
-                        val isDirectEntryOverflow = _selectedGroupId.value == null &&
+                        val isDirectEntryOverflow = loopGroupId == null &&
                             ContextOverflowGuard.isContextOverflow(overflowErr?.httpStatus, overflowErr?.detail)
                         val shouldFallback = !isDirectEntryOverflow && (isRateLimit || is5xx || isFallbackableError ||
                             loopFallbackStrategy == com.openminis.app.data.model.FallbackStrategy.always)
-                        // [T-android-fallback-chain-refill] Rebuild from the live
-                        // group, excluding everything already tried in this streak,
-                        // instead of popping a queue that can only shrink. The
-                        // pre-built `remainingFallbacks` stays the first source so
-                        // the very first fallback of a run is unchanged (and so a
-                        // direct-model session, where buildFallbackProviders returns
-                        // empty, keeps behaving exactly as before); once it is
-                        // drained we re-derive rather than give up.
-                        val nextCandidate = if (!shouldFallback) {
-                            null
-                        } else {
-                            _activeEntryId.value?.let { triedEntryIds.add(it) }
-                            remainingFallbacks.removeFirstOrNull()
-                                ?.also { triedEntryIds.add(it.entryId) }
-                                ?: buildFallbackProviders(loopProvider)
-                                    .firstOrNull { it.entryId !in triedEntryIds }
-                                    ?.also {
-                                        triedEntryIds.add(it.entryId)
-                                        Log.i(
-                                            TAG,
-                                            "🔁 fallback chain refilled — retrying ${it.provider.model.displayName} " +
-                                                "(tried=${triedEntryIds.size} this streak)",
-                                        )
-                                    }
-                        }
+                        val nextCandidate = if (shouldFallback) {
+                            fallbackChain.next { tried ->
+                                fallbackCandidates(loopProvider, fallbackChain.currentEntryId, loopGroupId, tried)
+                            }
+                        } else null
                         val next = nextCandidate?.provider
                         if (next != null && nextCandidate != null) {
                             val reason = when {
@@ -2517,6 +2463,8 @@ internal class AgentStreamEngine(private val vm: ChatViewModel) {
                             finishedAllToolBlocks = allToolBlocks,
                             batch = insertBatch,
                         )
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         Log.e(TAG, "injectQueuedPromptsAsNewTurn failed", e)
                         null
@@ -2777,3 +2725,11 @@ internal suspend fun ChatViewModel.executeSubAgentTool(
                 subAgentCoordinator.delegate(argsJson, toolId, toolBlocks, assistantId, currentText)
         }
     }
+
+private data class ModelSwitch(
+    val provider: LLMProvider,
+    val groupId: String?,
+    val entryId: String?,
+    val candidates: List<FallbackCandidate>,
+    val strategy: com.openminis.app.data.model.FallbackStrategy,
+)

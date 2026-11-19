@@ -11,17 +11,12 @@ import android.content.SharedPreferences
  *
  * The provider layer has no Context, and iOS deliberately reads the flag at
  * REQUEST-BUILD time so a flip applies to the very next request of an ongoing
- * session — including offload / title-gen calls that never pass through the
- * ChatViewModel. To reproduce that, [prime] captures the application context
- * once at app startup (MinisApp.onCreate) and warms a volatile cache; the
- * context-free [isEnabled] is then safe to call from any request builder.
+ * session, including offload and title generation. [prime] loads the value
+ * at startup, and [isEnabled] reads the volatile cache without a Context.
  */
 object FastModePrefs {
     private const val PREFS = "minis_fast_mode_prefs"
     private const val KEY_ENABLED = "codexFastModeEnabled"
-
-    @Volatile
-    private var appContext: Context? = null
 
     @Volatile
     private var cachedEnabled: Boolean = false
@@ -29,9 +24,8 @@ object FastModePrefs {
     private fun prefs(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    /** Capture the app context and warm the cache. Called from MinisApp.onCreate. */
+    /** Load the persisted value at app startup. */
     fun prime(context: Context) {
-        appContext = context.applicationContext
         cachedEnabled = prefs(context).getBoolean(KEY_ENABLED, false)
     }
 

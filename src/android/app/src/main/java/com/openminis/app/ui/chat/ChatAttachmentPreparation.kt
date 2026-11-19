@@ -29,6 +29,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import org.json.JSONObject
 import com.openminis.app.ui.chat.ChatViewModel.Companion.TAG
+import com.openminis.app.util.formatUtcTimestamp
 
 internal fun ChatViewModel.stashPastedTextImpl(text: String): String {
         val entry = PastedText(id = nextPasteId++, text = text)
@@ -218,12 +219,7 @@ internal fun ChatViewModel.addAttachmentFromStagedShareImpl(file: java.io.File):
         // Metadata captured per attachment for the <user-attached-files> XML.
         data class UploadMeta(val linuxPath: String, val size: Long, val modifiedIso: String)
         val metas = mutableListOf<UploadMeta>()
-        val nowMs = System.currentTimeMillis()
-        val isoFormatter = java.text.SimpleDateFormat(
-            "yyyy-MM-dd'T'HH:mm:ss'Z'",
-            java.util.Locale.US,
-        ).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
-        val nowStr = isoFormatter.format(java.util.Date(nowMs))
+        val nowStr = formatUtcTimestamp(System.currentTimeMillis())
 
         for (attachment in attachments) {
             if (attachment.isImage) {

@@ -6,6 +6,8 @@ import androidx.compose.material.icons.outlined.Build
 import com.openminis.app.data.ContextPolicy
 import com.openminis.app.logging.AppLogger
 import com.openminis.app.data.model.LLMModel
+import com.openminis.app.data.model.ModelEntry
+import com.openminis.app.data.model.ProviderConfig
 import com.openminis.app.data.model.RoutingStrategy
 import com.openminis.app.data.model.hasImageInput
 import com.openminis.app.provider.LLMProvider
@@ -311,8 +313,8 @@ internal fun ChatViewModel.resolveProviderFromGroup(groupId: String, preferredEn
         //
         // Prompts the user queued behind the cancelled retry must still drain
         // under the NEW model rather than sit as dashed bubbles.
-        // resumeQueueAfterCancel re-resolves the provider after a 200ms delay,
-        // by which time the caller has rebound it.
+        // resumeQueueAfterCancel resolves the provider after the old job ends
+        // and the picker has rebound it.
         if (_promptQueue.value.isNotEmpty()) {
             AppLogger.info(TAG_STREAM, "[SwitchModel] ${_promptQueue.value.size} queued prompt(s) remain, restarting drain")
             resumeQueueAfterCancel()
@@ -530,47 +532,50 @@ internal fun ChatViewModel.findModelEntry(modelId: String) =
         val entryId: String,
     )
 
-internal fun ChatViewModel.buildFallbackProviders(primaryProvider: LLMProvider): List<FallbackCandidate> {
-        // [T-android-compact-fallback] A session bound to a SINGLE entry (no
-        // group) used to return an empty chain here, so "my model ran out of
-        // quota" had no recovery at all — which is the exact situation users
-        // hit. Fall back to the default primary group's members, minus the
-        // entry we are already on.
-        val groupId = _selectedGroupId.value
-            ?: return directEntryFallbackCandidates(primaryProvider)
-        val config = providerRepository.config.value
-        val group = config.modelGroups.find { it.id == groupId } ?: return emptyList()
+internal fun ChatViewModel.buildFallbackProviders(primaryProvider: LLMProvider): List<FallbackCandidate> =
+    fallbackCandidates(primaryProvider, _activeEntryId.value, _selectedGroupId.value).toList()
+
+internal fun ChatViewModel.fallbackCandidates(
+    primaryProvider: LLMProvider,
+    activeEntryId: String?,
+    groupId: String?,
+    excludedEntryIds: Set<String> = emptySet(),
+): Sequence<FallbackCandidate> {
+    val config = providerRepository.config.value
+    val targetGroupId = groupId ?: config.defaultPrimaryGroupId ?: return emptySequence()
+    val group = config.modelGroups.find { it.id == targetGroupId } ?: return emptySequence()
+    val entries = config.modelEntries.associateBy { it.id }
+    val activeEntry = entries[activeEntryId]
+    val orderedIds = if (groupId == null) {
+        group.memberEntryIds.asSequence()
+    } else {
         val members = group.memberEntryIds
-        // Find current provider's position in the group.
-        // [T-android-fallback-entry-identity] Prefer the ACTIVE ENTRY id — the
-        // model-id match below is ambiguous when two instances share a model id
-        // and would anchor the cycle at the wrong member.
-        val activeEntry = _activeEntryId.value
-        val currentIdx = members.indexOfFirst { it == activeEntry }.takeIf { it >= 0 }
-            ?: members.indexOfFirst { entryId ->
-                config.modelEntries.find { it.id == entryId }?.model?.id == primaryProvider.model.id
-            }
-        val result = mutableListOf<FallbackCandidate>()
-        // Iterate starting from the entry AFTER the primary, cycling around
-        for (offset in 1 until members.size) {
-            val idx = if (currentIdx >= 0) (currentIdx + offset) % members.size else offset
-            val entryId = members[idx]
-            val entry = config.modelEntries.find { it.id == entryId } ?: continue
-            val instance = config.instances.find { it.id == entry.providerInstanceId } ?: continue
-            if (!instance.isEnabled) continue
-            // [T-android-group-resolve-skip-uncredentialed] Credential test via
-            // hasAnyCredential so an OAuth-logged-in provider is kept as a
-            // fallback candidate; usableApiKey alone reads only the API-key
-            // slot and dropped every OAuth member from the chain.
-            if (!providerRepository.hasAnyCredential(instance)) continue
-            val apiKey = providerRepository.usableApiKey(instance) ?: ""
-            val p = try {
-                ProviderFactory.create(instance, apiKey, entry.model, context, sessionId = activeSessionId, overrides = entry.overrides)
-            } catch (_: Exception) { continue }
-            result.add(FallbackCandidate(provider = p, entryId = entry.id))
-        }
-        return result
+        val currentIndex = members.indexOf(activeEntryId).takeIf { it >= 0 }
+            ?: members.indexOfFirst { entries[it]?.model?.id == primaryProvider.model.id }
+        fallbackMemberOrder(members, currentIndex)
     }
+    return orderedIds.distinct()
+        .filter { it != activeEntryId && it !in excludedEntryIds }
+        .mapNotNull(entries::get)
+        .filterNot { entry ->
+            groupId == null && entry.model.id == primaryProvider.model.id &&
+                entry.providerInstanceId == activeEntry?.providerInstanceId
+        }
+        .mapNotNull { fallbackCandidate(it, config) }
+}
+
+private fun ChatViewModel.fallbackCandidate(entry: ModelEntry, config: ProviderConfig): FallbackCandidate? {
+    if (entry.isHidden) return null
+    val instance = config.instances.find { it.id == entry.providerInstanceId } ?: return null
+    if (!instance.isEnabled || !providerRepository.hasAnyCredential(instance)) return null
+    val apiKey = providerRepository.usableApiKey(instance).orEmpty()
+    val provider = try {
+        ProviderFactory.create(instance, apiKey, entry.model, context, sessionId = activeSessionId, overrides = entry.overrides)
+    } catch (_: Exception) {
+        return null
+    }
+    return FallbackCandidate(provider, entry.id)
+}
 
 /**
      * Group members that fallback skipped (disabled instance / missing
@@ -603,49 +608,6 @@ internal fun ChatViewModel.buildFallbackProviders(primaryProvider: LLMProvider):
         return result
     }
 
-/**
-     * [T-android-compact-fallback] Fallback candidates for a session bound to a
-     * single model entry rather than a group.
-     *
-     * Source is the user's DEFAULT PRIMARY GROUP — the same set the app already
-     * treats as "the models this user actually wants used". Anything without a
-     * usable credential, on a disabled instance, or identical to the entry we
-     * are already on is filtered, matching the group path's rules so selection
-     * and fallback cannot disagree.
-     *
-     * Deliberately NOT "every configured entry": silently routing a failed turn
-     * onto an arbitrary provider the user never nominated is worse than
-     * surfacing the failure.
-     */
-    internal fun ChatViewModel.directEntryFallbackCandidates(
-        primaryProvider: LLMProvider,
-    ): List<FallbackCandidate> {
-        val config = providerRepository.config.value
-        val groupId = config.defaultPrimaryGroupId ?: return emptyList()
-        val group = config.modelGroups.find { it.id == groupId } ?: return emptyList()
-        val activeEntry = _activeEntryId.value
-        val out = mutableListOf<FallbackCandidate>()
-        for (entryId in group.memberEntryIds) {
-            if (entryId == activeEntry) continue
-            val entry = config.modelEntries.find { it.id == entryId } ?: continue
-            if (entry.isHidden) continue
-            // Skip an entry that is merely the same model we just failed on.
-            if (entry.model.id == primaryProvider.model.id &&
-                entry.providerInstanceId ==
-                config.modelEntries.find { it.id == activeEntry }?.providerInstanceId
-            ) continue
-            val instance = config.instances.find { it.id == entry.providerInstanceId } ?: continue
-            if (!instance.isEnabled) continue
-            if (!providerRepository.hasAnyCredential(instance)) continue
-            val apiKey = providerRepository.usableApiKey(instance) ?: ""
-            val p = try {
-                ProviderFactory.create(instance, apiKey, entry.model, context, sessionId = activeSessionId, overrides = entry.overrides)
-            } catch (_: Exception) { continue }
-            out.add(FallbackCandidate(provider = p, entryId = entry.id))
-        }
-        return out
-    }
-
 internal fun ChatViewModel.noteEntryFailedImpl(entryId: String?) {
         if (!entryId.isNullOrEmpty()) recentlyFailedEntryIds.add(entryId)
     }
@@ -671,40 +633,4 @@ internal fun ChatViewModel.adoptFallbackCandidate(candidate: FallbackCandidate) 
             }
         }
         _fallbackTrigger.value++
-    }
-
-internal fun ChatViewModel.resolveNextFallbackProvider(): LLMProvider? {
-        val groupId = _selectedGroupId.value ?: return null
-        val group = providerRepository.group(groupId) ?: return null
-        val currentEntryId = _activeEntryId.value ?: return null
-        val currentIdx = group.memberEntryIds.indexOf(currentEntryId)
-        if (currentIdx < 0) return null
-
-        val config = providerRepository.config.value
-        // Try next entries in the group
-        for (i in 1 until group.memberEntryIds.size) {
-            val nextIdx = (currentIdx + i) % group.memberEntryIds.size
-            val entryId = group.memberEntryIds[nextIdx]
-            val entry = config.modelEntries.find { it.id == entryId } ?: continue
-            val instance = providerRepository.instance(entry.providerInstanceId) ?: continue
-            // [T-disabled-provider-via-group-android] Skip disabled
-            // providers when walking the group's fallback chain so a
-            // disabled provider sitting after the current entry doesn't
-            // get picked up. buildFallbackProviders already does this; the
-            // single-step variant here had the same bug.
-            if (!instance.isEnabled) continue
-            // [T-android-group-resolve-skip-uncredentialed] Same credential
-            // notion as buildFallbackProviders — OAuth members belong in the
-            // single-step chain too.
-            if (!providerRepository.hasAnyCredential(instance)) continue
-            val apiKey = providerRepository.usableApiKey(instance) ?: ""
-
-            currentModel = entry.model
-            _modelName.value = entry.model.displayName
-            _activeEntryId.value = entry.id
-            val provider = ProviderFactory.create(instance, apiKey, entry.model, context, sessionId = activeSessionId, overrides = entry.overrides)
-            currentProvider = provider
-            return provider
-        }
-        return null
     }
