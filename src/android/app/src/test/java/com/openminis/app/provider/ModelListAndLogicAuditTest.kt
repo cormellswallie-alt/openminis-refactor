@@ -8,6 +8,7 @@ import com.openminis.app.provider.anthropic.AnthropicModelsApi
 import com.openminis.app.provider.gemini.GeminiModelsApi
 import com.openminis.app.provider.openai.ChatCompletionsStreamSession
 import com.openminis.app.provider.openai.OpenAIModelsApi
+import com.openminis.app.provider.openai.OpenAIVendorDialect
 import com.openminis.app.ui.chat.throttleLeadingTrailing
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
@@ -241,7 +242,17 @@ class ModelListAndLogicAuditTest {
 
     @Test
     fun `chat completions tool call without id emits ToolUseStart before ToolCallComplete`() = runBlocking {
-        val session = ChatCompletionsStreamSession(modelId = "local-qwen")
+        val dialect = OpenAIVendorDialect(
+            basePath = "https://relay.example.com/v1",
+            extraHeaders = emptyMap(),
+            useResponsesAPI = false,
+            forceChatCompletions = true,
+            customUserAgent = null,
+            isAzure = false,
+            azureBase = null,
+            isOAuth = false,
+        )
+        val session = ChatCompletionsStreamSession(modelId = "local-qwen", dialect = dialect)
         val emitted = mutableListOf<LLMStreamChunk>()
 
         val deltaEvent = JSONObject(
@@ -259,7 +270,7 @@ class ModelListAndLogicAuditTest {
             }
             """.trimIndent(),
         )
-        session.onEvent(deltaEvent) { emitted.add(it) }
+        session.processEvent(deltaEvent) { emitted.add(it) }
         session.onStreamEnd { emitted.add(it) }
 
         val startIdx = emitted.indexOfFirst { it is LLMStreamChunk.ToolUseStart }
