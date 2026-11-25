@@ -99,12 +99,17 @@ class ChatViewModel(
         internal fun joinDraftWithSnippet(draft: String, snippet: String): String? =
             ChatDraftStateStore.joinDraftWithSnippet(draft, snippet)
 
+        private val PROMPT_SAFE_ESCAPES_REGEX = Regex("[\"'\\[\\]{};\\\\]")
+        private val PROMPT_SAFE_QUOTES_REGEX = Regex("[\\u2018\\u2019\\u201C\\u201D\\u300C\\u300D\\u300E\\u300F]")
+        private val PROMPT_SAFE_FORMAT_REGEX = Regex("\\p{Cf}")
+        private val PROMPT_SAFE_WHITESPACE_REGEX = Regex("[\\s\\p{Z}\\u0085\\u2028\\u2029]+")
+
         /** [T-android-auto-grouping-injection] Strip prompt-escape characters and bidi controls. */
         internal fun promptSafe(raw: String, max: Int): String =
-            raw.replace(Regex("[\"'\\[\\]{};\\\\]"), " ")
-                .replace(Regex("[\\u2018\\u2019\\u201C\\u201D\\u300C\\u300D\\u300E\\u300F]"), " ")
-                .replace(Regex("\\p{Cf}"), "")
-                .replace(Regex("[\\s\\p{Z}\\u0085\\u2028\\u2029]+"), " ")
+            raw.replace(PROMPT_SAFE_ESCAPES_REGEX, " ")
+                .replace(PROMPT_SAFE_QUOTES_REGEX, " ")
+                .replace(PROMPT_SAFE_FORMAT_REGEX, "")
+                .replace(PROMPT_SAFE_WHITESPACE_REGEX, " ")
                 .trim()
                 .take(max)
                 .trim()

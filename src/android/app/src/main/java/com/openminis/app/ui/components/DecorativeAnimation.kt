@@ -12,6 +12,7 @@ import androidx.compose.ui.platform.AndroidUiDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.floor
 import androidx.compose.foundation.Canvas
@@ -78,6 +79,13 @@ object DecorativeClock {
     /** ~30 fps. A third of a 90 Hz panel's frames, visually indistinguishable for decoration. */
     const val INTERVAL_NS = 33_333_333L
 
+    /**
+     * Coarse sleep between VSYNC subscriptions so high-refresh displays (90/120 Hz)
+     * do not wake Choreographer on the 2–3 skipped VSYNCs between decorative ticks,
+     * cutting main-thread wakeups and GPU/thermal load by ~67–75%.
+     */
+    internal const val IDLE_SLEEP_MS = 28L
+
     private val _nanos = mutableLongStateOf(0L)
     val nanos: State<Long> get() = _nanos
 
@@ -108,11 +116,16 @@ object DecorativeClock {
         job = scope.launch {
             var last = 0L
             while (true) {
+                var advanced = false
                 withFrameNanos { now ->
                     if (now - last >= INTERVAL_NS) {
                         last = now
                         _nanos.longValue = now
+                        advanced = true
                     }
+                }
+                if (advanced) {
+                    delay(IDLE_SLEEP_MS)
                 }
             }
         }

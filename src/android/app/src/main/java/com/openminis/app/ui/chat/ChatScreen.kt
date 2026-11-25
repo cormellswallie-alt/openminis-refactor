@@ -376,7 +376,6 @@ fun ChatScreen(
                         canResume = canResume,
                         compactProgress = compactProgress,
                         error = error,
-                        inputText = inputText,
                         pendingQuestionnaire = pendingQuestionnaire,
                         listState = listState,
                         scroll = scroll,
@@ -509,7 +508,6 @@ private fun ChatTranscriptRegion(
     canResume: Boolean,
     compactProgress: ChatViewModel.CompactProgress?,
     error: String?,
-    inputText: String,
     pendingQuestionnaire: PendingQuestionnaire?,
     listState: androidx.compose.foundation.lazy.LazyListState,
     scroll: ChatScrollController,
@@ -586,16 +584,19 @@ private fun ChatTranscriptRegion(
                 selectionController = selectionController,
             )
         }
-        val safeMutate: (() -> Unit) -> Unit = { block ->
-            markdownToolbar.hide()
-            focusManager.clearFocus()
-            block()
+        val safeMutate: (() -> Unit) -> Unit = remember(markdownToolbar, focusManager) {
+            { block ->
+                markdownToolbar.hide()
+                focusManager.clearFocus()
+                block()
+            }
         }
+        val originalMessageId: (String) -> String = remember { { id -> id.substringBefore('#') } }
 
         val slashMenuOpen by viewModel.showSlashMenu.collectAsStateWithLifecycle()
         val mentionMenuOpenForSpy by viewModel.showMentionMenu.collectAsStateWithLifecycle()
         BackHandler(enabled = slashMenuOpen || mentionMenuOpenForSpy) {
-            if (slashMenuOpen) viewModel.setInputText(viewModel.dismissSlashMenu(inputText))
+            if (slashMenuOpen) viewModel.setInputText(viewModel.dismissSlashMenu(viewModel.inputText.value))
             if (mentionMenuOpenForSpy) viewModel.dismissMentionMenu()
         }
 
@@ -616,25 +617,18 @@ private fun ChatTranscriptRegion(
                     )
                 }
                 AlwaysStretchOverscrollBox { sharedEffect ->
-                    ChatScreenMessageList(
-                        state = ChatMessageListState(
-                            bottomReserve = bottomReserve,
-                            canResume = canResume,
-                            compactProgress = compactProgress,
-                            error = error,
-                            flatItems = flatItems,
-                            grayedMap = grayedMap,
-                            hasOlderMessages = hasOlderMessages,
-                            inputText = inputText,
-                            isStreaming = isStreaming,
-                            mentionMenuOpenForSpy = mentionMenuOpenForSpy,
-                            messages = messages,
-                            pendingQuestionnaire = pendingQuestionnaire,
-                            revealedUsageIds = revealedUsageIds,
-                            sessionId = sessionId,
-                            slashMenuOpen = slashMenuOpen,
-                        ),
-                        controllers = ChatMessageListControllers(
+                    val listControllers = remember(
+                        context,
+                        coroutineScope,
+                        inputFocusRequester,
+                        listState,
+                        perfFirstLayoutFired,
+                        screenMountAtMs,
+                        selectionController,
+                        viewModel,
+                        sharedEffect,
+                    ) {
+                        ChatMessageListControllers(
                             context = context,
                             coroutineScope = coroutineScope,
                             inputFocusRequester = inputFocusRequester,
@@ -644,8 +638,23 @@ private fun ChatTranscriptRegion(
                             selectionController = selectionController,
                             viewModel = viewModel,
                             sharedEffect = sharedEffect,
-                        ),
-                        interactions = ChatMessageListInteractions(
+                        )
+                    }
+                    val listInteractions = remember(
+                        callbackDetailBlockState,
+                        coldOpenSummaryEmittedState,
+                        compactAboveTargetIdState,
+                        deleteFromHereTargetIdState,
+                        lastColdPrewarmMsState,
+                        listRootCoordsState,
+                        scroll.userScrolledAwayState,
+                        onOpenTerminalWithCommand,
+                        onPreviewAttachment,
+                        originalMessageId,
+                        safeMutate,
+                        scroll.tracedScrollToItem,
+                    ) {
+                        ChatMessageListInteractions(
                             callbackDetailBlockState = callbackDetailBlockState,
                             coldOpenSummaryEmittedState = coldOpenSummaryEmittedState,
                             compactAboveTargetIdState = compactAboveTargetIdState,
@@ -655,10 +664,30 @@ private fun ChatTranscriptRegion(
                             userScrolledAwayState = scroll.userScrolledAwayState,
                             onOpenTerminalWithCommand = onOpenTerminalWithCommand,
                             onPreviewAttachment = onPreviewAttachment,
-                            originalMessageId = { it.substringBefore('#') },
+                            originalMessageId = originalMessageId,
                             safeMutate = safeMutate,
                             tracedScrollToItem = scroll.tracedScrollToItem,
+                        )
+                    }
+                    ChatScreenMessageList(
+                        state = ChatMessageListState(
+                            bottomReserve = bottomReserve,
+                            canResume = canResume,
+                            compactProgress = compactProgress,
+                            error = error,
+                            flatItems = flatItems,
+                            grayedMap = grayedMap,
+                            hasOlderMessages = hasOlderMessages,
+                            isStreaming = isStreaming,
+                            mentionMenuOpenForSpy = mentionMenuOpenForSpy,
+                            messages = messages,
+                            pendingQuestionnaire = pendingQuestionnaire,
+                            revealedUsageIds = revealedUsageIds,
+                            sessionId = sessionId,
+                            slashMenuOpen = slashMenuOpen,
                         ),
+                        controllers = listControllers,
+                        interactions = listInteractions,
                     )
                 }
 

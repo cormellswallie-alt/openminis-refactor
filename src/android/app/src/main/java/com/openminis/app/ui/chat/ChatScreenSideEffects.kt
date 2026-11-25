@@ -468,6 +468,9 @@ internal fun ChatScreenSessionEffects(
     }
 }
 
+private val MARKDOWN_IMAGE_GALLERY_REGEX = Regex("!\\[([^\\]]*)\\]\\(([^)\\s]+)\\)")
+private val NON_IMAGE_MEDIA_EXTS = setOf("mp4", "mov", "avi", "mkv", "webm", "mp3", "wav", "aac", "flac", "ogg", "m4a")
+
 /**
  * [T-android-markdown-image-gallery-cross-message] Collects every inline markdown image across
  * assistant messages in the current window and resolves the tapped image's start index.
@@ -479,19 +482,17 @@ internal fun buildMarkdownImageGallery(
     tappedMessageId: String,
     tappedUrl: String,
 ): Pair<List<ImageGalleryItem>, Int>? {
-    val imageRegex = Regex("!\\[([^\\]]*)\\]\\(([^)\\s]+)\\)")
-    val nonImageExts = setOf("mp4", "mov", "avi", "mkv", "webm", "mp3", "wav", "aac", "flac", "ogg", "m4a")
     data class Ref(val messageId: String, val source: String, val title: String)
 
     val refs = mutableListOf<Ref>()
     for (msg in messages) {
         if (msg.role != "assistant" || msg.content.isEmpty()) continue
-        for (m in imageRegex.findAll(msg.content)) {
+        for (m in MARKDOWN_IMAGE_GALLERY_REGEX.findAll(msg.content)) {
             val alt = m.groupValues.getOrNull(1).orEmpty()
             val src = m.groupValues.getOrNull(2).orEmpty()
             if (src.isEmpty()) continue
             val pathPart = src.substringBefore('?').substringBefore('#')
-            if (pathPart.substringAfterLast('.', "").lowercase() in nonImageExts) continue
+            if (pathPart.substringAfterLast('.', "").lowercase() in NON_IMAGE_MEDIA_EXTS) continue
             val title = alt.ifEmpty { pathPart.substringAfterLast('/').ifEmpty { src } }
             refs.add(Ref(msg.id, src, title))
         }

@@ -66,7 +66,7 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
 @Stable
-internal class ChatMessageListState(
+internal data class ChatMessageListState(
     val bottomReserve: Dp,
     val canResume: Boolean,
     val compactProgress: ChatViewModel.CompactProgress?,
@@ -74,7 +74,6 @@ internal class ChatMessageListState(
     val flatItems: List<FlatChatItem>,
     val grayedMap: Map<String, Boolean>,
     val hasOlderMessages: Boolean,
-    val inputText: String,
     val isStreaming: Boolean,
     val mentionMenuOpenForSpy: Boolean,
     val messages: List<ChatMessage>,
@@ -85,7 +84,7 @@ internal class ChatMessageListState(
 )
 
 @Stable
-internal class ChatMessageListControllers(
+internal data class ChatMessageListControllers(
     val context: Context,
     val coroutineScope: CoroutineScope,
     val inputFocusRequester: FocusRequester,
@@ -98,7 +97,7 @@ internal class ChatMessageListControllers(
 )
 
 @Stable
-internal class ChatMessageListInteractions(
+internal data class ChatMessageListInteractions(
     val callbackDetailBlockState: MutableState<AssistantBlock?>,
     val coldOpenSummaryEmittedState: MutableState<Boolean>,
     val compactAboveTargetIdState: MutableState<String?>,
@@ -158,7 +157,9 @@ internal fun ChatScreenMessageList(
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                     if (state.slashMenuOpen) {
-                        controllers.viewModel.setInputText(controllers.viewModel.dismissSlashMenu(state.inputText))
+                        controllers.viewModel.setInputText(
+                            controllers.viewModel.dismissSlashMenu(controllers.viewModel.inputText.value),
+                        )
                     }
                     if (state.mentionMenuOpenForSpy) {
                         controllers.viewModel.dismissMentionMenu()
@@ -203,10 +204,29 @@ internal fun ChatScreenMessageList(
             key = { it.key },
             contentType = { it.contentType },
         ) { item ->
+            val isNewest = item === newestItem || item == newestItem
+            val isCompacted = item.isCompacted(state.grayedMap, interactions.originalMessageId)
+            val isUsageRevealed = item is FlatChatItem.AssistantUsage &&
+                interactions.originalMessageId(item.messageId) in state.revealedUsageIds
+            val rowPendingQuestionnaire = if (
+                item is FlatChatItem.AssistantToolUse && item.block.toolName == AskUserTool.NAME
+            ) {
+                state.pendingQuestionnaire
+            } else {
+                null
+            }
+            val rowCanResume = item is FlatChatItem.AssistantToolUse && state.canResume
             ChatFlatListItemContainer(
                 item = item,
-                isNewestItem = item == newestItem,
-                state = state,
+                isNewestItem = isNewest,
+                isCompacted = isCompacted,
+                isStreaming = state.isStreaming,
+                canResume = rowCanResume,
+                sessionId = state.sessionId,
+                isUsageRevealed = isUsageRevealed,
+                pendingQuestionnaire = rowPendingQuestionnaire,
+                coldOpenMessages = if (isNewest) state.messages else emptyList(),
+                coldOpenRowCount = if (isNewest) state.flatItems.size else 0,
                 controllers = controllers,
                 interactions = interactions,
             )
@@ -224,16 +244,23 @@ internal fun ChatScreenMessageList(
 private fun ChatFlatListItemContainer(
     item: FlatChatItem,
     isNewestItem: Boolean,
-    state: ChatMessageListState,
+    isCompacted: Boolean,
+    isStreaming: Boolean,
+    canResume: Boolean,
+    sessionId: String,
+    isUsageRevealed: Boolean,
+    pendingQuestionnaire: PendingQuestionnaire?,
+    coldOpenMessages: List<ChatMessage>,
+    coldOpenRowCount: Int,
     controllers: ChatMessageListControllers,
     interactions: ChatMessageListInteractions,
 ) {
     if (isNewestItem) {
-        SideEffect { PerfLongCtx.step(state.sessionId, "lazyColumn.firstItem.compose") }
+        SideEffect { PerfLongCtx.step(sessionId, "lazyColumn.firstItem.compose") }
     }
-    PerfLongCtx.maybeReportRowComposed(state.sessionId, item::class.java.simpleName)
+    PerfLongCtx.maybeReportRowComposed(sessionId, item::class.java.simpleName)
 
-    val rowAlpha = if (item.isCompacted(state.grayedMap, interactions.originalMessageId)) 0.4f else 1f
+    val rowAlpha = if (isCompacted) 0.4f else 1f
     val largeItemLen = remember(item.key) {
         when (item) {
             is FlatChatItem.UserBubble -> item.message.content.length
@@ -260,7 +287,7 @@ private fun ChatFlatListItemContainer(
                 if (isNewestItem) {
                     Modifier.onPlaced { coords ->
                         PerfLongCtx.step(
-                            state.sessionId,
+                            sessionId,
                             "lazyColumn.firstItem.placed",
                             "size=${coords.size.width}x${coords.size.height}",
                         )
@@ -268,9 +295,9 @@ private fun ChatFlatListItemContainer(
                             coldOpenSummaryEmitted = true
                             emitColdOpenDiagnostics(
                                 context = controllers.context,
-                                sessionId = state.sessionId,
-                                messages = state.messages,
-                                rowCount = state.flatItems.size,
+                                sessionId = sessionId,
+                                messages = coldOpenMessages,
+                                rowCount = coldOpenRowCount,
                                 lastColdPrewarmMs = lastColdPrewarmMs,
                                 screenMountAtMs = controllers.screenMountAtMs,
                             )
@@ -281,7 +308,11 @@ private fun ChatFlatListItemContainer(
     ) {
         ChatFlatListItemContent(
             item = item,
-            state = state,
+            isStreaming = isStreaming,
+            canResume = canResume,
+            sessionId = sessionId,
+            isUsageRevealed = isUsageRevealed,
+            pendingQuestionnaire = pendingQuestionnaire,
             controllers = controllers,
             interactions = interactions,
         )
@@ -291,7 +322,11 @@ private fun ChatFlatListItemContainer(
 @Composable
 private fun ChatFlatListItemContent(
     item: FlatChatItem,
-    state: ChatMessageListState,
+    isStreaming: Boolean,
+    canResume: Boolean,
+    sessionId: String,
+    isUsageRevealed: Boolean,
+    pendingQuestionnaire: PendingQuestionnaire?,
     controllers: ChatMessageListControllers,
     interactions: ChatMessageListInteractions,
 ) {
@@ -299,7 +334,7 @@ private fun ChatFlatListItemContent(
     when (item) {
         is FlatChatItem.UserBubble -> ChatUserBubbleItem(
             item = item,
-            isStreaming = state.isStreaming,
+            isStreaming = isStreaming,
             controllers = controllers,
             interactions = interactions,
         )
@@ -359,7 +394,7 @@ private fun ChatFlatListItemContent(
         }
         is FlatChatItem.ScheduledTaskCardItem -> ScheduledTaskCard(
             marker = item.marker,
-            hostSessionId = state.sessionId,
+            hostSessionId = sessionId,
         )
         is FlatChatItem.AgentCallbackCard -> AgentCallbackCard(
             callback = item.callback,
@@ -367,7 +402,9 @@ private fun ChatFlatListItemContent(
         )
         is FlatChatItem.AssistantToolUse -> ChatToolUseItem(
             item = item,
-            state = state,
+            isStreaming = isStreaming,
+            canResume = canResume,
+            pendingQuestionnaire = pendingQuestionnaire,
             controllers = controllers,
             interactions = interactions,
         )
@@ -378,13 +415,12 @@ private fun ChatFlatListItemContent(
         is FlatChatItem.AssistantTyping -> TypingIndicator()
         is FlatChatItem.AssistantUsage -> {
             val msgId = interactions.originalMessageId(item.messageId)
-            val shown = msgId in state.revealedUsageIds
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .pointerInput(msgId) { detectTapGestures { viewModel.toggleUsageCapsule(msgId) } },
             ) {
-                AnimatedVisibility(visible = shown, enter = fadeIn(), exit = fadeOut()) {
+                AnimatedVisibility(visible = isUsageRevealed, enter = fadeIn(), exit = fadeOut()) {
                     UsageCapsule(usage = item.usage, completedAt = item.completedAt)
                 }
             }
@@ -476,7 +512,9 @@ private fun ChatUserBubbleItem(
 @Composable
 private fun ChatToolUseItem(
     item: FlatChatItem.AssistantToolUse,
-    state: ChatMessageListState,
+    isStreaming: Boolean,
+    canResume: Boolean,
+    pendingQuestionnaire: PendingQuestionnaire?,
     controllers: ChatMessageListControllers,
     interactions: ChatMessageListInteractions,
 ) {
@@ -485,7 +523,7 @@ private fun ChatToolUseItem(
     when {
         item.block.toolName == AskUserTool.NAME -> AskUserToolCard(
             block = item.block,
-            pending = state.pendingQuestionnaire,
+            pending = pendingQuestionnaire,
             onSubmit = { id, res -> viewModel.submitQuestionnaire(id, res) },
             onSkip = { id -> viewModel.skipQuestionnaire(id) },
             onOpenDetail = { viewModel.openToolDetail(it.id) },
@@ -530,13 +568,13 @@ private fun ChatToolUseItem(
         else -> ToolCallPill(
             block = item.block,
             allToolBlocks = item.allToolBlocks,
-            onRetry = if (item.isLastCancelled && !state.isStreaming && !state.canResume) {
+            onRetry = if (item.isLastCancelled && !isStreaming && !canResume) {
                 { interactions.safeMutate { viewModel.retryLast() } }
             } else null,
             onStop = { viewModel.cancelStream() },
             onOpenTerminalWithCommand = interactions.onOpenTerminalWithCommand,
             onOpenDetail = { viewModel.openToolDetail(it) },
-            onRerunFromHere = if (!state.isStreaming) ({
+            onRerunFromHere = if (!isStreaming) ({
                 controllers.coroutineScope.launch { interactions.tracedScrollToItem("RERUN-FROM-TOOL", 0, 0) }
                 interactions.safeMutate { viewModel.rerunFromToolBlock(item.messageId, item.block.id) }
             }) else null,

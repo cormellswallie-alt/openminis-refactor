@@ -116,6 +116,14 @@ import com.openminis.app.ui.components.rememberDecorativeTick
 import com.openminis.app.ui.components.decorativePhase
 import androidx.compose.ui.draw.drawWithCache
 
+private val AssistantSparkleGradient by lazy {
+    Brush.linearGradient(colors = listOf(SparkleColor1, SparkleColor2))
+}
+
+private val usageClockFormatter = ThreadLocal.withInitial {
+    java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+}
+
 @Composable
 internal fun AssistantHeader() {
     val soulMeta by com.openminis.app.agent.SoulStore.cachedMetadata.collectAsStateWithLifecycle()
@@ -125,9 +133,6 @@ internal fun AssistantHeader() {
         modifier = Modifier
             .padding(top = 14.dp, bottom = 6.dp),
     ) {
-        val sparkleGradient = Brush.linearGradient(
-            colors = listOf(SparkleColor1, SparkleColor2),
-        )
         Box(
             modifier = Modifier
                 .size(28.dp)
@@ -138,7 +143,7 @@ internal fun AssistantHeader() {
                 icon = soulMeta.icon,
                 sizeDp = 16.dp,
                 emojiSp = 13.sp,
-                sparkleTint = sparkleGradient,
+                sparkleTint = AssistantSparkleGradient,
             )
         }
         Spacer(modifier = Modifier.width(9.dp))
@@ -187,7 +192,7 @@ internal fun UsageCapsule(usage: ChatTokenUsage?, completedAt: Long?) {
     // time could render 12-hour with AM/PM.
     val clock = remember(completedAt) {
         completedAt?.let {
-            java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(java.util.Date(it))
+            usageClockFormatter.get()!!.format(java.util.Date(it))
         }
     }
     val ink = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
@@ -1115,10 +1120,9 @@ internal fun ThinkingBlock(block: AssistantBlock, isStreaming: Boolean, isLast: 
                             if (canScrollUp || canScrollDown) {
                                 Modifier
                                     .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                                    .drawWithContent {
-                                        drawContent()
+                                    .drawWithCache {
                                         val h = size.height
-                                        if (h > 1f) {
+                                        val fadeBrush = if (h > 1f) {
                                             val topFade = (16.dp.toPx() / h).coerceIn(0.01f, 0.18f)
                                             val bottomFade = (1f - (18.dp.toPx() / h).coerceIn(0.01f, 0.18f))
                                             val stops = buildList {
@@ -1135,10 +1139,18 @@ internal fun ThinkingBlock(block: AssistantBlock, isStreaming: Boolean, isLast: 
                                                     add(1f to Color.Black)
                                                 }
                                             }.toTypedArray()
-                                            drawRect(
-                                                brush = Brush.verticalGradient(colorStops = stops),
-                                                blendMode = BlendMode.DstIn,
-                                            )
+                                            Brush.verticalGradient(colorStops = stops)
+                                        } else {
+                                            null
+                                        }
+                                        onDrawWithContent {
+                                            drawContent()
+                                            if (fadeBrush != null) {
+                                                drawRect(
+                                                    brush = fadeBrush,
+                                                    blendMode = BlendMode.DstIn,
+                                                )
+                                            }
                                         }
                                     }
                             } else Modifier,
@@ -1236,6 +1248,8 @@ private sealed class ThoughtSegment {
 private val THOUGHT_HEADING_REGEX = Regex("""^\s*#{1,4}\s+(.+?)\s*$""")
 private val THOUGHT_BOLD_TITLE_REGEX = Regex("""^\s*\*\*([^*]{2,90})\*\*:?\s*$""")
 private val THOUGHT_BULLET_REGEX = Regex("""^\s*([-*•]|\d+[.)])\s+(.+)$""")
+private val THOUGHT_SNIPPET_HEADING_PREFIX_REGEX = Regex("""^#{1,4}\s+""")
+private val THOUGHT_SNIPPET_BULLET_PREFIX_REGEX = Regex("""^([-*•]|\d+[.)]|>)\s+""")
 
 private fun extractLiveThoughtSnippet(raw: String): String {
     if (raw.isBlank()) return ""
@@ -1246,8 +1260,8 @@ private fun extractLiveThoughtSnippet(raw: String): String {
         val trimmed = lines[i].trim()
         if (trimmed.isEmpty() || trimmed.startsWith("```")) continue
         return trimmed
-            .replace(Regex("""^#{1,4}\s+"""), "")
-            .replace(Regex("""^([-*•]|\d+[.)]|>)\s+"""), "")
+            .replace(THOUGHT_SNIPPET_HEADING_PREFIX_REGEX, "")
+            .replace(THOUGHT_SNIPPET_BULLET_PREFIX_REGEX, "")
             .replace("**", "")
             .replace("__", "")
             .replace("`", "")

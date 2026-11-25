@@ -342,6 +342,8 @@ private fun formatByteSize(chars: Int): String {
     }
 }
 
+private val SAFE_EXPORT_KEY_REGEX = Regex("[^A-Za-z0-9_.-]")
+
 /**
  * Dump the content to a temp file under cacheDir/large-messages and fire an
  * ACTION_SEND chooser. Returns true if the chooser was launched.
@@ -352,7 +354,7 @@ private fun exportLargeContentToFile(
     stableKey: String,
 ): Boolean = try {
     val dir = File(context.cacheDir, "large-messages").apply { mkdirs() }
-    val safeKey = stableKey.replace(Regex("[^A-Za-z0-9_.-]"), "_").take(64)
+    val safeKey = stableKey.replace(SAFE_EXPORT_KEY_REGEX, "_").take(64)
     val file = File(dir, "msg-$safeKey-${System.currentTimeMillis()}.txt")
     file.writeText(content)
     val authority = context.packageName + ".fileprovider"

@@ -62,6 +62,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -89,7 +90,9 @@ import com.openminis.app.agent.jobs.HelperRunner
 import com.openminis.app.debug.HeadlessChatRunner
 import com.openminis.app.ui.theme.ChatColors
 import com.openminis.app.ui.DisplayBitmapLimits
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import com.openminis.app.ui.components.DecorativeSpinner
 
@@ -1149,13 +1152,15 @@ internal fun HelperDetailContent(block: AssistantBlock) {
                 }
             }
         }
-        // 3. latest screenshot
+        // 3. latest screenshot (decoded off-main to avoid scroll/sheet frame drops)
         latestImagePath?.let { path ->
-            val bmp = remember(path) { DisplayBitmapLimits.decodeFileBounded(path) }
-            if (bmp != null) {
+            val bmp by produceState<android.graphics.Bitmap?>(initialValue = null, path) {
+                value = withContext(Dispatchers.IO) { DisplayBitmapLimits.decodeFileBounded(path) }
+            }
+            bmp?.let { decoded ->
                 AgentDetailCard(title = stringResource(R.string.agent_detail_latest_screenshot), icon = toolIconFor("read_image")) {
                     Image(
-                        bitmap = bmp.asImageBitmap(), contentDescription = null, contentScale = ContentScale.FillWidth,
+                        bitmap = decoded.asImageBitmap(), contentDescription = null, contentScale = ContentScale.FillWidth,
                         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).border(0.5.dp, ChatColors.separator.copy(alpha = 0.5f), RoundedCornerShape(6.dp)),
                     )
                 }

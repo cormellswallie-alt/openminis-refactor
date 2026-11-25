@@ -346,6 +346,67 @@ internal fun streamingOverlaySubset(
 }
 
 /**
+ * Zero-copy random-access view overlaying [streaming] deltas on top of [base] without
+ * cloning the untouched message prefix on every 80ms streaming tick.
+ */
+internal class OverlayMessageListView(
+    private val base: List<ChatMessage>,
+    private val streaming: Map<String, StreamingDelta>,
+) : AbstractList<ChatMessage>() {
+    override val size: Int get() = base.size
+
+    override fun get(index: Int): ChatMessage {
+        val m = base[index]
+        val delta = streaming[m.id] ?: return m
+        return m.copy(
+            content = delta.content,
+            isStreaming = true,
+            toolBlocks = delta.toolBlocks,
+            isAwaitingModelResponse = delta.isAwaitingModelResponse,
+        )
+    }
+}
+
+/**
+ * Collect floating tool blocks across persisted [messages] overlaid with [streaming]
+ * without allocating a copied message list or intermediate filter/flatMap lists.
+ */
+internal fun collectLiveFloatingToolBlocks(
+    messages: List<ChatMessage>,
+    streaming: Map<String, StreamingDelta>,
+): List<AssistantBlock> {
+    val out = ArrayList<AssistantBlock>()
+    for (m in messages) {
+        if (m.role != "assistant") continue
+        val blocks = streaming[m.id]?.toolBlocks ?: m.toolBlocks
+        for (tb in blocks) {
+            if (tb.toolStatus != null && tb.kind != "thinking" && tb.kind != "info") {
+                out.add(tb)
+            }
+        }
+    }
+    return out
+}
+
+/**
+ * Incrementally merge the live tail row keys into a pre-built [frozenKeyIndex].
+ * Returns [frozenKeyIndex] directly (zero allocation) when [liveRows] is empty.
+ */
+internal fun mergeFlatRowKeyIndex(
+    frozenKeyIndex: Map<String, Int>,
+    frozenSize: Int,
+    liveRows: List<FlatChatItem>,
+): Map<String, Int> {
+    if (liveRows.isEmpty()) return frozenKeyIndex
+    val merged = HashMap<String, Int>(frozenKeyIndex.size + liveRows.size)
+    merged.putAll(frozenKeyIndex)
+    for (i in liveRows.indices) {
+        merged[liveRows[i].key] = frozenSize + i
+    }
+    return merged
+}
+
+/**
  * [T-android-fab-up-target] True when this message renders as a real user
  * bubble — something the user actually typed and can navigate back to.
  *

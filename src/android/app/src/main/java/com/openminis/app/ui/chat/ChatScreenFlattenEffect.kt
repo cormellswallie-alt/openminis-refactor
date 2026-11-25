@@ -93,6 +93,7 @@ internal fun rememberFlattenedChatItems(
     LaunchedEffect(messages, sessionId) {
         var frozenRows: List<FlatChatItem> = emptyList()
         var frozenKeys: Set<String> = emptySet()
+        var frozenKeyIndex: Map<String, Int> = emptyMap()
         var frozenSplitIdx = -1
         var streamWasActive = false
 
@@ -123,12 +124,21 @@ internal fun rememberFlattenedChatItems(
                             PerfLongCtx.step(sessionId, "buildFlatChatItems.start", "msgCount=${msgs.size}")
                         }
                         // [T-android-flatitems-sublist-cme] Snapshot copy via take(), never subList().
-                        val rows = withContext(Dispatchers.Default) {
-                            buildFlatChatItems(msgs.take(splitIdx), sessionId)
+                        val (rows, keys, keyIdx) = withContext(Dispatchers.Default) {
+                            val built = buildFlatChatItems(msgs.take(splitIdx), sessionId)
+                            val keySet = HashSet<String>(built.size)
+                            val idxMap = HashMap<String, Int>(built.size)
+                            for (i in built.indices) {
+                                val k = built[i].key
+                                keySet.add(k)
+                                idxMap[k] = i
+                            }
+                            Triple(built, keySet, idxMap)
                         }
                         val buildMs = (System.nanoTime() - tBuildStart) / 1_000_000
                         frozenRows = rows
-                        frozenKeys = rows.mapTo(HashSet()) { it.key }
+                        frozenKeys = keys
+                        frozenKeyIndex = keyIdx
                         frozenSplitIdx = splitIdx
 
                         if (stream.isEmpty() && rows.isNotEmpty()) {
@@ -164,30 +174,43 @@ internal fun rememberFlattenedChatItems(
                         }
                     }
 
-                    val liveRows = if (splitIdx >= msgs.size) {
-                        emptyList()
+                    val (nextFlatItems, nextKeyIndex, liveRowCount) = if (splitIdx >= msgs.size) {
+                        Triple(frozenRows, frozenKeyIndex, 0)
                     } else {
                         withContext(Dispatchers.Default) {
-                            val merged = mergeStreamingOverlay(msgs, stream)
-                            buildFlatChatItems(merged, null, fromIndex = splitIdx, seedKeys = frozenKeys)
+                            val overlayView = OverlayMessageListView(msgs, stream)
+                            val liveRows = buildFlatChatItems(
+                                overlayView,
+                                null,
+                                fromIndex = splitIdx,
+                                seedKeys = frozenKeys,
+                            )
+                            val combined = if (liveRows.isEmpty()) {
+                                frozenRows
+                            } else {
+                                ArrayList<FlatChatItem>(frozenRows.size + liveRows.size).apply {
+                                    addAll(frozenRows)
+                                    addAll(liveRows)
+                                }
+                            }
+                            val idxMap = mergeFlatRowKeyIndex(frozenKeyIndex, frozenRows.size, liveRows)
+                            Triple(combined, idxMap, liveRows.size)
                         }
                     }
-                    flatItems = if (liveRows.isEmpty()) frozenRows else frozenRows + liveRows
-                    scroll.flatRowIndexByKey.value = buildMap {
-                        flatItems.forEachIndexed { idx, row -> put(row.key, idx) }
-                    }
+                    flatItems = nextFlatItems
+                    scroll.flatRowIndexByKey.value = nextKeyIndex
                     StreamJitterProbe.flatten(
                         ms = (System.nanoTime() - tickStartNs) / 1_000_000,
                         frozenReused = frozenReused,
                         frozen = frozenRows.size,
-                        live = liveRows.size,
+                        live = liveRowCount,
                         streamEmpty = stream.isEmpty(),
                     )
                     StreamPerfMonitor.tick(
                         flattenNanos = System.nanoTime() - tickStartNs,
                         frozenReused = frozenReused,
                         frozenRows = frozenRows.size,
-                        liveRows = liveRows.size,
+                        liveRows = liveRowCount,
                     )
                     if (stream.isEmpty() && streamWasActive) {
                         streamWasActive = false
@@ -228,6 +251,7 @@ internal fun rememberFlattenedChatItems(
  * Collects all non-thinking, non-info tool blocks across persisted messages plus the live
  * streaming side-channel without forcing ChatScreen to recompose on every token.
  */
+@OptIn(FlowPreview::class)
 @Composable
 internal fun rememberLiveToolBlocks(
     messages: List<ChatMessage>,
@@ -238,12 +262,17 @@ internal fun rememberLiveToolBlocks(
         combine(
             flowOf(messages),
             viewModel.streamingById,
-        ) { msgs, stream ->
-            val merged = if (stream.isEmpty()) msgs else mergeStreamingOverlay(msgs, stream)
-            merged.filter { it.role == "assistant" }
-                .flatMap { it.toolBlocks }
-                .filter(::isFloatingToolBlock)
-        }.collect { lastToolBlocks = it }
+        ) { msgs, stream -> msgs to stream }
+            .conflate()
+            .sample(100L)
+            .collect { (msgs, stream) ->
+                val next = withContext(Dispatchers.Default) {
+                    collectLiveFloatingToolBlocks(msgs, stream)
+                }
+                if (next != lastToolBlocks) {
+                    lastToolBlocks = next
+                }
+            }
     }
     return lastToolBlocks
 }
