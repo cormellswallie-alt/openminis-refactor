@@ -1028,6 +1028,10 @@ class ChatRepository(internal val dao: ChatDao) {
             when (toolName) {
                 "shell_execute" -> str("command")?.let { return cap(cleanPreview("$ $it")) }
                 "file_read" -> str("path")?.let { return cap(cleanPreview("Reading $it")) }
+                "file_search" -> {
+                    val pat = str("pattern") ?: str("glob") ?: str("path")
+                    if (pat != null) return cap(cleanPreview("Searching $pat"))
+                }
                 "file_write" -> str("path")?.let { return cap(cleanPreview("Writing $it")) }
                 "file_edit" -> str("path")?.let { return cap(cleanPreview("Editing $it")) }
                 "browser_use" -> {

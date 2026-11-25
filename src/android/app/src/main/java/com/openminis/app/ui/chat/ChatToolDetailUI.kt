@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Terminal
 import com.openminis.app.logging.AppLogger
 import androidx.compose.material3.HorizontalDivider
@@ -568,6 +569,32 @@ internal fun ToolDetailSheet(
                                 }
                             }
                         }
+                    }
+
+                    // ── File Search: M3 Expressive search-results card ──
+                    "file_search" -> {
+                        val pattern = toolArgsObj.optString("pattern", "")
+                            .ifEmpty { extractPartialJsonString("pattern", block.toolArgs) ?: "" }
+                        val glob = toolArgsObj.optString("glob", "")
+                            .ifEmpty { extractPartialJsonString("glob", block.toolArgs) ?: "" }
+                        val path = toolArgsObj.optString("path", "")
+                            .ifEmpty { extractPartialJsonString("path", block.toolArgs) ?: "/var/minis/workspace" }
+                        val headerTitle = when {
+                            pattern.isNotEmpty() -> "Search: $pattern"
+                            glob.isNotEmpty() -> "Find: $glob"
+                            else -> path.substringAfterLast("/").ifEmpty { path }
+                        }
+                        EditorCard(
+                            title = headerTitle,
+                            icon = Icons.Default.Search,
+                            iconTint = MaterialTheme.colorScheme.primary,
+                            titleColor = MaterialTheme.colorScheme.onSurface,
+                            sizeColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            bodyText = block.content,
+                            bodyColor = MaterialTheme.colorScheme.onSurface,
+                            isStreaming = isLive,
+                            scrollState = outputScrollState,
+                        )
                     }
 
                     // ── File Read / File Write: M3 Expressive editor card ──

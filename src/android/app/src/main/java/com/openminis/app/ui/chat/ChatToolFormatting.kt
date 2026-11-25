@@ -50,6 +50,7 @@ internal fun formatStepDuration(seconds: Long, stillRunning: Boolean): String {
 internal fun toolAccentColor(toolName: String): Color = when (toolName) {
     "shell_execute" -> Color(0xFF10B981)
     "file_read" -> Color(0xFF0EA5E9)
+    "file_search" -> Color(0xFF06B6D4)
     "file_write" -> Color(0xFF4F46E5)
     "file_edit" -> Color(0xFFF59E0B)
     "browser_use" -> Color(0xFF3B82F6)
@@ -64,6 +65,7 @@ internal fun toolAccentColor(toolName: String): Color = when (toolName) {
 internal fun toolIconFor(toolName: String) = when (toolName) {
     "shell_execute" -> Icons.Default.Terminal
     "file_read" -> Icons.Default.Description
+    "file_search" -> Icons.Default.Search
     "file_write" -> Icons.AutoMirrored.Filled.NoteAdd
     "file_edit" -> Icons.Default.EditNote
     "browser_use" -> Icons.Default.Language
@@ -79,6 +81,7 @@ internal fun toolIconFor(toolName: String) = when (toolName) {
 internal fun toolIconResFor(toolName: String?): Int = when (toolName) {
     "shell_execute" -> R.drawable.ic_tool_terminal
     "file_read" -> R.drawable.ic_tool_description
+    "file_search" -> R.drawable.ic_tool_search
     "file_write" -> R.drawable.ic_tool_note_add
     "file_edit" -> R.drawable.ic_tool_edit_note
     "browser_use" -> R.drawable.ic_tool_globe
@@ -102,6 +105,7 @@ internal fun friendlyToolTitleFor(toolName: String?): String =
 internal fun toolDisplayName(toolName: String): String = when (toolName) {
     "shell_execute" -> "terminal"
     "file_read" -> "file reader"
+    "file_search" -> "file search"
     "file_write" -> "file writer"
     "file_edit" -> "file editor"
     "browser_use" -> "browser"
@@ -117,6 +121,7 @@ internal fun toolDisplayName(toolName: String): String = when (toolName) {
 internal fun toolTitleLabel(toolName: String): String = when (toolName) {
     "shell_execute" -> "Minis is using Shell"
     "file_read" -> "Minis is reading File"
+    "file_search" -> "Minis is searching Files"
     "file_write" -> "Minis is using Editor"
     "file_edit" -> "Minis is editing File"
     "browser_use" -> "Minis is using Browser"

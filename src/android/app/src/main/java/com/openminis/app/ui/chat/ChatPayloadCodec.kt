@@ -189,6 +189,7 @@ object ChatPayloadCodec {
     fun friendlyToolTitle(toolName: String): String = when (toolName) {
         "shell_execute" -> "Execute Shell"
         "file_read" -> "Read File"
+        "file_search" -> "Search Files"
         "file_write" -> "Write File"
         "file_edit" -> "Edit File"
         "browser_use" -> "Browse Web"

@@ -52,6 +52,7 @@ object AgentTools {
     ): List<AgentToolDefinition> = buildList {
         add(shellExecuteDefinition())
         add(FileReadTool.definition())
+        add(FileSearchTool.definition())
         add(FileWriteTool.definition())
         add(FileEditTool.definition())
         if (supportsImageInput || visionGroupConfigured) {
@@ -133,7 +134,7 @@ object AgentTools {
             "Default timeout is 15 minutes.",
         parameters = mapOf(
             "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of what this tool call does, shown to the user (e.g. 'Install Python data analysis packages', 'List files in home directory'). Use the same language as the user."),
-            "command" to AgentToolParam("string", "The shell command to execute. Supports multi-line commands directly — no special escaping needed. Keep under 1000 chars; for longer scripts, write to a file with file_write first, then run it."),
+            "command" to AgentToolParam("string", "The shell command to execute. Supports multi-line commands directly — no special escaping needed. For large or reusable scripts, write to a file with file_write first, then run it."),
             // [T-android-parity-fixes] State the ceiling. It used to say only "use
             // a larger value" while values above 900 were silently cut to 900.
             "timeout" to AgentToolParam("integer", "Timeout in seconds (default: 900, maximum: 3600 — larger values are capped at 3600). Use a larger value for long-running commands like package installs."),

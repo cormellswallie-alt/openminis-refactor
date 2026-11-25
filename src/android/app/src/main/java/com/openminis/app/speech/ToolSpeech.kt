@@ -53,6 +53,10 @@ object ToolSpeech {
                 val d = detail ?: fileName(args?.optString("path"), zh)
                 if (zh) "正在读取文件:$d" else "Reading file: $d"
             }
+            "file_search" -> {
+                val d = detail ?: clip(args?.optString("pattern")) ?: clip(args?.optString("glob")) ?: fileName(args?.optString("path"), zh)
+                if (zh) "正在搜索文件:$d" else "Searching files: $d"
+            }
             "file_write" -> {
                 val d = detail ?: fileName(args?.optString("path"), zh)
                 if (zh) "正在写入文件:$d" else "Writing file: $d"

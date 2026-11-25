@@ -53,6 +53,39 @@ internal object SessionTokenStatsAggregator {
         val loops = maxOf(toolCalls, assistantCount)
         return SessionTokenStats(input, output, cacheRead, cacheWrite, context, loops, streamMs, streamOutput)
     }
+
+    /** Format a concise multi-line session diagnostics summary for `/stats`. */
+    fun formatSummary(
+        stats: SessionTokenStats,
+        modelName: String,
+        thinkingLabel: String,
+        contextWindow: Int,
+    ): String {
+        val totalInput = stats.input + stats.cacheRead
+        val cacheHitPct = if (totalInput > 0L) (stats.cacheRead * 100.0) / totalInput else 0.0
+        val ctxLine = if (contextWindow > 0 && stats.context > 0) {
+            val pct = (stats.context * 100.0) / contextWindow
+            String.format(java.util.Locale.US, "%,d / %,d (%.1f%%)", stats.context, contextWindow, pct)
+        } else {
+            String.format(java.util.Locale.US, "%,d", stats.context)
+        }
+        val speedPart = stats.outputTokensPerSecond?.let {
+            String.format(java.util.Locale.US, " · %.1f tok/s", it)
+        }.orEmpty()
+        val cachePart = buildString {
+            append(String.format(java.util.Locale.US, "Cache hit %.1f%% (read %,d", cacheHitPct, stats.cacheRead))
+            if (stats.cacheWrite > 0L) {
+                append(String.format(java.util.Locale.US, ", write %,d", stats.cacheWrite))
+            }
+            append(')')
+        }
+        return buildString {
+            append("Model: ").append(modelName).append(" · Thinking: ").append(thinkingLabel).append('\n')
+            append("Context: ").append(ctxLine).append(" · Steps: ").append(stats.loopCount).append(speedPart).append('\n')
+            append(String.format(java.util.Locale.US, "Tokens: in %,d · out %,d · ", stats.input, stats.output))
+            append(cachePart)
+        }
+    }
 }
 
 internal fun ChatViewModel.isEnhancedCacheConfirmedImpl(): Boolean =
@@ -109,10 +142,28 @@ internal fun ChatViewModel.executeSlashCommandImpl(cmd: SlashCommand, currentInp
         "memory" -> toggleMemoryEnabled()
         "thinking" -> toggleThinking()
         "clear" -> overlaysStore.requestClearChatConfirm()
+        "stats" -> showSessionStats()
         else -> AppLogger.info(TAG, "[Slash] unrecognized id=${cmd.id} — no dispatch")
     }
     exec.pendingCaret?.let { draftStore.setPendingCaret(it) }
     return exec.nextInput
+}
+
+internal fun ChatViewModel.showSessionStats() {
+    viewModelScope.launch {
+        val stats = loadSessionTokenStatsImpl()
+        val model = modelState.currentModel
+        val modelName = model?.displayName ?: "—"
+        val thinkingLabel = thinkingInfoImpl()?.level ?: "—"
+        val window = model?.contextWindowTokens ?: 0
+        val summary = SessionTokenStatsAggregator.formatSummary(
+            stats = stats,
+            modelName = modelName,
+            thinkingLabel = thinkingLabel,
+            contextWindow = window,
+        )
+        appendSystemInfo(text = summary, iconKind = "info")
+    }
 }
 
 internal fun ChatViewModel.toggleMemoryEnabled() {

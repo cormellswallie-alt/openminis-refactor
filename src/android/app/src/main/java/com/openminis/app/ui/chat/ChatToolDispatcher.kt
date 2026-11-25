@@ -21,6 +21,7 @@ import com.openminis.app.tools.AgentToolSwitch
 import com.openminis.app.tools.AskUserTool
 import com.openminis.app.tools.FileEditTool
 import com.openminis.app.tools.FileReadTool
+import com.openminis.app.tools.FileSearchTool
 import com.openminis.app.tools.FileWriteTool
 import com.openminis.app.tools.MemoryTools
 import com.openminis.app.tools.ReadImageTool
@@ -90,6 +91,7 @@ internal class ChatToolDispatcher(
                 }
                 result
             }
+            FileSearchTool.NAME -> FileSearchTool.execute(argsJson, fsSessionId(), context)
             FileWriteTool.NAME -> FileWriteTool.execute(argsJson, fsSessionId(), context).also {
                 if (it.success) maybeReloadSkillsForPath(argsJson)
             }
