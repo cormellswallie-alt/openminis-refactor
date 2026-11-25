@@ -34,18 +34,23 @@ fun Request.Builder.applyUserAgentOverride(
 }
 
 /**
- * Strip control characters (including CR/LF) and non-ASCII bytes that OkHttp
- * rejects in HTTP header values (`0x20..0x7E` and `\t` are allowed).
+ * Strip control characters (truncating at embedded CR/LF to prevent header
+ * injection) and non-ASCII bytes that OkHttp rejects in HTTP header values,
+ * collapsing repeated spaces left behind after stripping.
  */
 internal fun sanitizeHttpHeaderValue(raw: String?): String {
     if (raw.isNullOrBlank()) return ""
-    val sb = StringBuilder(raw.length)
-    for (ch in raw) {
+    val trimmed = raw.trim()
+    val sb = StringBuilder(trimmed.length)
+    for (ch in trimmed) {
+        if (ch == '\r' || ch == '\n') break
         val code = ch.code
-        if (code in 0x20..0x7E) {
+        if (ch == ' ' || ch == '\t') {
+            if (sb.isNotEmpty() && sb[sb.length - 1] != ' ') {
+                sb.append(' ')
+            }
+        } else if (code in 0x21..0x7E) {
             sb.append(ch)
-        } else if (ch == '\t') {
-            sb.append(' ')
         }
     }
     return sb.toString().trim()
