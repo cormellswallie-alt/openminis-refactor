@@ -246,7 +246,7 @@ class AgentStreamEngineTest {
         AgentStreamEngine(host).run(
             provider = primary,
             systemPrompt = "sys",
-            fallbackProviders = listOf(FallbackCandidate("entry_2", backup)),
+            fallbackProviders = listOf(FallbackCandidate(backup, "entry_2")),
             fallbackStrategy = FallbackStrategy.default,
         )
 
@@ -262,7 +262,7 @@ class AgentStreamEngineTest {
         private val streamFactory: () -> Flow<LLMStreamChunk>,
     ) : LLMProvider {
         override val name: String = "Fake-$modelId"
-        override val model: LLMModel = LLMModel(
+        override var model: LLMModel = LLMModel(
             id = modelId,
             displayName = modelId,
             provider = "fake",
@@ -270,19 +270,22 @@ class AgentStreamEngineTest {
             maxOutputTokens = 8_192,
         )
 
-        override suspend fun sendMessage(
+        override suspend fun sendMessageClamped(
             messages: List<LLMMessage>,
             systemPrompt: String?,
             maxTokens: Int,
             temperature: Double?,
+            imageParts: List<LLMMessage.ImagePart>,
+            tools: List<AgentToolDefinition>,
             thinkingLevel: ThinkingLevel,
         ): LLMResponse = LLMResponse("", "stop", null)
 
-        override fun streamMessage(
+        override fun streamMessageClamped(
             messages: List<LLMMessage>,
             systemPrompt: String?,
             maxTokens: Int,
             temperature: Double?,
+            imageParts: List<LLMMessage.ImagePart>,
             tools: List<AgentToolDefinition>,
             thinkingLevel: ThinkingLevel,
         ): Flow<LLMStreamChunk> = streamFactory()

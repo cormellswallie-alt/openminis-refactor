@@ -92,7 +92,7 @@ class OpenAIProtocolModulesTest {
     fun `vendor dialect derives stable prompt cache key and maps HTTP errors`() {
         val d = dialect()
         val msgs = listOf(
-            LLMMessage(role = LLMMessage.Role.SYSTEM, content = "sys"),
+            LLMMessage(role = LLMMessage.Role.ASSISTANT, content = "prior"),
             LLMMessage(role = LLMMessage.Role.USER, content = "hello cache"),
         )
         val k1 = d.derivePromptCacheKey(msgs)
