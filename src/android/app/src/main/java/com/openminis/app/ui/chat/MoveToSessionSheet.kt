@@ -41,7 +41,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -93,7 +93,7 @@ fun MoveToSessionSheet(
                     .take(MOVE_TO_SESSION_LIMIT)
                     .toList()
             }
-    }.collectAsState(initial = initialSessions)
+    }.collectAsStateWithLifecycle(initialValue = initialSessions)
 
     var refreshed by remember { mutableStateOf<List<ChatSessionEntity>?>(null) }
     val sessions = refreshed ?: seeded

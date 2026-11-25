@@ -171,7 +171,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -292,7 +292,7 @@ import androidx.compose.ui.draw.drawWithCache
 
 @Composable
 internal fun AssistantHeader() {
-    val soulMeta by com.openminis.app.agent.SoulStore.cachedMetadata.collectAsState()
+    val soulMeta by com.openminis.app.agent.SoulStore.cachedMetadata.collectAsStateWithLifecycle()
     val displayName = soulMeta.name.ifBlank { com.openminis.app.agent.SoulMetadata.DEFAULT.name }
     Row(
         verticalAlignment = Alignment.CenterVertically,

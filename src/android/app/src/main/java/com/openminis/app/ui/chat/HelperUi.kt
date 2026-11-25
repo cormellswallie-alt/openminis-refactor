@@ -63,7 +63,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import com.openminis.app.ui.theme.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -1354,10 +1354,10 @@ fun AgentTranscriptScreen(sessionId: String, onBack: () -> Unit) {
     val vm = remember(sessionId) {
         HeadlessChatRunner.viewModelFor(context, sessionId, ChatViewModelStore.PoolKind.CHILD)
     }
-    val isStreaming by vm.isStreaming.collectAsState()
-    val jobs by AgentJobRegistry.jobs.collectAsState()
+    val isStreaming by vm.isStreaming.collectAsStateWithLifecycle()
+    val jobs by AgentJobRegistry.jobs.collectAsStateWithLifecycle()
     val job = jobs.values.firstOrNull { it.runSessionId == sessionId }
-    val sessionTitle by vm.sessionTitle.collectAsState()
+    val sessionTitle by vm.sessionTitle.collectAsStateWithLifecycle()
     val title = remember(sessionTitle) { HelperRunner.stripChildSessionTitlePrefix(context, sessionTitle) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(isStreaming) { while (isStreaming) { delay(1000); now = System.currentTimeMillis() } }
@@ -1442,9 +1442,9 @@ fun AgentTranscriptScreen(sessionId: String, onBack: () -> Unit) {
         //
         // `toolBlocks` is the child's own blocks, so prev/next paging inside
         // the sheet walks THIS transcript and cannot wander into the parent's.
-        val selectedId by vm.selectedToolDetailId.collectAsState()
-        val transcriptMessages by vm.messages.collectAsState()
-        val transcriptStreaming by vm.streamingById.collectAsState()
+        val selectedId by vm.selectedToolDetailId.collectAsStateWithLifecycle()
+        val transcriptMessages by vm.messages.collectAsStateWithLifecycle()
+        val transcriptStreaming by vm.streamingById.collectAsStateWithLifecycle()
         val transcriptToolBlocks = remember(transcriptMessages, transcriptStreaming) {
             buildFlatChatItems(
                 if (transcriptStreaming.isEmpty()) transcriptMessages
@@ -1500,14 +1500,14 @@ internal fun HelperTranscript(
      */
     onOpenCallback: (AgentCallback) -> Unit = {},
 ) {
-    val messages by vm.messages.collectAsState()
-    val streaming by vm.streamingById.collectAsState()
+    val messages by vm.messages.collectAsStateWithLifecycle()
+    val streaming by vm.streamingById.collectAsStateWithLifecycle()
     // [T-android-usage-capsule-tint] The capsule is tap-to-reveal here too.
     // This renderer showed it unconditionally, so a child transcript carried a
     // permanent stats line under every reply while the main chat kept it
     // hidden — the same easter egg behaving differently depending on which
     // screen you were on.
-    val revealedUsage by vm.revealedUsageIds.collectAsState()
+    val revealedUsage by vm.revealedUsageIds.collectAsStateWithLifecycle()
     val items = remember(messages, streaming) {
         val merged = if (streaming.isEmpty()) messages else mergeStreamingOverlay(messages, streaming)
         buildFlatChatItems(merged)

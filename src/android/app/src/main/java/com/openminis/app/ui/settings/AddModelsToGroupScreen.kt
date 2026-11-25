@@ -14,7 +14,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,7 +38,7 @@ fun AddModelsToGroupScreen(
     providerRepository: ProviderRepository,
     onBack: () -> Unit,
 ) {
-    val config by providerRepository.config.collectAsState()
+    val config by providerRepository.config.collectAsStateWithLifecycle()
     val group = config.modelGroups.find { it.id == groupId }
 
     if (group == null) {

@@ -32,7 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -71,7 +71,7 @@ fun MountDetailScreen(
     onBrowseFiles: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
-    val entries by store.entries.collectAsState()
+    val entries by store.entries.collectAsStateWithLifecycle()
     val entry = entries.firstOrNull { it.id == mountId }
 
     if (entry == null) {

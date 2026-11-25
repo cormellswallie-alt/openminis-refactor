@@ -78,7 +78,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -97,7 +97,7 @@ fun FileBrowserScreen(
     onBack: () -> Unit,
     onPreviewFile: (FileItem) -> Unit,
 ) {
-    val state by viewModel.uiState.collectAsState()
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
     var deleteTarget by remember { mutableStateOf<FileItem?>(null) }
     // T-pwa-3: long-press → "Add to Home Screen" sheet, hosted at screen
     // scope so the dropdown can dismiss before the bottom-sheet appears.

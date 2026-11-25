@@ -51,7 +51,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -441,7 +441,7 @@ private fun ConfigureProviderScreen(
 ) {
     // Compute default label with auto-increment (e.g. "OpenAI", "OpenAI 2", ...)
     // A voice template preseeds its vendor name instead of the protocol name.
-    val config by providerRepository.config.collectAsState()
+    val config by providerRepository.config.collectAsStateWithLifecycle()
     val defaultLabel = remember(config) {
         val baseName = voiceTemplate?.name ?: providerType.displayName
         val existingLabels = config.instances.map { it.label }.toSet()

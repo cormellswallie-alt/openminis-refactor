@@ -24,7 +24,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -53,8 +53,8 @@ fun SpeechLanguagePickerSheet(
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState()
-    val supported by SpeechRecognitionManager.supportedLocales.collectAsState()
-    val current by SpeechRecognitionManager.locale.collectAsState()
+    val supported by SpeechRecognitionManager.supportedLocales.collectAsStateWithLifecycle()
+    val current by SpeechRecognitionManager.locale.collectAsStateWithLifecycle()
 
     val ordered = remember(supported) {
         val systemLang = Locale.getDefault().language

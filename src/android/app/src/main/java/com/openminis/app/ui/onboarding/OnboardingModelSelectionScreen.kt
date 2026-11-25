@@ -33,7 +33,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -78,7 +78,7 @@ fun OnboardingModelSelectionScreen(
     onBack: () -> Unit,
     onAddCustomModel: (instanceId: String) -> Unit = {},
 ) {
-    val config by providerRepository.config.collectAsState()
+    val config by providerRepository.config.collectAsStateWithLifecycle()
     val selected = remember { mutableStateListOf<String>() }
     var searchText by remember { mutableStateOf("") }
 

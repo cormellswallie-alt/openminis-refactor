@@ -32,13 +32,20 @@ import com.openminis.app.data.model.isVoiceInputCandidate
 import com.openminis.app.data.model.isVoiceOutputCandidate
 import com.openminis.app.data.model.isVoiceTemplateSeedShape
 import com.openminis.app.data.model.withInferredVoiceModality
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import java.util.concurrent.ConcurrentHashMap
 
 // Modality bit layout — must match src/ios/Providers/LLMTypes.swift
 // ModelModality OptionSet rawValue exactly. Used by export/import to
@@ -100,6 +107,10 @@ class ProviderRepository(internal val context: Context) {
     // downgrade-and-back-up reconciliation logic.
     internal val providerDao: ProviderConfigDao =
         ProviderDatabase.getInstance(context).providerConfigDao()
+
+    internal val repoIoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val thinkingRulesMutex = Mutex()
+    private val thinkingRulesCache = ConcurrentHashMap<String, List<Pair<String, ThinkingRule>>>()
 
     companion object {
         /** [T-sub-agents-v1] Log category for roster repairs. */
@@ -1311,15 +1322,33 @@ class ProviderRepository(internal val context: Context) {
     // never stored. On every mutation we publish the instance's rules into the
     // ThinkingRuleResolver cache so the (sync) request-builder can read them.
 
-    /** Load one instance's custom rules from Room, in stored order. */
-    fun thinkingRules(instanceId: String): List<ThinkingRule> = runBlocking {
-        runCatching { providerDao.loadThinkingRules(instanceId).map { ThinkingRuleCoding.toRule(it) } }
-            .getOrDefault(emptyList())
+    /** Non-blocking in-memory snapshot for UI initial render before async Room load completes. */
+    fun cachedThinkingRulesWithIds(instanceId: String): List<Pair<String, ThinkingRule>>? =
+        thinkingRulesCache[instanceId]
+
+    /** Load one instance's custom rules and persisted ids from Room off the main thread. */
+    suspend fun loadThinkingRulesWithIds(instanceId: String): List<Pair<String, ThinkingRule>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                providerDao.loadThinkingRules(instanceId)
+                    .sortedBy { it.sortOrder }
+                    .map { it.id to ThinkingRuleCoding.toRule(it) }
+            }.getOrDefault(emptyList()).also { entries ->
+                thinkingRulesCache[instanceId] = entries
+                ThinkingRuleResolver.setCustomRules(instanceId, entries.map { it.second })
+            }
+        }
+
+    /** Load one instance's custom rules (serves from memory cache when warm). */
+    fun thinkingRules(instanceId: String): List<ThinkingRule> {
+        thinkingRulesCache[instanceId]?.let { return it.map { pair -> pair.second } }
+        return runBlocking(Dispatchers.IO) { loadThinkingRulesWithIds(instanceId).map { it.second } }
     }
 
     /** The persisted ids for one instance's custom rules, parallel to [thinkingRules]. */
-    fun thinkingRuleIds(instanceId: String): List<String> = runBlocking {
-        runCatching { providerDao.loadThinkingRules(instanceId).map { it.id } }.getOrDefault(emptyList())
+    fun thinkingRuleIds(instanceId: String): List<String> {
+        thinkingRulesCache[instanceId]?.let { return it.map { pair -> pair.first } }
+        return runBlocking(Dispatchers.IO) { loadThinkingRulesWithIds(instanceId).map { it.first } }
     }
 
     /** First model id served by [instanceId], for the resolution-trace sample. Null if none. */
@@ -1331,16 +1360,59 @@ class ProviderRepository(internal val context: Context) {
     /** Warm the resolver cache with every instance's custom rules (called on config load). */
     fun loadAllThinkingRulesIntoCache() {
         runCatching {
-            val rows = runBlocking { providerDao.loadAllThinkingRules() }
-            val byInstance = rows.groupBy { it.providerInstanceId }
-                .mapValues { (_, rs) -> rs.sortedBy { it.sortOrder }.map { ThinkingRuleCoding.toRule(it) } }
-            ThinkingRuleResolver.setAllCustomRules(byInstance)
+            val rows = runBlocking(Dispatchers.IO) { providerDao.loadAllThinkingRules() }
+            val byInstanceEntries = rows.groupBy { it.providerInstanceId }
+                .mapValues { (_, rs) ->
+                    rs.sortedBy { it.sortOrder }.map { it.id to ThinkingRuleCoding.toRule(it) }
+                }
+            thinkingRulesCache.clear()
+            thinkingRulesCache.putAll(byInstanceEntries)
+            ThinkingRuleResolver.setAllCustomRules(
+                byInstanceEntries.mapValues { (_, entries) -> entries.map { it.second } },
+            )
         }
     }
 
-    private fun republishThinkingCache(instanceId: String) {
-        ThinkingRuleResolver.setCustomRules(instanceId, thinkingRules(instanceId))
+    internal fun deleteThinkingRulesForInstanceAsync(instanceId: String) {
+        thinkingRulesCache.remove(instanceId)
+        ThinkingRuleResolver.setCustomRules(instanceId, emptyList())
+        repoIoScope.launch {
+            thinkingRulesMutex.withLock {
+                runCatching { providerDao.deleteThinkingRulesForInstance(instanceId) }
+            }
+        }
     }
+
+    private fun publishThinkingRulesSnapshot(
+        instanceId: String,
+        entities: List<com.openminis.app.data.db.ThinkingRuleEntity>,
+    ) {
+        val entries = entities.sortedBy { it.sortOrder }.map { it.id to ThinkingRuleCoding.toRule(it) }
+        thinkingRulesCache[instanceId] = entries
+        ThinkingRuleResolver.setCustomRules(instanceId, entries.map { it.second })
+    }
+
+    /**
+     * Suspend variant of [saveThinkingRule] safe to invoke from UI/ViewModel coroutines
+     * without blocking the main thread.
+     */
+    suspend fun saveThinkingRuleAsync(instanceId: String, rule: ThinkingRule, id: String? = null): String =
+        withContext(Dispatchers.IO) {
+            thinkingRulesMutex.withLock {
+                val existing = providerDao.loadThinkingRules(instanceId).toMutableList()
+                val ruleId = id ?: java.util.UUID.randomUUID().toString()
+                val idx = existing.indexOfFirst { it.id == ruleId }
+                if (idx >= 0) {
+                    existing[idx] = ThinkingRuleCoding.toEntity(rule, ruleId, instanceId, existing[idx].sortOrder)
+                } else {
+                    existing.add(0, ThinkingRuleCoding.toEntity(rule, ruleId, instanceId, 0))
+                }
+                val renumbered = existing.mapIndexed { i, e -> e.copy(sortOrder = i) }
+                providerDao.replaceThinkingRules(instanceId, renumbered)
+                publishThinkingRulesSnapshot(instanceId, renumbered)
+                ruleId
+            }
+        }
 
     /**
      * Insert or update a custom rule. [id] null ⇒ new rule minted at the TOP of the
@@ -1348,45 +1420,43 @@ class ProviderRepository(internal val context: Context) {
      * rules shift down. A non-null [id] updates in place, preserving position.
      * Returns the rule id.
      */
-    fun saveThinkingRule(instanceId: String, rule: ThinkingRule, id: String? = null): String = runBlocking {
-        val existing = providerDao.loadThinkingRules(instanceId).toMutableList()
-        val ruleId = id ?: java.util.UUID.randomUUID().toString()
-        val idx = existing.indexOfFirst { it.id == ruleId }
-        if (idx >= 0) {
-            // Update in place at its current sort_order.
-            existing[idx] = ThinkingRuleCoding.toEntity(rule, ruleId, instanceId, existing[idx].sortOrder)
-        } else {
-            // New rule at the top; everything else shifts down.
-            existing.add(0, ThinkingRuleCoding.toEntity(rule, ruleId, instanceId, 0))
+    fun saveThinkingRule(instanceId: String, rule: ThinkingRule, id: String? = null): String =
+        runBlocking(Dispatchers.IO) { saveThinkingRuleAsync(instanceId, rule, id) }
+
+    /** Suspend variant of [deleteThinkingRule] safe for UI callers. */
+    suspend fun deleteThinkingRuleAsync(instanceId: String, id: String) = withContext(Dispatchers.IO) {
+        thinkingRulesMutex.withLock {
+            providerDao.deleteThinkingRule(id)
+            val survivors = providerDao.loadThinkingRules(instanceId)
+                .sortedBy { it.sortOrder }
+                .mapIndexed { i, e -> e.copy(sortOrder = i) }
+            providerDao.replaceThinkingRules(instanceId, survivors)
+            publishThinkingRulesSnapshot(instanceId, survivors)
         }
-        val renumbered = existing.mapIndexed { i, e -> e.copy(sortOrder = i) }
-        providerDao.replaceThinkingRules(instanceId, renumbered)
-        republishThinkingCache(instanceId)
-        ruleId
     }
 
     /** Delete a custom rule by id. Hard delete — Android provider config is local-only,
      *  so there is no sync channel that could resurrect it (no tombstone needed). */
-    fun deleteThinkingRule(instanceId: String, id: String) = runBlocking {
-        providerDao.deleteThinkingRule(id)
-        // Renumber survivors so sort_order stays dense.
-        val survivors = providerDao.loadThinkingRules(instanceId)
-            .sortedBy { it.sortOrder }
-            .mapIndexed { i, e -> e.copy(sortOrder = i) }
-        providerDao.replaceThinkingRules(instanceId, survivors)
-        republishThinkingCache(instanceId)
-    }
+    fun deleteThinkingRule(instanceId: String, id: String) =
+        runBlocking(Dispatchers.IO) { deleteThinkingRuleAsync(instanceId, id) }
+
+    /** Suspend variant of [reorderThinkingRules] safe for UI callers. */
+    suspend fun reorderThinkingRulesAsync(instanceId: String, orderedIds: List<String>) =
+        withContext(Dispatchers.IO) {
+            thinkingRulesMutex.withLock {
+                val byId = providerDao.loadThinkingRules(instanceId).associateBy { it.id }
+                val reordered = orderedIds.mapNotNull { byId[it] }
+                    .mapIndexed { i, e -> e.copy(sortOrder = i) }
+                val omitted = byId.values.filter { it.id !in orderedIds }
+                val merged = (reordered + omitted).mapIndexed { i, e -> e.copy(sortOrder = i) }
+                providerDao.replaceThinkingRules(instanceId, merged)
+                publishThinkingRulesSnapshot(instanceId, merged)
+            }
+        }
 
     /** Reorder an instance's custom rules to match [orderedIds] (a permutation). */
-    fun reorderThinkingRules(instanceId: String, orderedIds: List<String>) = runBlocking {
-        val byId = providerDao.loadThinkingRules(instanceId).associateBy { it.id }
-        val reordered = orderedIds.mapNotNull { byId[it] }
-            .mapIndexed { i, e -> e.copy(sortOrder = i) }
-        // Keep any id the caller omitted (defensive against a partial list) appended.
-        val omitted = byId.values.filter { it.id !in orderedIds }.map { it }
-        providerDao.replaceThinkingRules(instanceId, reordered + omitted)
-        republishThinkingCache(instanceId)
-    }
+    fun reorderThinkingRules(instanceId: String, orderedIds: List<String>) =
+        runBlocking(Dispatchers.IO) { reorderThinkingRulesAsync(instanceId, orderedIds) }
 
     /**
      * Built-in rules relevant to THIS instance, for the Provider-detail UI. Mirrors iOS

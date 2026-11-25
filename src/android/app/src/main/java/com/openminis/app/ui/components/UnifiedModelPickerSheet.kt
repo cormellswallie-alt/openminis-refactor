@@ -45,7 +45,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -99,7 +99,7 @@ fun UnifiedModelPickerSheet(
     onEditGroups: (() -> Unit)? = null,
     onEditProvider: ((instanceId: String) -> Unit)? = null,
 ) {
-    val config by providerRepository.config.collectAsState()
+    val config by providerRepository.config.collectAsStateWithLifecycle()
     var quickTestEntry by remember { mutableStateOf<ModelEntry?>(null) }
     var searchText by remember { mutableStateOf("") }
     var groupExpanded by remember { mutableStateOf(false) }
@@ -107,7 +107,7 @@ fun UnifiedModelPickerSheet(
     var systemVoices by remember {
         mutableStateOf(emptyList<SystemTtsVoiceCatalog.SystemVoice>())
     }
-    val pickedSystemVoice by VoiceOutputState.systemVoiceName.collectAsState()
+    val pickedSystemVoice by VoiceOutputState.systemVoiceName.collectAsStateWithLifecycle()
     LaunchedEffect(modalityFilter) {
         if (modalityFilter == PickerModalityFilter.AUDIO_OUTPUT) {
             VoiceOutputState.init(pickerContext)

@@ -10,7 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -468,7 +468,7 @@ fun AppNavigation(
     // fresh chat so ChatScreen's existing LaunchedEffect(shareBufferVersion)
     // can drain it. The drain itself is idempotent: consumeBuffer is one-shot,
     // so a ChatScreen already in the backstack won't double-inject.
-    val shareBufferVersion by com.openminis.app.share.ShareCoordinator.bufferVersion.collectAsState()
+    val shareBufferVersion by com.openminis.app.share.ShareCoordinator.bufferVersion.collectAsStateWithLifecycle()
     LaunchedEffect(shareBufferVersion) {
         if (shareBufferVersion == 0) return@LaunchedEffect
         val current = navController.currentDestination?.route ?: return@LaunchedEffect

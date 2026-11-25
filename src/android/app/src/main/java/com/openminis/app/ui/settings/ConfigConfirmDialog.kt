@@ -24,7 +24,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
@@ -54,7 +54,7 @@ import com.openminis.app.ui.components.MinisTextButton
  */
 @Composable
 fun ConfigConfirmDialogHost() {
-    val pending by ConfigConfirmationGate.pending.collectAsState()
+    val pending by ConfigConfirmationGate.pending.collectAsStateWithLifecycle()
     val change = pending ?: return
     ConfigConfirmDialog(change)
 }

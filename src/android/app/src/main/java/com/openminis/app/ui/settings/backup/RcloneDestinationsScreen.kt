@@ -30,7 +30,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -66,10 +66,10 @@ import com.openminis.app.ui.settings.SettingsSwitchRow
 @Composable
 fun RcloneDestinationsScreen(onBack: () -> Unit) {
     val vm: RcloneDestinationsViewModel = viewModel()
-    val remotes by vm.remotes.collectAsState()
-    val busy by vm.busy.collectAsState()
-    val error by vm.error.collectAsState()
-    val browse by vm.browse.collectAsState()
+    val remotes by vm.remotes.collectAsStateWithLifecycle()
+    val busy by vm.busy.collectAsStateWithLifecycle()
+    val error by vm.error.collectAsStateWithLifecycle()
+    val browse by vm.browse.collectAsStateWithLifecycle()
 
     var adding by remember { mutableStateOf(false) }
     // Name of the destination saved by the last completed save, so the list
@@ -227,9 +227,9 @@ internal fun AddServerForm(
     /** Called with the saved name when [pickFolder] is false. */
     onSaved: (String) -> Unit = {},
 ) {
-    val busy by vm.busy.collectAsState()
-    val error by vm.error.collectAsState()
-    val certificateRejected by vm.certificateRejected.collectAsState()
+    val busy by vm.busy.collectAsStateWithLifecycle()
+    val error by vm.error.collectAsStateWithLifecycle()
+    val certificateRejected by vm.certificateRejected.collectAsStateWithLifecycle()
 
     var backendExpanded by remember { mutableStateOf(false) }
     var backend by remember { mutableStateOf(RcloneBackendCatalog.all.first()) }
@@ -466,9 +466,9 @@ private fun FolderPickerRow(
 
 @Composable
 internal fun FolderBrowser(vm: RcloneDestinationsViewModel, onSaved: (String) -> Unit) {
-    val browse by vm.browse.collectAsState()
-    val busy by vm.busy.collectAsState()
-    val error by vm.error.collectAsState()
+    val browse by vm.browse.collectAsStateWithLifecycle()
+    val busy by vm.busy.collectAsStateWithLifecycle()
+    val error by vm.error.collectAsStateWithLifecycle()
     val b = browse ?: return
 
     var showNewFolder by remember { mutableStateOf(false) }

@@ -15,7 +15,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.Surface
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.res.pluralStringResource
 import com.openminis.app.ui.components.MinisAlertDialog
 import android.text.format.Formatter
@@ -108,8 +108,8 @@ internal fun StorageManagementScreen(
     onSessionClick: (sessionId: String) -> Unit = {},
 ) {
     val context = LocalContext.current
-    val state by vm.state.collectAsState()
-    val result by vm.result.collectAsState()
+    val state by vm.state.collectAsStateWithLifecycle()
+    val result by vm.result.collectAsStateWithLifecycle()
     var showClearLogsDialog by remember { mutableStateOf(false) }
     var showBatchClearDialog by remember { mutableStateOf(false) }
     var showBatchDeleteDialog by remember { mutableStateOf(false) }

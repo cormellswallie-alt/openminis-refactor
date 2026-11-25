@@ -3,184 +3,161 @@ package com.openminis.app.ui.chat
 import androidx.compose.runtime.MutableState
 import androidx.compose.foundation.layout.BoxScope
 import java.io.File
-import androidx.compose.ui.graphics.asAndroidBitmap
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.layer.drawLayer
-import androidx.compose.ui.graphics.rememberGraphicsLayer
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.foundation.gestures.verticalDrag
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.conflate
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.filterNotNull
-import kotlinx.coroutines.flow.sample
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import androidx.compose.runtime.withFrameNanos
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material3.ripple
 import com.openminis.app.R
 import com.openminis.app.logging.AppLogger
 import androidx.compose.material3.ExperimentalMaterial3Api
 import com.openminis.app.ui.theme.articulatedItemShape
-import androidx.compose.material3.rememberModalBottomSheetState
 import com.openminis.app.ui.theme.toShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateMapOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.compositionLocalOf
-import androidx.compose.runtime.produceState
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onPlaced
-import androidx.compose.ui.layout.boundsInWindow
-import androidx.compose.ui.layout.positionInWindow
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.compose.foundation.layout.isImeVisible
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.sp
-import com.mikepenz.markdown.compose.components.markdownComponents
-import com.mikepenz.markdown.m3.markdownColor
-import com.mikepenz.markdown.m3.markdownTypography
-import org.intellij.markdown.ast.getTextInNode
 import com.openminis.app.agent.jobs.AgentJobRegistry
 import com.openminis.app.ui.theme.ChatColors
 
 
+@Stable
+internal class ChatMessageListState(
+    val bottomReserve: Dp,
+    val canResume: Boolean,
+    val compactProgress: ChatViewModel.CompactProgress?,
+    val error: String?,
+    val flatItems: List<FlatChatItem>,
+    val grayedMap: Map<String, Boolean>,
+    val hasOlderMessages: Boolean,
+    val inputText: String,
+    val isStreaming: Boolean,
+    val mentionMenuOpenForSpy: Boolean,
+    val messages: List<ChatMessage>,
+    val pendingQuestionnaire: PendingQuestionnaire?,
+    val revealedUsageIds: Set<String>,
+    val sessionId: String,
+    val slashMenuOpen: Boolean,
+)
+
+@Stable
+internal class ChatMessageListControllers(
+    val context: android.content.Context,
+    val coroutineScope: kotlinx.coroutines.CoroutineScope,
+    val inputFocusRequester: androidx.compose.ui.focus.FocusRequester,
+    val listState: androidx.compose.foundation.lazy.LazyListState,
+    val perfFirstLayoutFired: java.util.concurrent.atomic.AtomicBoolean,
+    val screenMountAtMs: Long,
+    val selectionController: SelectionController,
+    val viewModel: ChatViewModel,
+    val sharedEffect: androidx.compose.foundation.OverscrollEffect?,
+)
+
+@Stable
+internal class ChatMessageListInteractions(
+    val callbackDetailBlockState: MutableState<AssistantBlock?>,
+    val coldOpenSummaryEmittedState: MutableState<Boolean>,
+    val compactAboveTargetIdState: MutableState<String?>,
+    val deleteFromHereTargetIdState: MutableState<String?>,
+    val lastColdPrewarmMsState: MutableState<Long>,
+    val listRootCoordsState: MutableState<androidx.compose.ui.layout.LayoutCoordinates?>,
+    val userScrolledAwayState: MutableState<Boolean>,
+    val onOpenTerminalWithCommand: (String) -> Unit,
+    val onPreviewAttachment: (com.openminis.app.ui.sandbox.FileItem) -> Unit,
+    val originalMessageId: (String) -> String,
+    val safeMutate: (() -> Unit) -> Unit,
+    val tracedScrollToItem: suspend (String, Int, Int) -> Unit,
+)
+
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, kotlinx.coroutines.FlowPreview::class)
 @Composable
 internal fun ChatScreenMessageList(
-    bottomReserve: Dp,
-    callbackDetailBlockState: MutableState<AssistantBlock?>,
-    canResume: Boolean,
-    coldOpenSummaryEmittedState: MutableState<Boolean>,
-    compactAboveTargetIdState: MutableState<String?>,
-    compactProgress: ChatViewModel.CompactProgress?,
-    context: android.content.Context,
-    coroutineScope: kotlinx.coroutines.CoroutineScope,
-    deleteFromHereTargetIdState: MutableState<String?>,
-    error: String?,
-    flatItems: List<FlatChatItem>,
-    grayedMap: Map<String, Boolean>,
-    hasOlderMessages: Boolean,
-    inputFocusRequester: androidx.compose.ui.focus.FocusRequester,
-    inputText: String,
-    isStreaming: Boolean,
-    lastColdPrewarmMsState: MutableState<Long>,
-    listRootCoordsState: MutableState<androidx.compose.ui.layout.LayoutCoordinates?>,
-    listState: androidx.compose.foundation.lazy.LazyListState,
-    mentionMenuOpenForSpy: Boolean,
-    messages: List<ChatMessage>,
-    onOpenTerminalWithCommand: (String) -> Unit,
-    onPreviewAttachment: (com.openminis.app.ui.sandbox.FileItem) -> Unit,
-    originalMessageId: (String) -> String,
-    pendingQuestionnaire: PendingQuestionnaire?,
-    perfFirstLayoutFired: java.util.concurrent.atomic.AtomicBoolean,
-    revealedUsageIds: Set<String>,
-    safeMutate: (() -> Unit) -> Unit,
-    screenMountAtMs: Long,
-    selectionController: SelectionController,
-    sessionId: String,
-    slashMenuOpen: Boolean,
-    tracedScrollToItem: suspend (String, Int, Int) -> Unit,
-    userScrolledAwayState: MutableState<Boolean>,
-    viewModel: ChatViewModel,
-    sharedEffect: androidx.compose.foundation.OverscrollEffect?,
+    state: ChatMessageListState,
+    controllers: ChatMessageListControllers,
+    interactions: ChatMessageListInteractions,
 ) {
-    var callbackDetailBlock by callbackDetailBlockState
-    var coldOpenSummaryEmitted by coldOpenSummaryEmittedState
-    var compactAboveTargetId by compactAboveTargetIdState
-    var deleteFromHereTargetId by deleteFromHereTargetIdState
-    var lastColdPrewarmMs by lastColdPrewarmMsState
-    var listRootCoords by listRootCoordsState
-    var userScrolledAway by userScrolledAwayState
+    val bottomReserve = state.bottomReserve
+    val canResume = state.canResume
+    val compactProgress = state.compactProgress
+    val error = state.error
+    val flatItems = state.flatItems
+    val grayedMap = state.grayedMap
+    val hasOlderMessages = state.hasOlderMessages
+    val inputText = state.inputText
+    val isStreaming = state.isStreaming
+    val mentionMenuOpenForSpy = state.mentionMenuOpenForSpy
+    val messages = state.messages
+    val pendingQuestionnaire = state.pendingQuestionnaire
+    val revealedUsageIds = state.revealedUsageIds
+    val sessionId = state.sessionId
+    val slashMenuOpen = state.slashMenuOpen
+
+    val context = controllers.context
+    val coroutineScope = controllers.coroutineScope
+    val inputFocusRequester = controllers.inputFocusRequester
+    val listState = controllers.listState
+    val perfFirstLayoutFired = controllers.perfFirstLayoutFired
+    val screenMountAtMs = controllers.screenMountAtMs
+    val selectionController = controllers.selectionController
+    val viewModel = controllers.viewModel
+    val sharedEffect = controllers.sharedEffect
+
+    val onOpenTerminalWithCommand = interactions.onOpenTerminalWithCommand
+    val onPreviewAttachment = interactions.onPreviewAttachment
+    val originalMessageId = interactions.originalMessageId
+    val safeMutate = interactions.safeMutate
+    val tracedScrollToItem = interactions.tracedScrollToItem
+
+    var callbackDetailBlock by interactions.callbackDetailBlockState
+    var coldOpenSummaryEmitted by interactions.coldOpenSummaryEmittedState
+    var compactAboveTargetId by interactions.compactAboveTargetIdState
+    var deleteFromHereTargetId by interactions.deleteFromHereTargetIdState
+    var lastColdPrewarmMs by interactions.lastColdPrewarmMsState
+    var listRootCoords by interactions.listRootCoordsState
+    var userScrolledAway by interactions.userScrolledAwayState
 
     fun FlatChatItem.isCompacted(): Boolean = when (this) {
         is FlatChatItem.UserBubble -> grayedMap[originalMessageId(message.id)] == true

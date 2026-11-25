@@ -28,7 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -55,7 +55,7 @@ fun EnvironmentVariablesScreen(
     envVarRepository: EnvVarRepository,
     onBack: () -> Unit,
 ) {
-    val entries by envVarRepository.entries.collectAsState()
+    val entries by envVarRepository.entries.collectAsStateWithLifecycle()
     var showAddSheet by remember { mutableStateOf(false) }
     var editEntryId by remember { mutableStateOf<String?>(null) }
     var deleteEntryId by remember { mutableStateOf<String?>(null) }
@@ -73,7 +73,7 @@ fun EnvironmentVariablesScreen(
         }
     }
 
-    val privacyEnabled by com.openminis.app.data.EnvVarPrivacyStore.enabled.collectAsState()
+    val privacyEnabled by com.openminis.app.data.EnvVarPrivacyStore.enabled.collectAsStateWithLifecycle()
 
     SettingsScaffold(
         title = stringResource(R.string.env_var_title),

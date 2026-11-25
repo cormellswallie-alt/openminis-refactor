@@ -18,7 +18,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -44,7 +44,7 @@ fun ShadowVoiceDetailScreen(
     providerRepository: ProviderRepository,
     onBack: () -> Unit,
 ) {
-    val config by providerRepository.config.collectAsState()
+    val config by providerRepository.config.collectAsStateWithLifecycle()
     val instance = config.instances.find { it.id == instanceId }
     if (instance == null) {
         onBack()

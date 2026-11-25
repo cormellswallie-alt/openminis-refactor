@@ -44,7 +44,7 @@ internal fun ChatViewModel.enqueuePromptImpl(
         prefill: List<com.openminis.app.scheduled.PrefilledToolCall> = emptyList(),
     ): Boolean {
         val trimmed = text.trim()
-        val pendingAttachments = if (origin == QueuedPromptOrigin.USER) _attachments.value else emptyList()
+        val pendingAttachments = if (origin == QueuedPromptOrigin.USER) overlaysStore.attachments.value else emptyList()
         if (!_isStreaming.value || (trimmed.isEmpty() && pendingAttachments.isEmpty())) return false
 
         val prompt = QueuedPrompt(

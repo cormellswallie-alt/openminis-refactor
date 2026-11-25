@@ -46,7 +46,7 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -89,7 +89,7 @@ fun ProviderDetailScreen(
     onAddCustomModel: () -> Unit = {},
     onVoiceServiceClick: (String) -> Unit = {},
 ) {
-    val config by providerRepository.config.collectAsState()
+    val config by providerRepository.config.collectAsStateWithLifecycle()
     val instance = config.instances.find { it.id == instanceId }
     var showDeleteDialog by remember { mutableStateOf(false) }
     // T143: long-press → confirm delete on a single model entry. Built-in
@@ -878,7 +878,7 @@ private fun OAuthCredentialBlock(
     // failure was only written to the log — after authorizing Anthropic in the
     // browser the user came back to an unchanged screen and no explanation.
     var authError by remember(instance.id) { mutableStateOf<String?>(null) }
-    val oauthPhase by com.openminis.app.auth.OAuthForegroundGate.phase.collectAsState()
+    val oauthPhase by com.openminis.app.auth.OAuthForegroundGate.phase.collectAsStateWithLifecycle()
     // [T-kimi-oauth] Device-code dialog state for Kimi re-auth (see
     // AddProviderScreen.OAuthConfigSection for the rationale).
     var kimiDeviceAuth by remember(instance.id) {

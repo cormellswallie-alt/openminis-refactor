@@ -1,66 +1,27 @@
 package com.openminis.app.ui.chat
 
 import androidx.compose.runtime.MutableState
-import androidx.compose.ui.graphics.asAndroidBitmap
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.layer.drawLayer
-import androidx.compose.ui.graphics.rememberGraphicsLayer
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.foundation.gestures.verticalDrag
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Layers
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.conflate
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.filterNotNull
-import kotlinx.coroutines.flow.sample
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentWidth
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -99,7 +60,6 @@ import com.openminis.app.ui.components.MinisMenuDivider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.IconButtonDefaults
 import com.openminis.app.ui.theme.articulatedItemShape
-import androidx.compose.material3.rememberModalBottomSheetState
 import com.openminis.app.ui.theme.toShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -107,65 +67,26 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.derivedStateOf
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateMapOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.compositionLocalOf
-import androidx.compose.runtime.produceState
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.onPlaced
-import androidx.compose.ui.layout.boundsInWindow
-import androidx.compose.ui.layout.positionInWindow
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.input.key.isShiftPressed
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onKeyEvent
-import androidx.compose.ui.input.key.type
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.isImeVisible
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Memory
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.sp
-import com.mikepenz.markdown.compose.components.markdownComponents
-import com.mikepenz.markdown.m3.markdownColor
-import com.mikepenz.markdown.m3.markdownTypography
-import org.intellij.markdown.ast.getTextInNode
 import com.openminis.app.data.model.ModelGroup
 import com.openminis.app.data.repository.MemoryRepository
 import com.openminis.app.data.repository.ProviderRepository
@@ -222,7 +143,7 @@ internal fun ChatScreenTopBar(
             val noFontPad = androidx.compose.ui.text.TextStyle(
                 platformStyle = androidx.compose.ui.text.PlatformTextStyle(includeFontPadding = false),
             )
-            val fallbackTrigger by viewModel.fallbackTrigger.collectAsState()
+            val fallbackTrigger by viewModel.fallbackTrigger.collectAsStateWithLifecycle()
             val fallbackPulseAlpha = remember { androidx.compose.animation.core.Animatable(0f) }
             val fallbackPulseBaseline = remember(viewModel) {
                 viewModel.fallbackTrigger.value
@@ -325,13 +246,13 @@ internal fun ChatScreenTopBar(
                         }
                     }
                     if (providerName.isNotEmpty() || modelName.isNotEmpty()) {
-                        val thinkingLevelBadgeState by viewModel.thinkingLevel.collectAsState()
+                        val thinkingLevelBadgeState by viewModel.thinkingLevel.collectAsStateWithLifecycle()
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(5.dp),
                         ) {
-                            val fastBadgeEligible by viewModel.showFastModeToggle.collectAsState()
-                            val fastBadgeOn by viewModel.fastModeEnabled.collectAsState()
+                            val fastBadgeEligible by viewModel.showFastModeToggle.collectAsStateWithLifecycle()
+                            val fastBadgeOn by viewModel.fastModeEnabled.collectAsStateWithLifecycle()
                             if (fastBadgeEligible && fastBadgeOn) {
                                 Box(
                                     contentAlignment = Alignment.Center,
@@ -475,7 +396,7 @@ internal fun ChatScreenTopBar(
                     // disappears, consistent with the per-session gating
                     // of the memory_get / memory_write tools and the
                     // system-prompt injection.
-                    val menuMemoryEnabled by viewModel.memoryEnabled.collectAsState()
+                    val menuMemoryEnabled by viewModel.memoryEnabled.collectAsStateWithLifecycle()
                     // [T-android-menu-icons-ios] Every row's icon goes
                     // through MenuItemIcon (one size, Outlined only) and
                     // follows the iOS SF Symbol for the same item, so the
@@ -614,8 +535,8 @@ internal fun ChatScreenTopBar(
                     // providers) — showEnhancedCacheToggle recomputes on
                     // model/provider switch. First enable prompts a
                     // one-time extra-billing confirmation.
-                    val showEnhancedCache by viewModel.showEnhancedCacheToggle.collectAsState()
-                    val enhancedCacheOn by viewModel.enhancedCacheEnabled.collectAsState()
+                    val showEnhancedCache by viewModel.showEnhancedCacheToggle.collectAsStateWithLifecycle()
+                    val enhancedCacheOn by viewModel.enhancedCacheEnabled.collectAsStateWithLifecycle()
                     if (showEnhancedCache) {
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.chat_menu_enhanced_cache)) },
@@ -659,8 +580,8 @@ internal fun ChatScreenTopBar(
                     // subscription) and the nav model row shows a ⚡
                     // badge. Sits next to Enhanced Cache — both are
                     // model-invocation controls (iOS 09944220 grouping).
-                    val showFastMode by viewModel.showFastModeToggle.collectAsState()
-                    val fastModeOn by viewModel.fastModeEnabled.collectAsState()
+                    val showFastMode by viewModel.showFastModeToggle.collectAsStateWithLifecycle()
+                    val fastModeOn by viewModel.fastModeEnabled.collectAsStateWithLifecycle()
                     if (showFastMode) {
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.chat_menu_fast_mode)) },
@@ -682,7 +603,7 @@ internal fun ChatScreenTopBar(
                     // and sends; off → the user is asked first. Lives
                     // beside Fast Mode because both are model-invocation
                     // controls the user flips mid-conversation.
-                    val autoCompactOn by viewModel.autoCompactEnabled.collectAsState()
+                    val autoCompactOn by viewModel.autoCompactEnabled.collectAsStateWithLifecycle()
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.chat_menu_auto_compact)) },
                         onClick = { viewModel.setAutoCompactEnabled(!autoCompactOn) },

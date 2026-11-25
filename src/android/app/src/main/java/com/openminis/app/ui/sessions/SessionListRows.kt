@@ -93,7 +93,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -931,10 +931,10 @@ private fun SessionRow(
             leadingIcon()
         }
 
-        val activeSessions by SessionActivityTracker.activeSessions.collectAsState()
-        val agentWorkParents by AgentJobRegistry.parentsWithAgentWork.collectAsState()
+        val activeSessions by SessionActivityTracker.activeSessions.collectAsStateWithLifecycle()
+        val agentWorkParents by AgentJobRegistry.parentsWithAgentWork.collectAsStateWithLifecycle()
         val isActive = session.id in activeSessions || session.id in agentWorkParents
-        val badgeMap by com.openminis.app.service.SessionBadgeStore.byId.collectAsState()
+        val badgeMap by com.openminis.app.service.SessionBadgeStore.byId.collectAsStateWithLifecycle()
         val badgeHead = badgeMap[session.id]?.firstOrNull()
 
         Box(modifier = Modifier.size(46.dp)) {

@@ -41,7 +41,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import com.openminis.app.ui.theme.toShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -79,7 +79,7 @@ fun ScheduledTasksScreen(
     val vm: ScheduledTasksViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
         factory = ScheduledTasksViewModel.factory(context),
     )
-    val tasks by vm.tasks.collectAsState()
+    val tasks by vm.tasks.collectAsStateWithLifecycle()
     var pendingDelete by remember { mutableStateOf<ScheduledTask?>(null) }
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 

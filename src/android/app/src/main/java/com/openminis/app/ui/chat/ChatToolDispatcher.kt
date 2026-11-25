@@ -24,6 +24,7 @@ import com.openminis.app.tools.MemoryTools
 import com.openminis.app.tools.ReadImageTool
 import com.openminis.app.tools.ToolExecutionResult
 import com.openminis.app.tools.VisionGroupResolver
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -494,6 +495,8 @@ internal class ChatToolDispatcher(
                 toolTitle = toolTitle,
                 timedOut = timedOut,
             )
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (e: Exception) {
             ToolExecutionResult("Error: ${e.message}", false)
         }
@@ -573,6 +576,8 @@ internal class ChatToolDispatcher(
                 imageFilePath = persistentImagePath,
                 imageLinuxPath = linuxImagePath,
             )
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (e: Exception) {
             ToolExecutionResult("Error: ${e.message}", false)
         }

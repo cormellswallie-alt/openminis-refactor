@@ -70,7 +70,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -119,7 +119,7 @@ fun SkillsManagementScreen(
     onSkillClick: (String) -> Unit = {},
     onMinisSkillsClick: () -> Unit = {},
 ) {
-    val skills by skillRepository.skills.collectAsState()
+    val skills by skillRepository.skills.collectAsStateWithLifecycle()
     var showImportSheet by remember { mutableStateOf(false) }
     var deleteSkillId by remember { mutableStateOf<String?>(null) }
     var showAddMenu by remember { mutableStateOf(false) }
@@ -680,7 +680,7 @@ fun SkillDetailScreen(
     onBack: () -> Unit,
     onFileClick: (String, String) -> Unit = { _, _ -> },
 ) {
-    val skills by skillRepository.skills.collectAsState()
+    val skills by skillRepository.skills.collectAsStateWithLifecycle()
     val skill = skills.find { it.id == skillId }
     var deleted by remember { mutableStateOf(false) }
 
@@ -1227,7 +1227,7 @@ fun SkillFileViewerScreen(
     skillRepository: SkillRepository,
     onBack: () -> Unit,
 ) {
-    val skills by skillRepository.skills.collectAsState()
+    val skills by skillRepository.skills.collectAsStateWithLifecycle()
     val skill = skills.find { it.id == skillId }
     if (skill == null) { onBack(); return }
 

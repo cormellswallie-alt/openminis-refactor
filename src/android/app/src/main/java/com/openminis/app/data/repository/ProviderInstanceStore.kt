@@ -1,8 +1,4 @@
 package com.openminis.app.data.repository
-import com.openminis.app.provider.thinking.ThinkingRuleResolver
-import com.openminis.app.data.db.compositeEntryKey
-import com.openminis.app.data.db.toProviderConfig
-import com.openminis.app.data.db.toSnapshot
 import com.openminis.app.data.model.ImageEndpointMode
 import com.openminis.app.data.model.LLMModel
 import com.openminis.app.data.model.ModelEntry
@@ -10,18 +6,8 @@ import com.openminis.app.data.model.ProviderCredential
 import com.openminis.app.data.model.ProviderInstance
 import com.openminis.app.data.model.ProviderType
 import com.openminis.app.data.model.VoiceProviderTemplate
-import com.openminis.app.data.model.hasImageInput
-import com.openminis.app.data.model.hasVoiceModality
-import com.openminis.app.data.model.isVoiceCandidate
-import com.openminis.app.data.model.isVoiceInputCandidate
-import com.openminis.app.data.model.isVoiceOutputCandidate
 import com.openminis.app.data.model.isVoiceTemplateSeedShape
-import com.openminis.app.data.model.withInferredVoiceModality
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 
 
 internal fun ProviderRepository.addInstanceImpl(instance: ProviderInstance): Unit = synchronized(configLock) {
@@ -212,10 +198,7 @@ internal fun ProviderRepository.removeInstanceImpl(instanceId: String): Unit = s
         deleteApiKey(instanceId)
         // [T-android-thinking-rules-phase2] The instance is gone — drop its custom
         // rules from Room and the resolver cache (they can never fire again).
-        runCatching {
-            runBlocking { providerDao.deleteThinkingRulesForInstance(instanceId) }
-            ThinkingRuleResolver.setCustomRules(instanceId, emptyList())
-        }
+        deleteThinkingRulesForInstanceAsync(instanceId)
     }
 
 internal fun ProviderRepository.setImageEndpointResolvedImpl(instanceId: String, endpoint: ImageEndpointMode): Unit =

@@ -49,7 +49,7 @@ import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -92,7 +92,7 @@ fun MountedFoldersScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val entries by store.entries.collectAsState()
+    val entries by store.entries.collectAsStateWithLifecycle()
     val isAtCapacity = entries.size >= MountedFoldersStore.MAX_MOUNTS
 
     var pendingPickedUri by remember { mutableStateOf<Uri?>(null) }

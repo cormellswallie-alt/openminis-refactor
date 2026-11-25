@@ -4,8 +4,10 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -199,6 +201,8 @@ abstract class OAuthManager(
 
     private var currentState: String? = null
     private var callbackServer: OAuthCallbackServer? = null
+    private val oauthScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var pendingExchangeJob: Job? = null
 
     open fun buildAuthorizationUrl(): String {
         val (_, challenge) = generateAndSavePKCE()
@@ -222,7 +226,8 @@ abstract class OAuthManager(
                 onComplete(false)
                 return@OAuthCallbackServer
             }
-            kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+            pendingExchangeJob?.cancel()
+            pendingExchangeJob = oauthScope.launch {
                 // [T-android-oauth-foreground-exchange] See OAuthForegroundGate.
                 OAuthForegroundGate.awaitForeground(TAG)
                 val success = exchangeCode(code)

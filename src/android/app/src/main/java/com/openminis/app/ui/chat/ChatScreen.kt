@@ -5,27 +5,10 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import java.io.File
 import androidx.core.content.ContextCompat
-import androidx.compose.ui.graphics.asAndroidBitmap
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.layer.drawLayer
-import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.foundation.gestures.verticalDrag
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.filled.AutoAwesome
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -38,15 +21,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
-import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Column
@@ -55,19 +34,13 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -96,7 +69,6 @@ import com.openminis.app.ui.theme.MaterialShapes
 import com.openminis.app.ui.theme.ExpressiveTokens
 import com.openminis.app.ui.theme.articulatedItemShape
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.rememberModalBottomSheetState
 import com.openminis.app.ui.theme.toShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -107,46 +79,34 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.onPlaced
-import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -154,33 +114,22 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.openminis.app.offload.OffloadPermissionManager
-import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.m3.Markdown
-import com.mikepenz.markdown.m3.markdownColor
-import com.mikepenz.markdown.m3.markdownTypography
-import org.intellij.markdown.ast.getTextInNode
 import com.openminis.app.data.model.LLMModel
 import com.openminis.app.data.model.ModelEntry
 import com.openminis.app.data.model.ThinkingLevel
@@ -481,36 +430,36 @@ fun ChatScreen(
     // grows in steps when the user reaches the top via [viewModel.loadOlderMessages].
     // Callers needing the full history (compact / fork / regenerate / send)
     // continue to read viewModel.messages directly inside the VM.
-    val messages by viewModel.uiMessages.collectAsState()
+    val messages by viewModel.uiMessages.collectAsStateWithLifecycle()
     // [T-android-usage-capsule-style] Which replies currently show their usage
     // capsule. Empty by default — it is revealed by tapping the reply's tail.
-    val revealedUsageIds by viewModel.revealedUsageIds.collectAsState()
-    val hasOlderMessages by viewModel.hasOlderMessages.collectAsState()
-    val isStreaming by viewModel.isStreaming.collectAsState()
-    val canResume by viewModel.canResume.collectAsState()
+    val revealedUsageIds by viewModel.revealedUsageIds.collectAsStateWithLifecycle()
+    val hasOlderMessages by viewModel.hasOlderMessages.collectAsStateWithLifecycle()
+    val isStreaming by viewModel.isStreaming.collectAsStateWithLifecycle()
+    val canResume by viewModel.canResume.collectAsStateWithLifecycle()
     // [T-android-context-usage-hint] Context-window pressure. `contextUsage`
     // is live (drives the glow on every usage chunk); `contextUsageHint` is
     // the discrete, generation-keyed placeholder line.
-    val contextUsage by viewModel.contextUsage.collectAsState()
-    val contextUsageHint by viewModel.contextUsageHint.collectAsState()
+    val contextUsage by viewModel.contextUsage.collectAsStateWithLifecycle()
+    val contextUsageHint by viewModel.contextUsageHint.collectAsStateWithLifecycle()
     // [T-android-compact-progress] null when no compaction is running.
-    val compactProgress by viewModel.compactProgress.collectAsState()
-    val error by viewModel.error.collectAsState()
-    val modelName by viewModel.modelName.collectAsState()
-    val sessionTitle by viewModel.sessionTitle.collectAsState()
-    val sessionCategory by viewModel.sessionCategory.collectAsState()
-    val attachments by viewModel.attachments.collectAsState()
+    val compactProgress by viewModel.compactProgress.collectAsStateWithLifecycle()
+    val error by viewModel.error.collectAsStateWithLifecycle()
+    val modelName by viewModel.modelName.collectAsStateWithLifecycle()
+    val sessionTitle by viewModel.sessionTitle.collectAsStateWithLifecycle()
+    val sessionCategory by viewModel.sessionCategory.collectAsStateWithLifecycle()
+    val attachments by viewModel.attachments.collectAsStateWithLifecycle()
     // [T-android-paste-placeholder] Folded pastes, rendered as chips above the
     // attachment row.
-    val pastedTexts by viewModel.pastedTexts.collectAsState()
-    val availableGroups by viewModel.availableGroups.collectAsState()
-    val selectedGroupId by viewModel.selectedGroupId.collectAsState()
-    val showBrowserSheet by viewModel.showBrowserSheet.collectAsState()
-    val showMemorySheet by viewModel.showMemorySheet.collectAsState()
-    val memoryToolRecords by viewModel.memoryToolRecords.collectAsState()
-    val pendingQuestionnaire by viewModel.pendingQuestionnaire.collectAsState()
-    val selectedGroupName by viewModel.selectedGroupName.collectAsState()
-    val providerName by viewModel.providerName.collectAsState()
+    val pastedTexts by viewModel.pastedTexts.collectAsStateWithLifecycle()
+    val availableGroups by viewModel.availableGroups.collectAsStateWithLifecycle()
+    val selectedGroupId by viewModel.selectedGroupId.collectAsStateWithLifecycle()
+    val showBrowserSheet by viewModel.showBrowserSheet.collectAsStateWithLifecycle()
+    val showMemorySheet by viewModel.showMemorySheet.collectAsStateWithLifecycle()
+    val memoryToolRecords by viewModel.memoryToolRecords.collectAsStateWithLifecycle()
+    val pendingQuestionnaire by viewModel.pendingQuestionnaire.collectAsStateWithLifecycle()
+    val selectedGroupName by viewModel.selectedGroupName.collectAsStateWithLifecycle()
+    val providerName by viewModel.providerName.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
     // [T-android-voice-panel] Shared 3-stage RECORD_AUDIO permission flow
@@ -561,14 +510,14 @@ fun ChatScreen(
     // T325: draft persists on the VM so navigation (e.g. push EnvVars and
     // pop back) doesn't wipe what the user has typed. Mirrors iOS
     // `AIChatView` which binds the composer against `vm.inputText`.
-    val inputText by viewModel.inputText.collectAsState()
+    val inputText by viewModel.inputText.collectAsStateWithLifecycle()
 
     // ─── T51: Share Injection + Move-to capsule ───────────────────────
     // Drain any pending share buffered by ShareCoordinator (cold start =
     // bufferVersion already non-zero on first composition; warm start =
     // version increments while the user is mid-session). Runs on every
     // bufferVersion bump.
-    val shareBufferVersion by com.openminis.app.share.ShareCoordinator.bufferVersion.collectAsState()
+    val shareBufferVersion by com.openminis.app.share.ShareCoordinator.bufferVersion.collectAsStateWithLifecycle()
     androidx.compose.runtime.LaunchedEffect(shareBufferVersion) {
         if (shareBufferVersion == 0) return@LaunchedEffect
         // [XSessionDiag] sessionId is passed for LOGGING ONLY — consumeBuffer
@@ -875,7 +824,7 @@ fun ChatScreen(
     // the menu and slash-command entry points share a single confirmation
     // dialog instance. ack the VM flag immediately to avoid re-firing on
     // recomposition.
-    val clearChatRequested by viewModel.clearChatConfirmRequested.collectAsState()
+    val clearChatRequested by viewModel.clearChatConfirmRequested.collectAsStateWithLifecycle()
     LaunchedEffect(clearChatRequested) {
         if (clearChatRequested) {
             showClearChatDialog = true
@@ -1073,7 +1022,7 @@ fun ChatScreen(
         }
         OffloadPermissionManager.respondToAndroidPermission(grantedNow)
     }
-    val pendingAndroidPermission by OffloadPermissionManager.pendingAndroidPermission.collectAsState()
+    val pendingAndroidPermission by OffloadPermissionManager.pendingAndroidPermission.collectAsStateWithLifecycle()
     LaunchedEffect(pendingAndroidPermission) {
         val req = pendingAndroidPermission ?: return@LaunchedEffect
         val perms = req.permissions.toTypedArray()
@@ -2612,9 +2561,9 @@ fun ChatScreen(
     // http(s)/about → UrlPreviewSheet, minis:// deep links → DeepLinkHandler,
     // minis://<host>/<path> → in-app file preview by extension.
     val pendingMinisOpenUrl by com.openminis.app.terminal.MinisOpenUrlBroker.pendingUrl
-        .collectAsState()
+        .collectAsStateWithLifecycle()
     val minisOpenTerminalVisible by com.openminis.app.terminal.MinisOpenUrlBroker.terminalVisible
-        .collectAsState()
+        .collectAsStateWithLifecycle()
     LaunchedEffect(pendingMinisOpenUrl, minisOpenTerminalVisible) {
         val url = pendingMinisOpenUrl ?: return@LaunchedEffect
         // The fullscreen TerminalScreen owns the broker while it's up —
@@ -2838,7 +2787,7 @@ fun ChatScreen(
                 // mount uses `lastToolBlocks.isNotEmpty()` over the merged
                 // view; we mirror that semantically by checking the same
                 // filter on both sources.
-                // [perf-opt] Was `val streamingById by ...collectAsState()` at
+                // [perf-opt] Was `val streamingById by ...collectAsStateWithLifecycle()` at
                 // ChatScreen's top level: every streaming flush (several per
                 // second per token batch) invalidated this whole ~8k-line scope
                 // and ran mergeStreamingOverlay — a copy of the ENTIRE history —
@@ -2846,7 +2795,7 @@ fun ChatScreen(
                 // derivedStateOf, so ChatScreen recomposes only when the Boolean
                 // actually flips, and no history copy is made: the streaming
                 // deltas are checked directly, the stable `messages` separately.
-                val streamingByIdState = viewModel.streamingById.collectAsState()
+                val streamingByIdState = viewModel.streamingById.collectAsStateWithLifecycle()
                 val messagesHaveFloatingTools = remember(messages) {
                     messages.any { msg ->
                         msg.role == "assistant" && msg.toolBlocks.any { tb ->
@@ -3375,10 +3324,10 @@ fun ChatScreen(
                 // tap-spy below can react to it. The popup itself, declared
                 // further down near the composer, reads viewModel.showSlashMenu
                 // again — both subscriptions snap to the same StateFlow.
-                val slashMenuOpen by viewModel.showSlashMenu.collectAsState()
+                val slashMenuOpen by viewModel.showSlashMenu.collectAsStateWithLifecycle()
                 // T4: mirror state hoist for the mention picker so the chat-list
                 // tap-spy can dismiss it the same way as the slash popup.
-                val mentionMenuOpenForSpy by viewModel.showMentionMenu.collectAsState()
+                val mentionMenuOpenForSpy by viewModel.showMentionMenu.collectAsStateWithLifecycle()
                 // Intercept back press to dismiss slash/mention menus before
                 // navigating away from the chat screen.
                 androidx.activity.compose.BackHandler(
@@ -3420,42 +3369,48 @@ fun ChatScreen(
                 }
                 AlwaysStretchOverscrollBox { sharedEffect ->
                 ChatScreenMessageList(
-                    bottomReserve = bottomReserve,
-                    callbackDetailBlockState = callbackDetailBlockState,
-                    canResume = canResume,
-                    coldOpenSummaryEmittedState = coldOpenSummaryEmittedState,
-                    compactAboveTargetIdState = compactAboveTargetIdState,
-                    compactProgress = compactProgress,
-                    context = context,
-                    coroutineScope = coroutineScope,
-                    deleteFromHereTargetIdState = deleteFromHereTargetIdState,
-                    error = error,
-                    flatItems = flatItems,
-                    grayedMap = grayedMap,
-                    hasOlderMessages = hasOlderMessages,
-                    inputFocusRequester = inputFocusRequester,
-                    inputText = inputText,
-                    isStreaming = isStreaming,
-                    lastColdPrewarmMsState = lastColdPrewarmMsState,
-                    listRootCoordsState = listRootCoordsState,
-                    listState = listState,
-                    mentionMenuOpenForSpy = mentionMenuOpenForSpy,
-                    messages = messages,
-                    onOpenTerminalWithCommand = onOpenTerminalWithCommand,
-                    onPreviewAttachment = onPreviewAttachment,
-                    originalMessageId = ::originalMessageId,
-                    pendingQuestionnaire = pendingQuestionnaire,
-                    perfFirstLayoutFired = perfFirstLayoutFired,
-                    revealedUsageIds = revealedUsageIds,
-                    safeMutate = safeMutate,
-                    screenMountAtMs = screenMountAtMs,
-                    selectionController = selectionController,
-                    sessionId = sessionId,
-                    slashMenuOpen = slashMenuOpen,
-                    tracedScrollToItem = tracedScrollToItem,
-                    userScrolledAwayState = userScrolledAwayState,
-                    viewModel = viewModel,
-                    sharedEffect = sharedEffect,
+                    state = ChatMessageListState(
+                        bottomReserve = bottomReserve,
+                        canResume = canResume,
+                        compactProgress = compactProgress,
+                        error = error,
+                        flatItems = flatItems,
+                        grayedMap = grayedMap,
+                        hasOlderMessages = hasOlderMessages,
+                        inputText = inputText,
+                        isStreaming = isStreaming,
+                        mentionMenuOpenForSpy = mentionMenuOpenForSpy,
+                        messages = messages,
+                        pendingQuestionnaire = pendingQuestionnaire,
+                        revealedUsageIds = revealedUsageIds,
+                        sessionId = sessionId,
+                        slashMenuOpen = slashMenuOpen,
+                    ),
+                    controllers = ChatMessageListControllers(
+                        context = context,
+                        coroutineScope = coroutineScope,
+                        inputFocusRequester = inputFocusRequester,
+                        listState = listState,
+                        perfFirstLayoutFired = perfFirstLayoutFired,
+                        screenMountAtMs = screenMountAtMs,
+                        selectionController = selectionController,
+                        viewModel = viewModel,
+                        sharedEffect = sharedEffect,
+                    ),
+                    interactions = ChatMessageListInteractions(
+                        callbackDetailBlockState = callbackDetailBlockState,
+                        coldOpenSummaryEmittedState = coldOpenSummaryEmittedState,
+                        compactAboveTargetIdState = compactAboveTargetIdState,
+                        deleteFromHereTargetIdState = deleteFromHereTargetIdState,
+                        lastColdPrewarmMsState = lastColdPrewarmMsState,
+                        listRootCoordsState = listRootCoordsState,
+                        userScrolledAwayState = userScrolledAwayState,
+                        onOpenTerminalWithCommand = onOpenTerminalWithCommand,
+                        onPreviewAttachment = onPreviewAttachment,
+                        originalMessageId = ::originalMessageId,
+                        safeMutate = safeMutate,
+                        tracedScrollToItem = tracedScrollToItem,
+                    ),
                 )
                 } // AlwaysStretchOverscrollBox
                 // SelectionDragTracker bridges gesture-published dragIntent
@@ -3655,7 +3610,7 @@ fun ChatScreen(
                 // block disappears (T258 retry-preserve removes in-flight
                 // tools, clearChat, etc.). Reuses lastToolBlocks (already
                 // computed above) so we don't traverse messages twice.
-                val selectedToolDetailId by viewModel.selectedToolDetailId.collectAsState()
+                val selectedToolDetailId by viewModel.selectedToolDetailId.collectAsStateWithLifecycle()
                 LaunchedEffect(selectedToolDetailId, lastToolBlocks) {
                     val id = selectedToolDetailId ?: return@LaunchedEffect
                     if (lastToolBlocks.none { it.id == id }) viewModel.closeToolDetail()
@@ -3818,7 +3773,7 @@ fun ChatScreen(
             //   Compact & Enable Auto-Compact— compact AND opt in, so the
             //                                  threshold stops prompting from
             //                                  now on (iOS T-chat-auto-compact-opt-in)
-            val showCompactBeforeSend by viewModel.showCompactBeforeSendPrompt.collectAsState()
+            val showCompactBeforeSend by viewModel.showCompactBeforeSendPrompt.collectAsStateWithLifecycle()
             if (showCompactBeforeSend) {
                 MinisAlertDialog(
                     // Back-gesture / scrim dismissal must NOT silently drop the
@@ -3999,7 +3954,7 @@ fun ChatScreen(
     // the navbar thinking badge. Mirrors iOS ThinkingLevelSheetView: an Off row
     // plus every level the current model supports, each selectable.
     if (showThinkingLevelSheet) {
-        val currentThinkingLevel by viewModel.thinkingLevel.collectAsState()
+        val currentThinkingLevel by viewModel.thinkingLevel.collectAsStateWithLifecycle()
         ThinkingLevelSheet(
             currentLevel = currentThinkingLevel,
             availableLevels = viewModel.availableThinkingLevels,
@@ -4013,8 +3968,8 @@ fun ChatScreen(
 
     // Model Picker bottom sheet
     if (showModelPicker) {
-        val config by providerRepository.config.collectAsState()
-        val activeEntryId by viewModel.activeEntryId.collectAsState()
+        val config by providerRepository.config.collectAsStateWithLifecycle()
+        val activeEntryId by viewModel.activeEntryId.collectAsStateWithLifecycle()
 
         // When the user picks a model whose output is image/audio/video, defer
         // the actual binding behind a confirmation dialog — those models can't
@@ -4491,7 +4446,7 @@ private fun EmptyChatExpressiveHero(
     modifier: Modifier = Modifier,
 ) {
     val heroSoul by com.openminis.app.agent.SoulStore
-        .cachedMetadata.collectAsState()
+        .cachedMetadata.collectAsStateWithLifecycle()
     val heroName = heroSoul.name.ifBlank { stringResource(R.string.app_name) }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,

@@ -41,7 +41,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -213,11 +213,11 @@ internal fun InlineVoiceInputPanel(
     onEditProvider: ((instanceId: String) -> Unit)? = null,
 ) {
     val scope = androidx.compose.runtime.rememberCoroutineScope()
-    val sttState by SpeechRecognitionManager.state.collectAsState()
+    val sttState by SpeechRecognitionManager.state.collectAsStateWithLifecycle()
     // [T-android-voice-asr-stall-skip] A cloud ASR attempt has gone 5 s without
     // a result and a next voice model exists: offer "Switch Model" beside the
     // mic (iOS e62117091). The mic keeps cancelling the transcription.
-    val asrStalled by remember { SpeechRecognitionManager.asrStalled() }.collectAsState()
+    val asrStalled by remember { SpeechRecognitionManager.asrStalled() }.collectAsStateWithLifecycle()
     val asrToastContext = LocalContext.current
     val systemAsrName = stringResource(R.string.voice_asr_system_recognition)
     val nextModelName = stringResource(R.string.voice_asr_next_model)
@@ -230,9 +230,9 @@ internal fun InlineVoiceInputPanel(
             ).show()
         }
     }
-    val locale by SpeechRecognitionManager.locale.collectAsState()
-    val supportedLocales by SpeechRecognitionManager.supportedLocales.collectAsState()
-    val levels by SpeechRecognitionManager.audioLevels.collectAsState()
+    val locale by SpeechRecognitionManager.locale.collectAsStateWithLifecycle()
+    val supportedLocales by SpeechRecognitionManager.supportedLocales.collectAsStateWithLifecycle()
+    val levels by SpeechRecognitionManager.audioLevels.collectAsStateWithLifecycle()
 
     // Load the persisted expanded/compact choice before it is read below.
     // Idempotent, so running on every composition is harmless.
@@ -297,7 +297,7 @@ internal fun InlineVoiceInputPanel(
     val isRecording = sttState == RecognitionState.RECORDING || sttState == RecognitionState.STARTING
     val isTranscribing = sttState == RecognitionState.FINISHING
 
-    val config by providerRepository.config.collectAsState()
+    val config by providerRepository.config.collectAsStateWithLifecycle()
     val choice = remember(config) { providerRepository.resolveVoiceInputChoice() }
     val groupName = remember(config) { providerRepository.voiceInputGroupName() }
     val modelLabel = if (choice.isSystem) {
@@ -586,7 +586,7 @@ internal fun InlineVoiceInputPanel(
     // transcribed and link to the two things that fix it — the system speech
     // service, or an ASR provider configured in Minis. The composer's toggle
     // stays visible throughout, so leaving is always one tap away.
-    val engineAvailable by SpeechRecognitionManager.isAvailable.collectAsState()
+    val engineAvailable by SpeechRecognitionManager.isAvailable.collectAsStateWithLifecycle()
     if (!engineAvailable) {
         VoiceEngineUnavailableNotice(
             expanded = expanded,

@@ -26,7 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,7 +64,7 @@ import kotlinx.coroutines.SupervisorJob
 @Composable
 fun ConfigAuditScreen(modifier: Modifier = Modifier) {
     val log = remember { ConfigAuditLog.get() }
-    val revision by log.revision.collectAsState()
+    val revision by log.revision.collectAsStateWithLifecycle()
     var entries by remember { mutableStateOf<List<ConfigAuditEntry>>(emptyList()) }
     var usage by remember { mutableStateOf(ConfigAuditLog.Usage(0, 1000)) }
     var revertCandidate by remember { mutableStateOf<ConfigAuditEntry?>(null) }

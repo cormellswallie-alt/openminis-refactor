@@ -9,7 +9,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
@@ -37,7 +37,7 @@ fun SessionMcpsSheet(
     mcpRepository: MCPRepository,
     onDismiss: () -> Unit,
 ) {
-    val servers by mcpRepository.servers.collectAsState()
+    val servers by mcpRepository.servers.collectAsStateWithLifecycle()
 
     val overrides = remember(servers) {
         mutableStateMapOf<String, Boolean>().apply {

@@ -19,7 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -53,7 +53,7 @@ import com.openminis.app.offload.ShizukuManager
 @Composable
 fun ShizukuPermissionScreen(onBack: () -> Unit) {
     val context = LocalContext.current
-    val snap by ShizukuManager.snapshot.collectAsState()
+    val snap by ShizukuManager.snapshot.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) { ShizukuManager.refresh() }
 

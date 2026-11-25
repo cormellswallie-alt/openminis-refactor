@@ -493,10 +493,16 @@ class ChatViewModel(
      * The map is keyed by the assistant message id; absent ⇒ no live
      * stream (turn either hasn't started or has already flushed).
      */
-    internal val _streamingById = MutableStateFlow<Map<String, StreamingDelta>>(emptyMap())
-    val streamingById: StateFlow<Map<String, StreamingDelta>> = _streamingById.asStateFlow()
+    internal val streamProjectionStore by lazy { StreamProjectionStore(viewModelScope) }
+    val streamingById: StateFlow<Map<String, StreamingDelta>>
+        get() = streamProjectionStore.streamingById
 
-    internal val streamFlushStates = HashMap<String, StreamFlushState>()
+    internal val overlaysStore by lazy {
+        ChatUiOverlaysStore(
+            initialFastModeEnabled = com.openminis.app.data.FastModePrefs.isEnabled(),
+            initialAutoCompactEnabled = com.openminis.app.data.AutoCompactPrefs.isEnabled(),
+        )
+    }
 
     /**
      * Composer draft. Owned by VM so it survives navigation (e.g. push EnvVars
@@ -581,8 +587,11 @@ class ChatViewModel(
      * tools, session switch, etc.). Not persisted to disk — sheet is a
      * transient UI state.
      */
-    internal val _selectedToolDetailId = MutableStateFlow<String?>(null)
-    val selectedToolDetailId: StateFlow<String?> = _selectedToolDetailId.asStateFlow()
+    val selectedToolDetailId: StateFlow<String?>
+        get() = overlaysStore.selectedToolDetailId
+
+    fun openToolDetail(toolBlockId: String) = overlaysStore.openToolDetail(toolBlockId)
+    fun closeToolDetail() = overlaysStore.closeToolDetail()
 
     /**
      * Active mid-turn interactive questionnaire (`ask_user`), or null when none
@@ -710,8 +719,12 @@ class ChatViewModel(
     internal val _sessionCategory = MutableStateFlow<String?>(null)
     val sessionCategory: StateFlow<String?> = _sessionCategory.asStateFlow()
 
-    internal val _attachments = MutableStateFlow<List<InputAttachment>>(emptyList())
-    val attachments: StateFlow<List<InputAttachment>> = _attachments.asStateFlow()
+    val attachments: StateFlow<List<InputAttachment>>
+        get() = overlaysStore.attachments
+
+    fun addAttachment(attachment: InputAttachment) = overlaysStore.addAttachment(attachment)
+    fun removeAttachment(id: String) = overlaysStore.removeAttachment(id)
+    fun clearAttachments() = overlaysStore.clearAttachments()
 
     /**
      * [T-android-paste-placeholder] Long pasted blocks folded out of the
@@ -904,12 +917,6 @@ class ChatViewModel(
      *  parent's files — so what it writes is what the parent (and the user)
      *  can read. Its transcript, media rows and job identity stay its own. */
     internal val fsSessionId: String get() = helperConfig?.parentSessionId ?: activeSessionId
-    /** [T-p2-background-helper] Delegate blocks written from OUTSIDE the agent
-     *  loop (the background mirror / completion hook), keyed by tool_use id.
-     *  Merged into every updateAssistantMessage so the loop's own republishes
-     *  of its private block list do not clobber them; cleared once the final
-     *  payload is persisted. */
-    internal val delegateBlockOverrides = java.util.concurrent.ConcurrentHashMap<String, AssistantBlock>()
 
     /** Prompts enqueued while the agent loop is running. Drained after the loop finishes. */
     internal val _promptQueue = MutableStateFlow<List<QueuedPrompt>>(emptyList())
@@ -1117,8 +1124,10 @@ class ChatViewModel(
     internal val currentModelHasNativeVision: Boolean
         get() = currentModel?.hasImageInput == true
 
-    /** Structured agent history for the agent loop (contentParts-based). */
-    internal val agentHistory = mutableListOf<LLMMessage>()
+    /** Thread-safe owner for structured agent history (contentParts-based). */
+    internal val historyStore = ConversationHistoryStore()
+    internal val agentHistory: MutableList<LLMMessage>
+        get() = historyStore.liveList
 
     /**
      * All agent tool definitions, recomputed on each read so the memory
@@ -1226,25 +1235,31 @@ class ChatViewModel(
      *  released by the child (see the helperConfig guards). */
     internal fun adoptBrowserTabPool(pool: BrowserTabPool) { _browserTabPoolRef = pool }
 
-    internal val _showBrowserSheet = MutableStateFlow(false)
-    val showBrowserSheet: StateFlow<Boolean> = _showBrowserSheet.asStateFlow()
+    val showBrowserSheet: StateFlow<Boolean>
+        get() = overlaysStore.showBrowserSheet
 
-    // [T-android-split-chat] toggleBrowserSheet / dismissBrowserSheet /
-    // openBrowserSheetForUrl moved to ChatViewModelUiStateExt.kt.
+    fun toggleBrowserSheet() = overlaysStore.toggleBrowserSheet { browserTabPool.ensureTabForUI() }
+    fun dismissBrowserSheet() = overlaysStore.dismissBrowserSheet()
+    fun openBrowserSheetForUrl(url: String) = overlaysStore.openBrowserSheetForUrl(
+        url = url,
+        onEnsureDefaultTab = { browserTabPool.ensureTabForUI() },
+        onSelectOrCreateUrl = { browserTabPool.selectOrCreateTabForURL(it) },
+    )
 
-    internal val _showMemorySheet = MutableStateFlow(false)
-    val showMemorySheet: StateFlow<Boolean> = _showMemorySheet.asStateFlow()
+    val showMemorySheet: StateFlow<Boolean>
+        get() = overlaysStore.showMemorySheet
+
+    fun toggleMemorySheet() = overlaysStore.toggleMemorySheet()
+    fun dismissMemorySheet() = overlaysStore.dismissMemorySheet()
 
     /** Set true by the slash-command "/clear" handler so ChatScreen can mirror
      *  it into the local Compose state that drives the existing
      *  showClearChatDialog confirmation. ChatScreen calls
      *  [ackClearChatConfirmRequest] after observing to reset back to false. */
-    internal val _clearChatConfirmRequested = MutableStateFlow(false)
-    val clearChatConfirmRequested: StateFlow<Boolean> = _clearChatConfirmRequested.asStateFlow()
+    val clearChatConfirmRequested: StateFlow<Boolean>
+        get() = overlaysStore.clearChatConfirmRequested
 
-    fun ackClearChatConfirmRequest() {
-        _clearChatConfirmRequested.value = false
-    }
+    fun ackClearChatConfirmRequest() = overlaysStore.ackClearChatConfirm()
 
     internal val _memoryToolRecords = MutableStateFlow<List<MemoryToolRecord>>(emptyList())
     val memoryToolRecords: StateFlow<List<MemoryToolRecord>> = _memoryToolRecords.asStateFlow()
@@ -1294,13 +1309,10 @@ class ChatViewModel(
      * in. Keying by message id also means a row scrolled out and back keeps
      * whatever the user chose. Session-scoped, so it resets with the ViewModel.
      */
-    internal val _revealedUsageIds = MutableStateFlow<Set<String>>(emptySet())
-    val revealedUsageIds: StateFlow<Set<String>> = _revealedUsageIds.asStateFlow()
+    val revealedUsageIds: StateFlow<Set<String>>
+        get() = overlaysStore.revealedUsageIds
 
-    fun toggleUsageCapsule(messageId: String) {
-        val cur = _revealedUsageIds.value
-        _revealedUsageIds.value = if (messageId in cur) cur - messageId else cur + messageId
-    }
+    fun toggleUsageCapsule(messageId: String) = overlaysStore.toggleUsageCapsule(messageId)
 
     internal val _thinkingLevel = MutableStateFlow(ThinkingLevel.OFF)
     val thinkingLevel: StateFlow<ThinkingLevel> = _thinkingLevel.asStateFlow()
@@ -1312,8 +1324,8 @@ class ChatViewModel(
      * AnthropicProvider is stamped with `enhancedCache = true` just before the
      * request (see the streamMessage choke point).
      */
-    internal val _enhancedCacheEnabled = MutableStateFlow(false)
-    val enhancedCacheEnabled: StateFlow<Boolean> = _enhancedCacheEnabled.asStateFlow()
+    val enhancedCacheEnabled: StateFlow<Boolean>
+        get() = overlaysStore.enhancedCacheEnabled
 
     /**
      * [T-android-enhanced-cache] Whether the Enhanced Cache menu item is shown.
@@ -1364,9 +1376,8 @@ class ChatViewModel(
      * chat reads the same flag. The provider reads FastModePrefs directly at
      * request-build time, so this flow only drives the menu row + nav badge.
      */
-    internal val _fastModeEnabled =
-        MutableStateFlow(com.openminis.app.data.FastModePrefs.isEnabled())
-    val fastModeEnabled: StateFlow<Boolean> = _fastModeEnabled.asStateFlow()
+    val fastModeEnabled: StateFlow<Boolean>
+        get() = overlaysStore.fastModeEnabled
 
     fun setFastModeEnabled(enabled: Boolean) = setFastModeEnabledImpl(enabled)
 
@@ -1378,9 +1389,8 @@ class ChatViewModel(
      * and then sends; when off, the user is asked first. Mirrors iOS
      * `AIChatViewModel.autoCompactEnabled`.
      */
-    internal val _autoCompactEnabled =
-        MutableStateFlow(com.openminis.app.data.AutoCompactPrefs.isEnabled())
-    val autoCompactEnabled: StateFlow<Boolean> = _autoCompactEnabled.asStateFlow()
+    val autoCompactEnabled: StateFlow<Boolean>
+        get() = overlaysStore.autoCompactEnabled
 
     fun setAutoCompactEnabled(enabled: Boolean) = setAutoCompactEnabledImpl(enabled)
 
@@ -1873,7 +1883,7 @@ class ChatViewModel(
      */
     internal val recentlyFailedEntryIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
-    private val agentStreamEngine by lazy { AgentStreamEngine(this) }
+    private val agentStreamEngine by lazy { AgentStreamEngine(ChatViewModelStreamHost(this)) }
 
     init { initializeSession() }
 

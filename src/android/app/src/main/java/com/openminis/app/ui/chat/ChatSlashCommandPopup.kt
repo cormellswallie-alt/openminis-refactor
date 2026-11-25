@@ -69,7 +69,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -139,9 +139,9 @@ internal fun ChatSlashCommandPopup(
     viewModel: ChatViewModel,
 ) {
     if (showSlashMenu && filteredSlashCommands.isNotEmpty()) {
-        val thinkingLevelState by viewModel.thinkingLevel.collectAsState()
+        val thinkingLevelState by viewModel.thinkingLevel.collectAsStateWithLifecycle()
         val thinkingSupported = viewModel.currentModelSupportsReasoning
-        val memoryOnState by viewModel.memoryEnabled.collectAsState()
+        val memoryOnState by viewModel.memoryEnabled.collectAsStateWithLifecycle()
         androidx.compose.ui.window.Popup(
             popupPositionProvider = remember {
                 object : androidx.compose.ui.window.PopupPositionProvider {

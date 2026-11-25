@@ -1,7 +1,7 @@
 package com.openminis.app.ui.chat.voice
 
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.res.stringResource
 import com.openminis.app.R
@@ -30,7 +30,7 @@ fun VoiceInputPickerSheet(
     onDismiss: () -> Unit,
     onEditProvider: ((instanceId: String) -> Unit)? = null,
 ) {
-    val config by providerRepository.config.collectAsState()
+    val config by providerRepository.config.collectAsStateWithLifecycle()
     UnifiedModelPickerSheet(
         providerRepository = providerRepository,
         title = stringResource(R.string.voice_input_picker_title),
@@ -59,7 +59,7 @@ fun VoiceOutputPickerSheet(
     onDismiss: () -> Unit,
     onEditProvider: ((instanceId: String) -> Unit)? = null,
 ) {
-    val config by providerRepository.config.collectAsState()
+    val config by providerRepository.config.collectAsStateWithLifecycle()
     UnifiedModelPickerSheet(
         providerRepository = providerRepository,
         title = stringResource(R.string.tts_capsule_picker_title),

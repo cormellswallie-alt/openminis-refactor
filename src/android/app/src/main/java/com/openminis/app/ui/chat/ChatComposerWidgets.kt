@@ -165,7 +165,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -499,8 +499,8 @@ internal fun rememberChildLiveToolBlock(childSessionId: String?): AssistantBlock
     // exists while the floating bar is composed, and the module does not
     // already depend on lifecycle-runtime-compose — not worth a new dependency
     // for a subscription whose own composition is the lifetime bound.
-    val msgs by vm.messages.collectAsState()
-    val streaming by vm.streamingById.collectAsState()
+    val msgs by vm.messages.collectAsStateWithLifecycle()
+    val streaming by vm.streamingById.collectAsStateWithLifecycle()
     return remember(msgs, streaming) {
         // [T-android-stream-overlay-subset] The child tile only wants the live
         // tool on the newest assistant turn; the subset carries exactly that

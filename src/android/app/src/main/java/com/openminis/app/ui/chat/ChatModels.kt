@@ -1,82 +1,7 @@
 package com.openminis.app.ui.chat
 
-// [T-android-split-chat] Chat data models extracted verbatim from
-// ChatViewModel.kt: StreamingDelta, ChatMessage, QueuedPrompt,
-// ToolBlockStatus, SlashCommand, AssistantBlock. Full import block copied
-// from ChatViewModel.kt (unused=warnings). Visibility unchanged (public).
-
-import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
-import android.util.Log
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.viewModelScope
-import androidx.compose.foundation.lazy.LazyListState
-import com.openminis.app.agent.Level
-import com.openminis.app.agent.ToolLoopDetector
-import com.openminis.app.browser.BrowserActionInput
-import com.openminis.app.browser.BrowserTabPool
-import com.openminis.app.data.db.MessageEntity
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Compress
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Lightbulb
-import androidx.compose.material.icons.filled.Psychology
-import androidx.compose.material.icons.outlined.Build
-import androidx.compose.material.icons.outlined.Extension
-import com.openminis.app.data.BPETokenizer
-import com.openminis.app.data.ContextOffload
-import com.openminis.app.data.ContextPolicy
-import com.openminis.app.logging.AppLogger
-import com.openminis.app.data.FileMentionIndex
-import com.openminis.app.data.db.CompactMarkerEntity
-import com.openminis.app.data.model.AgentContentPart
-import com.openminis.app.data.model.AgentToolDefinition
-import com.openminis.app.data.model.LLMMessage
-import com.openminis.app.data.model.LLMModel
-import com.openminis.app.data.model.LLMStreamChunk
-import com.openminis.app.data.model.LLMUsage
-import com.openminis.app.data.model.ModelGroup
-import com.openminis.app.data.model.ThinkingLevel
-import com.openminis.app.R
-import com.openminis.app.data.repository.ChatRepository
-import com.openminis.app.data.repository.MemoryRepository
-import com.openminis.app.data.repository.ProviderRepository
-import com.openminis.app.provider.ImageBudget
-import com.openminis.app.provider.LLMProvider
-import com.openminis.app.provider.ProviderFactory
-import com.openminis.app.sandbox.ExecutionCoordinator
-import com.openminis.app.terminal.MinisOpenUrlBroker
-import com.openminis.app.terminal.MinisUrlMarker
-import com.openminis.app.tools.AgentTools
-import com.openminis.app.tools.FileEditTool
-import com.openminis.app.tools.FileReadTool
-import com.openminis.app.tools.FileWriteTool
-import com.openminis.app.tools.MemoryTools
-import com.openminis.app.tools.ReadImageTool
-import com.openminis.app.tools.ToolExecutionResult
-import com.openminis.app.offload.OffloadPermissionManager
-import com.openminis.app.service.SessionActivityTracker
-import com.openminis.app.service.SessionConcurrencyManager
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.yield
-import org.json.JSONObject
+import androidx.compose.runtime.Immutable
 
 /**
  * Per-message streaming snapshot — the high-frequency fields that
@@ -95,6 +20,7 @@ import org.json.JSONObject
  * the side-channel is drained back into the canonical message and the
  * map entry is removed.
  */
+@Immutable
 data class StreamingDelta(
     val content: String,
     val toolBlocks: List<AssistantBlock>,
@@ -110,6 +36,7 @@ data class StreamingDelta(
  * row yields null rather than throwing, because a bad usage string must never
  * stop a message from rendering.
  */
+@Immutable
 data class ChatTokenUsage(
     val inputTokens: Int,
     val outputTokens: Int,
@@ -139,6 +66,7 @@ data class ChatTokenUsage(
     }
 }
 
+@Immutable
 data class ChatMessage(
     val id: String,
     val role: String,
@@ -271,6 +199,7 @@ data class ChatMessage(
 }
 
 /** A user prompt queued while the agent loop is still running. Mirrors iOS QueuedPrompt. */
+@Immutable
 data class QueuedPrompt(
     val id: String,
     val text: String,
@@ -328,6 +257,7 @@ enum class ToolBlockStatus {
 }
 
 /** Slash command descriptor shown in the "/" popup. Mirrors iOS SlashCommand. */
+@Immutable
 data class SlashCommand(
     val id: String,
     val icon: androidx.compose.ui.graphics.vector.ImageVector,
@@ -361,6 +291,7 @@ data class SlashCommand(
     val isMcp: Boolean = false,
 )
 
+@Immutable
 data class AssistantBlock(
     val id: String,
     val kind: String,       // "text", "tool_use", "thinking", "info"

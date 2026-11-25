@@ -4,18 +4,12 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.indication
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,8 +17,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
@@ -35,11 +27,9 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -65,38 +55,30 @@ import com.openminis.app.ui.components.MinisMenu
 import com.openminis.app.ui.components.MinisMenuDivider
 import com.openminis.app.ui.components.SectionTextField
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.rotate
 import com.openminis.app.agent.jobs.AgentJobRegistry
 import com.openminis.app.service.SessionActivityTracker
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
@@ -114,18 +96,13 @@ import com.openminis.app.data.db.FolderEntity
 import com.openminis.app.ui.theme.ChatColors
 import com.openminis.app.ui.theme.ExpressiveTokens
 import com.openminis.app.ui.theme.articulatedItemShape
-import com.openminis.app.ui.theme.minisFabColor
 import com.openminis.app.data.repository.ChatRepository
 import com.openminis.app.data.repository.ProviderRepository
-import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import com.openminis.app.ui.components.MinisTextButton
 import com.openminis.app.ui.components.MinisTonalButton
-import com.openminis.app.ui.components.rememberDecorativeTick
-import com.openminis.app.ui.components.decorativePhase
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material3.IconButtonDefaults
@@ -224,7 +201,7 @@ fun SessionListScreen(
     val viewModel: SessionListViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
         factory = SessionListViewModel.factory(chatRepository, providerRepository, context),
     )
-    val persistedSessions by viewModel.displayedSessions.collectAsState()
+    val persistedSessions by viewModel.displayedSessions.collectAsStateWithLifecycle()
     // [T-android-draft-placeholder-row] Prepend the synthetic draft row. Built
     // here rather than in the ViewModel precisely because it must never reach
     // the database or the repository's flows — it exists for exactly as long
@@ -250,15 +227,15 @@ fun SessionListScreen(
             ) + persistedSessions
         }
     }
-    val isInitialLoadComplete by viewModel.isInitialLoadComplete.collectAsState()
-    val isSearchActive by viewModel.isSearchActive.collectAsState()
-    val searchQuery by viewModel.searchQuery.collectAsState()
-    val isSearching by viewModel.isSearching.collectAsState()
-    val searchSnippets by viewModel.searchSnippets.collectAsState()
-    val isSelecting by viewModel.isSelecting.collectAsState()
-    val selectedIds by viewModel.selectedIds.collectAsState()
-    val regeneratingIds by viewModel.regeneratingIds.collectAsState()
-    val providerConfig by providerRepository.config.collectAsState()
+    val isInitialLoadComplete by viewModel.isInitialLoadComplete.collectAsStateWithLifecycle()
+    val isSearchActive by viewModel.isSearchActive.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val isSearching by viewModel.isSearching.collectAsStateWithLifecycle()
+    val searchSnippets by viewModel.searchSnippets.collectAsStateWithLifecycle()
+    val isSelecting by viewModel.isSelecting.collectAsStateWithLifecycle()
+    val selectedIds by viewModel.selectedIds.collectAsStateWithLifecycle()
+    val regeneratingIds by viewModel.regeneratingIds.collectAsStateWithLifecycle()
+    val providerConfig by providerRepository.config.collectAsStateWithLifecycle()
     val hasProviders = providerConfig.instances.isNotEmpty()
     val hasGroups = providerConfig.modelGroups.isNotEmpty()
     // [T-android-startup-config-stall] Provider config now loads off-thread, so
@@ -266,7 +243,7 @@ fun SessionListScreen(
     // Gate the onboarding/list render on this too (alongside the sessions
     // initial-load flag) so an existing user with providers but zero sessions
     // doesn't flash the "add a provider" onboarding before the real config emits.
-    val configLoaded by providerRepository.configLoaded.collectAsState()
+    val configLoaded by providerRepository.configLoaded.collectAsStateWithLifecycle()
     // Bound both startup gates (`isInitialLoadComplete` and `configLoaded`) so a
     // slow/locked SQLite DB or unreadable provider store can NEVER trap the user
     // on an infinite loading screen or blank white screen. Once real emissions
@@ -362,12 +339,12 @@ fun SessionListScreen(
     // [T-android-session-grouping] Groups are pulled out FIRST; only the
     // leftovers go through date bucketing. Assembly order below is
     // Pinned → group block → date buckets, matching iOS.
-    val folders by viewModel.folders.collectAsState()
+    val folders by viewModel.folders.collectAsStateWithLifecycle()
     // [T-android-groups-collapsed-on-launch] In memory only: null (all
     // collapsed) on every cold start.
-    val expandedFolderId by viewModel.expandedFolderId.collectAsState()
-    val folderMemberCounts by viewModel.folderMemberCounts.collectAsState()
-    val groupPickerRequest by viewModel.groupPickerRequest.collectAsState()
+    val expandedFolderId by viewModel.expandedFolderId.collectAsStateWithLifecycle()
+    val folderMemberCounts by viewModel.folderMemberCounts.collectAsStateWithLifecycle()
+    val groupPickerRequest by viewModel.groupPickerRequest.collectAsStateWithLifecycle()
     // While searching, group cards are suppressed: padding a result set with
     // every non-matching group is noise, not structure.
     val showFolderBlock = !isSearchActive || searchQuery.isBlank()
@@ -382,8 +359,8 @@ fun SessionListScreen(
     // (badge already at the head of its queue) leaves `byId` equals-identical
     // and is therefore conflated away — yet it can flip a card from stale to
     // fresh. See SessionBadgeStore.revision.
-    val sessionBadges by com.openminis.app.service.SessionBadgeStore.byId.collectAsState()
-    val badgeRevision by com.openminis.app.service.SessionBadgeStore.revision.collectAsState()
+    val sessionBadges by com.openminis.app.service.SessionBadgeStore.byId.collectAsStateWithLifecycle()
+    val badgeRevision by com.openminis.app.service.SessionBadgeStore.revision.collectAsStateWithLifecycle()
     val freshBadgedIds = remember(sessionBadges, badgeRevision) {
         com.openminis.app.service.SessionBadgeStore
             .freshCornerBadgeSessionIds(GROUP_BADGE_FRESH_WINDOW_MS)
@@ -398,8 +375,8 @@ fun SessionListScreen(
     // its own hidden child session id, which no row here carries, so a
     // conversation that had delegated everything out went dark while its work
     // continued.
-    val streamingSessionIds by SessionActivityTracker.activeSessions.collectAsState()
-    val agentWorkParents by AgentJobRegistry.parentsWithAgentWork.collectAsState()
+    val streamingSessionIds by SessionActivityTracker.activeSessions.collectAsStateWithLifecycle()
+    val agentWorkParents by AgentJobRegistry.parentsWithAgentWork.collectAsStateWithLifecycle()
     val activeSessionIds = remember(streamingSessionIds, agentWorkParents) {
         if (agentWorkParents.isEmpty()) streamingSessionIds else streamingSessionIds + agentWorkParents
     }
@@ -520,9 +497,9 @@ fun SessionListScreen(
     val scheduledTaskCount by remember {
         com.openminis.app.scheduled.ScheduledTaskStore(context).observe()
             .map { list -> list.count { it.enabled } }
-    }.collectAsState(initial = 0)
+    }.collectAsStateWithLifecycle(initialValue = 0)
 
-    val soulMeta by com.openminis.app.agent.SoulStore.cachedMetadata.collectAsState()
+    val soulMeta by com.openminis.app.agent.SoulStore.cachedMetadata.collectAsStateWithLifecycle()
     val searchFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     LaunchedEffect(isSearchActive) {
@@ -1248,12 +1225,12 @@ fun SessionListScreen(
         // [T-android-group-ai-suggest] Suggestion state lives on the VM, not
         // in the sheet, so an in-flight request survives recomposition (and
         // the sheet's own remembered state being torn down).
-        val suggesting by viewModel.groupSuggesting.collectAsState()
-        val suggestFailed by viewModel.groupSuggestFailed.collectAsState()
-        val suggestion by viewModel.groupSuggestion.collectAsState()
+        val suggesting by viewModel.groupSuggesting.collectAsStateWithLifecycle()
+        val suggestFailed by viewModel.groupSuggestFailed.collectAsStateWithLifecycle()
+        val suggestion by viewModel.groupSuggestion.collectAsStateWithLifecycle()
         // [T-android-group-picker-recent] Most recently active group first, in
         // the picker only; the list above keeps its own group order.
-        val lastActivity by viewModel.folderLastActivity.collectAsState()
+        val lastActivity by viewModel.folderLastActivity.collectAsStateWithLifecycle()
         val pickerFolders = remember(folders, lastActivity) { groupPickerOrder(folders, lastActivity) }
         GroupPickerSheet(
             folders = pickerFolders,

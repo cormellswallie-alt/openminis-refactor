@@ -316,6 +316,7 @@ dependencies {
     // Core
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     // ProcessLifecycleOwner — used by XAIOAuthManager to detect Custom
     // Tab dismissal (T-xai-oauth-stop-resume port iOS d1dbdd5d).
@@ -424,3 +425,42 @@ dependencies {
     androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     androidTestImplementation("junit:junit:4.13.2")
 }
+
+// Static code quality guardrail run as part of `:app:check` (and manually via `:app:verifyCodeQuality`).
+val verifyCodeQuality by tasks.registering {
+    group = "verification"
+    description = "Enforces baseline static quality rules on main Kotlin sources."
+    val mainJavaDir = layout.projectDirectory.dir("src/main/java")
+    inputs.dir(mainJavaDir)
+    doLast {
+        val violations = mutableListOf<String>()
+        val root = mainJavaDir.asFile
+        root.walkTopDown().filter { it.isFile && it.extension == "kt" }.forEach { file ->
+            val rel = file.relativeTo(root).path
+            val lines = file.readLines()
+            lines.forEachIndexed { idx, line ->
+                val trimmed = line.trim()
+                if (trimmed.startsWith("//") || trimmed.startsWith("*")) return@forEachIndexed
+                if (line.contains("GlobalScope.")) {
+                    violations += "$rel:${idx + 1}: Avoid GlobalScope; use structured concurrency or a managed CoroutineScope."
+                }
+                if (rel.startsWith("com/openminis/app/ui/") &&
+                    !rel.endsWith("MarkdownBlockParser.kt") &&
+                    Regex("""\brunBlocking\b""").containsMatchIn(line)
+                ) {
+                    violations += "$rel:${idx + 1}: Avoid runBlocking in UI package; use suspend/LaunchedEffect."
+                }
+                if (line.contains(".collectAsState(")) {
+                    violations += "$rel:${idx + 1}: Use collectAsStateWithLifecycle() instead of collectAsState()."
+                }
+            }
+        }
+        if (violations.isNotEmpty()) {
+            throw GradleException(
+                "verifyCodeQuality failed with ${violations.size} violation(s):\n" +
+                    violations.joinToString("\n") { "  - $it" },
+            )
+        }
+    }
+}
+tasks.named("check") { dependsOn(verifyCodeQuality) }

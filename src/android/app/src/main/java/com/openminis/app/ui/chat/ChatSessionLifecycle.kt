@@ -1190,8 +1190,7 @@ internal fun ChatViewModel.clearChatImpl() {
         // pending key would be orphaned.
         // [T-android-stream-flush-review] also cancel pending trailing flushes
         // so none re-adds an orphan side-channel entry after the wipe.
-        clearAllStreamFlushStates()
-        _streamingById.value = emptyMap()
+        clearAllStreamOverlays()
         // Memory state — match iOS clearChat() field list one-for-one.
         _messages.value = emptyList()
         agentHistory.clear()
@@ -1199,13 +1198,13 @@ internal fun ChatViewModel.clearChatImpl() {
         _cachedLatestMarker = null
         toolLoopDetector.reset()
         _canResume.value = false
-        _attachments.value = emptyList()
+        overlaysStore.clearAttachments()
         _promptQueue.value = emptyList()
         _hasInjectedShareContent.value = false
         // T261: tool-detail sheet is per-session UI state — clear it so a
         // newly cleared chat doesn't briefly flash a stale tool's sheet
         // before the existence-guard catches up.
-        _selectedToolDetailId.value = null
+        overlaysStore.closeToolDetail()
         // Drop any browser tabs the agent spawned for this session, and
         // delete the persisted tab snapshot so a future open starts clean.
         // iOS calls BrowserTabPool.deletePersistedData(for:) +
@@ -1249,7 +1248,7 @@ internal fun ChatViewModel.cleanupIfEmptyOnExitImpl() {
         val sid = realSessionId
         if (sid.isEmpty()) return
         if (_isStreaming.value) return
-        if (_attachments.value.isNotEmpty()) return
+        if (overlaysStore.attachments.value.isNotEmpty()) return
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 val count = chatRepository.messageCount(sid)

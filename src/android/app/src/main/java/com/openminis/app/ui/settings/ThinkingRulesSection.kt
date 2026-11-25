@@ -23,10 +23,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
@@ -86,15 +89,20 @@ fun ThinkingRulesSection(
     }
 
     // reloadKey bumps to force a re-read after any mutation (rules live in Room).
+    val scope = rememberCoroutineScope()
     var reloadKey by remember { mutableStateOf(0) }
     var defaultsExpanded by remember { mutableStateOf(false) }
     var editorRequest by remember { mutableStateOf<ThinkingRuleEditorRequest?>(null) }
 
-    val customRules = remember(instance.id, reloadKey) { providerRepository.thinkingRules(instance.id) }
-    // The persisted ids parallel the custom rules in stored order (for edit/delete/reorder).
-    val customIds = remember(instance.id, reloadKey) {
-        providerRepository.thinkingRuleIds(instance.id)
+    var customEntries by remember(instance.id) {
+        mutableStateOf(providerRepository.cachedThinkingRulesWithIds(instance.id) ?: emptyList())
     }
+    LaunchedEffect(instance.id, reloadKey) {
+        customEntries = providerRepository.loadThinkingRulesWithIds(instance.id)
+    }
+    val customRules = remember(customEntries) { customEntries.map { it.second } }
+    // The persisted ids parallel the custom rules in stored order (for edit/delete/reorder).
+    val customIds = remember(customEntries) { customEntries.map { it.first } }
     val builtIns = remember(instance.id, reloadKey) {
         providerRepository.builtInThinkingRulesForDisplay(instance.id)
     }
@@ -122,22 +130,28 @@ fun ThinkingRulesSection(
                     {
                         val order = customIds.toMutableList()
                         order.add(idx - 1, order.removeAt(idx))
-                        providerRepository.reorderThinkingRules(instance.id, order)
-                        reloadKey++
+                        scope.launch {
+                            providerRepository.reorderThinkingRulesAsync(instance.id, order)
+                            reloadKey++
+                        }
                     }
                 } else null,
                 onMoveDown = if (idx < customRules.lastIndex && ruleId != null) {
                     {
                         val order = customIds.toMutableList()
                         order.add(idx + 1, order.removeAt(idx))
-                        providerRepository.reorderThinkingRules(instance.id, order)
-                        reloadKey++
+                        scope.launch {
+                            providerRepository.reorderThinkingRulesAsync(instance.id, order)
+                            reloadKey++
+                        }
                     }
                 } else null,
                 onDelete = if (ruleId != null) {
                     {
-                        providerRepository.deleteThinkingRule(instance.id, ruleId)
-                        reloadKey++
+                        scope.launch {
+                            providerRepository.deleteThinkingRuleAsync(instance.id, ruleId)
+                            reloadKey++
+                        }
                     }
                 } else null,
             )
@@ -221,9 +235,11 @@ fun ThinkingRulesSection(
             request = req,
             onDismiss = { editorRequest = null },
             onSave = { rule ->
-                providerRepository.saveThinkingRule(instance.id, rule, id = req.existingId)
                 editorRequest = null
-                reloadKey++
+                scope.launch {
+                    providerRepository.saveThinkingRuleAsync(instance.id, rule, id = req.existingId)
+                    reloadKey++
+                }
             },
         )
     }

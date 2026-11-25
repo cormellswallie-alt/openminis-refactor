@@ -290,10 +290,7 @@ internal fun ChatViewModel.rerunFromToolBlockImpl(assistantMessageId: String, bl
                     }
                 }
                 val keptIds = _messages.value.mapTo(mutableSetOf()) { it.id }
-                retainStreamFlushStates(keptIds)
-                if (_streamingById.value.isNotEmpty()) {
-                    _streamingById.value = _streamingById.value.filterKeys { it in keptIds }
-                }
+                retainStreamOverlays(keptIds)
 
                 // Rebuild agentHistory from the trimmed DB state.
                 agentHistory.clear()
@@ -362,10 +359,7 @@ internal fun ChatViewModel.retryFromMessageImpl(messageId: String) {
         // T-streaming-side-channel: scrub stream deltas pointing at
         // messages we just truncated so they can't resurface later.
         val keptIds = retainedHead.mapTo(mutableSetOf()) { it.id }
-        retainStreamFlushStates(keptIds)
-        if (_streamingById.value.isNotEmpty()) {
-            _streamingById.value = _streamingById.value.filterKeys { it in keptIds }
-        }
+        retainStreamOverlays(keptIds)
 
         revokeMemoryWritesInDeletedMessages(deletedMessages)
 
@@ -448,10 +442,7 @@ internal fun ChatViewModel.deleteFromMessageImpl(messageId: String) {
         // Scrub stream deltas pointing at truncated messages so they can't
         // resurface into a row that no longer exists.
         val keptIds = retainedHead.mapTo(mutableSetOf()) { it.id }
-        retainStreamFlushStates(keptIds)
-        if (_streamingById.value.isNotEmpty()) {
-            _streamingById.value = _streamingById.value.filterKeys { it in keptIds }
-        }
+        retainStreamOverlays(keptIds)
 
         revokeMemoryWritesInDeletedMessages(deletedMessages)
 
@@ -731,7 +722,7 @@ internal fun ChatViewModel.editMessageImpl(messageId: String): String? {
         // Replace rather than append: edit mode reloads a specific message, so
         // whatever the composer held was a different draft. Assigning even when
         // empty keeps that true for a message that genuinely had no files.
-        _attachments.value = restored
+        overlaysStore.replaceAttachments(restored)
 
         _editingMessageId.value = messageId
         AppLogger.info(
@@ -756,7 +747,7 @@ internal fun ChatViewModel.cancelEditImpl() {
             //
             // Guarded by the same non-null check as the log so a stray call
             // outside edit mode cannot wipe a draft's real attachments.
-            _attachments.value = emptyList()
+            overlaysStore.clearAttachments()
         }
         _editingMessageId.value = null
     }
@@ -790,10 +781,9 @@ internal fun ChatViewModel.cancelEditImpl() {
         // (`deletedMessages` above already copies; this line did not.)
         val kept = messages.subList(0, cutFrom).toList()
         _messages.value = kept
-        if (_streamingById.value.isNotEmpty()) {
+        if (streamingById.value.isNotEmpty()) {
             val keptIds = kept.mapTo(mutableSetOf()) { it.id }
-            retainStreamFlushStates(keptIds)
-            _streamingById.value = _streamingById.value.filterKeys { it in keptIds }
+            retainStreamOverlays(keptIds)
         }
         revokeMemoryWritesInDeletedMessages(deletedMessages)
 

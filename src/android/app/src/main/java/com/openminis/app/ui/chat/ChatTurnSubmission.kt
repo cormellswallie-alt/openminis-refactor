@@ -98,7 +98,7 @@ internal fun ChatViewModel.submitPromptImpl(
         // T180: allow attachments-only sends (no caption). Mirrors iOS, where
         // an empty text + non-empty attachments still produces a valid user
         // message. Without this an image-only "look at this" send dropped.
-        if (trimmed.isBlank() && _attachments.value.isEmpty()) return SubmitOutcome.Rejected("empty_prompt")
+        if (trimmed.isBlank() && overlaysStore.attachments.value.isEmpty()) return SubmitOutcome.Rejected("empty_prompt")
         // [T-android-image-input-preflight] Refuse to send images to a model
         // that does not accept them — the request would only come back as an
         // upstream 400 (or have its pixels silently swapped for a placeholder).
@@ -169,7 +169,7 @@ internal fun ChatViewModel.submitPromptImpl(
 
         _error.value = null
 
-        val currentAttachments = _attachments.value
+        val currentAttachments = overlaysStore.attachments.value
         clearAttachments()
 
         // T145: claim _isStreaming synchronously so a rapid second tap can't
@@ -187,8 +187,8 @@ internal fun ChatViewModel.submitPromptImpl(
         // orphan would render a second "thinking" row alongside the new turn's.
         // Flush them into the canonical messages (isStreaming=false) before the
         // new streaming message is created — no two messages ever stream at once.
-        if (_streamingById.value.isNotEmpty()) {
-            AppLogger.warning(TAG_STREAM, "send: sweeping ${_streamingById.value.size} orphan streaming delta(s) before new turn")
+        if (streamingById.value.isNotEmpty()) {
+            AppLogger.warning(TAG_STREAM, "send: sweeping ${streamingById.value.size} orphan streaming delta(s) before new turn")
             flushAllStreamingDeltas()
         }
 

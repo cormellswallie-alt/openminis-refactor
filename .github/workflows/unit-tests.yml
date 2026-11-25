@@ -1,0 +1,85 @@
+name: Verify Quality & JVM Unit Tests
+
+on:
+  push:
+    branches: ["refactor/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: unit-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NDK_VERSION: r28c
+  GOMOBILE_VERSION: v0.0.0-20260813181013-1960c775504c
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: false
+
+      - name: Export NDK path
+        run: |
+          echo "ANDROID_NDK_HOME=${{ steps.ndk.outputs.ndk-path }}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> "$GITHUB_ENV"
+
+      - name: Install SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "cmake;3.22.1" > /dev/null
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Cache rclone.aar
+        id: cache-rclone
+        uses: actions/cache@v4
+        with:
+          path: deps/build/rclone/rclone.aar
+          key: rclone-${{ env.NDK_VERSION }}-${{ hashFiles('deps/rclone-mobile/**', 'deps/build_rclone_android.sh') }}
+
+      - name: Set up Go
+        if: steps.cache-rclone.outputs.cache-hit != 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: deps/rclone-mobile/go.mod
+          cache-dependency-path: deps/rclone-mobile/go.sum
+
+      - name: Build rclone.aar
+        if: steps.cache-rclone.outputs.cache-hit != 'true'
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@${GOMOBILE_VERSION}
+          go install golang.org/x/mobile/cmd/gobind@${GOMOBILE_VERSION}
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          gomobile init
+          bash deps/build_rclone_android.sh
+
+      - name: Install rclone.aar
+        run: |
+          mkdir -p src/android/app/libs
+          cp deps/build/rclone/rclone.aar src/android/app/libs/
+
+      - name: Provider customization
+        run: cp src/android/app/provider-customization.properties.example src/android/app/provider-customization.properties
+
+      - name: Verify Code Quality & Run JVM Unit Tests
+        working-directory: src/android
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:verifyCodeQuality :app:testDebugUnitTest --stacktrace
