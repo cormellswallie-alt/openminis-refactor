@@ -203,6 +203,7 @@ class CodingAgentWorkflowFeaturesTest {
                 listOf(AgentContentPart.ToolUse("call_7", "shell_execute", JSONObject("""{"command":"git branch"}"""))),
             ),
             createdAt = 1_000L,
+            sortOrder = 0,
         )
         val toolResultEntity = MessageEntity(
             id = "m_tool",
@@ -212,6 +213,7 @@ class CodingAgentWorkflowFeaturesTest {
                 listOf(AgentContentPart.ToolResult("call_7", "shell_execute", steeredOutput, isError = false)),
             )!!,
             createdAt = 1_001L,
+            sortOrder = 1,
         )
 
         val uiMessages = ChatMessageMapper.toChatMessages(
