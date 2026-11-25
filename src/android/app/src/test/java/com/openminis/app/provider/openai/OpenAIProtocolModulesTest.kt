@@ -201,7 +201,7 @@ class OpenAIProtocolModulesTest {
         session.onStreamEnd { chunks.add(it) }
 
         assertTrue(chunks.any { it is LLMStreamChunk.ThinkingDelta && it.text == "step 1" })
-        assertTrue(chunks.any { it is LLMStreamChunk.Text && it.text == "Hello " })
+        assertTrue(chunks.any { it is LLMStreamChunk.Text && it.text == "Hello" })
         assertTrue(chunks.any { it is LLMStreamChunk.ToolUseStart && it.id == "call_1" && it.name == "file_read" })
         val complete = chunks.filterIsInstance<LLMStreamChunk.ToolCallComplete>().single()
         assertEquals("call_1", complete.id)

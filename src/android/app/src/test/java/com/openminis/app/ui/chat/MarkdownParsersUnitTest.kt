@@ -59,13 +59,14 @@ class MarkdownParsersUnitTest {
 
     @Test
     fun `block parser incremental stream matches full parse`() {
-        val chunks = listOf(
+        val deltas = listOf(
             "## Heading\n\nFirst para",
             "graph finishes.\n\n```py\nprint(",
             "1)\n```\n\nTail paragraph.",
         )
-        val full = debugParseBlockRaws(chunks.joinToString(""))
-        val incremental = debugParseIncrementalRaws(chunks)
+        val snapshots = deltas.runningReduce { acc, delta -> acc + delta }
+        val full = debugParseBlockRaws(snapshots.last())
+        val incremental = debugParseIncrementalRaws(snapshots)
         assertEquals(full, incremental)
     }
 
@@ -85,8 +86,8 @@ class MarkdownParsersUnitTest {
 
     @Test
     fun `inline parser finds code spans, inline math and filters non-math currency`() {
-        assertEquals(5, findInlineCodeClose("`abc`", 0))
-        assertEquals(-1, findInlineCodeClose("`unterminated", 0))
+        assertEquals(4, findInlineCodeClose("`abc`", 1))
+        assertEquals(-1, findInlineCodeClose("`unterminated", 1))
 
         assertTrue(looksLikeMath("x^2 + y^2 = z^2"))
         assertTrue(looksLikeMath("\\frac{a}{b}"))
