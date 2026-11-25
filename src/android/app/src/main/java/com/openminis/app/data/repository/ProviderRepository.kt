@@ -1385,7 +1385,7 @@ class ProviderRepository(internal val context: Context) {
 
     private fun publishThinkingRulesSnapshot(
         instanceId: String,
-        entities: List<com.openminis.app.data.db.ThinkingRuleEntity>,
+        entities: List<com.openminis.app.data.db.ProviderThinkingRuleEntity>,
     ) {
         val entries = entities.sortedBy { it.sortOrder }.map { it.id to ThinkingRuleCoding.toRule(it) }
         thinkingRulesCache[instanceId] = entries

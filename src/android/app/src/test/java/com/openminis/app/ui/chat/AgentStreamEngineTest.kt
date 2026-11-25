@@ -336,7 +336,7 @@ class AgentStreamEngineTest {
             activeEntryId: String?,
             groupId: String?,
             excludeEntryIds: Set<String>,
-        ): List<FallbackCandidate> = emptyList()
+        ): Sequence<FallbackCandidate> = emptySequence()
 
         override fun unavailableGroupMembers(): List<String> = emptyList()
         override fun adoptFallbackBinding(candidate: FallbackCandidate, nextProvider: LLMProvider, isRealModelChange: Boolean) {
@@ -387,7 +387,7 @@ class AgentStreamEngineTest {
         override fun resetInLoopCompactionNoProgress() = Unit
         override fun updateFixedContextTokens(systemPrompt: String?, tools: List<AgentToolDefinition>) = Unit
         override fun effectiveContextWindowTokens(): Int? = 128_000
-        override fun resolvedContextWindow(model: LLMModel): Pair<Int, String>? = 128_000 to "model"
+        override fun resolvedContextWindow(model: LLMModel): Pair<Int, Boolean>? = 128_000 to false
         override fun offloadContextIfNeeded(contextWindow: Int) = Unit
         override suspend fun inLoopContextCheck(inLoopCompactions: Int): InLoopContextAction = InLoopContextAction.PROCEED
         override fun recordOutboundDispatch(outboundHistory: List<LLMMessage>, model: LLMModel): Int = 100

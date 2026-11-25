@@ -205,8 +205,8 @@ class OpenAIProtocolModulesTest {
         assertTrue(chunks.any { it is LLMStreamChunk.ToolUseStart && it.id == "call_1" && it.name == "file_read" })
         val complete = chunks.filterIsInstance<LLMStreamChunk.ToolCallComplete>().single()
         assertEquals("call_1", complete.id)
-        assertEquals("a.txt", complete.input.getString("path"))
-        assertTrue(chunks.any { it is LLMStreamChunk.ReasoningContent && it.text == "step 1" })
+        assertEquals("a.txt", complete.args.getString("path"))
+        assertTrue(chunks.any { it is LLMStreamChunk.ReasoningContent && it.content == "step 1" })
         assertTrue(chunks.any { it is LLMStreamChunk.Usage && it.usage.outputTokens == 12 })
         assertTrue(chunks.any { it is LLMStreamChunk.Finished && it.stopReason == "tool_calls" })
     }
@@ -264,7 +264,7 @@ class OpenAIProtocolModulesTest {
         assertEquals("call_9|fc_9", start.id)
         val done = chunks.filterIsInstance<LLMStreamChunk.ToolCallComplete>().single()
         assertEquals("call_9|fc_9", done.id)
-        assertEquals("ls", done.input.getString("command"))
+        assertEquals("ls", done.args.getString("command"))
         assertTrue(chunks.any { it is LLMStreamChunk.Usage && it.usage.latestContextTokens == 100 })
         assertTrue(chunks.any { it is LLMStreamChunk.Finished && it.stopReason == "tool_use" })
     }

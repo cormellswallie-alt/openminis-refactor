@@ -49,7 +49,7 @@ class ContextAndPayloadRecoveryTest {
 
         // Switching to a different session resets learned ratios and valve state.
         assertFalse(meter.seed("sess-2", emptyList()))
-        assertEquals(ContextSizeMeter.DEFAULT_RATIO, meter.ratioFor("model-a"), 1e-6)
+        assertEquals(ContextSizeMeter.ratioFor("model-a", emptyMap(), null), meter.ratioFor("model-a"), 1e-6)
         assertFalse(meter.sentPastExtrapolatedLimit)
     }
 

@@ -619,7 +619,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
                     kind = "tool_use",
                     toolName = chunk.name,
                     toolStatus = ToolBlockStatus.STREAMING,
-                    toolTitle = friendlyToolTitle(chunk.name),
+                    toolTitle = ChatPayloadCodec.friendlyToolTitle(chunk.name),
                     startTimeMs = host.nowMs(),
                 ),
             )
@@ -650,11 +650,11 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         if (idx < 0) return
 
         val prev = state.allToolBlocks[idx]
-        val partialTitle = extractPartialStringValue("tool_title", chunk.accumulated)
+        val partialTitle = ChatPayloadCodec.extractPartialStringValue("tool_title", chunk.accumulated)
         val liveTitle = when {
             !partialTitle.isNullOrEmpty() -> partialTitle
             prev.toolTitle.isNotEmpty() && prev.toolTitle != prev.toolName -> prev.toolTitle
-            else -> friendlyToolTitle(prev.toolName)
+            else -> ChatPayloadCodec.friendlyToolTitle(prev.toolName)
         }
         state.allToolBlocks[idx] = prev.copy(
             toolArgs = chunk.accumulated,
@@ -693,7 +693,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             val providedTitle = chunk.args.optString("tool_title", "").takeIf { it.isNotEmpty() }
             state.allToolBlocks[idx] = state.allToolBlocks[idx].copy(
                 toolStatus = ToolBlockStatus.PENDING,
-                toolTitle = providedTitle ?: friendlyToolTitle(chunk.name),
+                toolTitle = providedTitle ?: ChatPayloadCodec.friendlyToolTitle(chunk.name),
                 toolArgs = chunk.args.toString(),
                 content = "",
                 thoughtSignature = chunk.thoughtSignature ?: state.allToolBlocks[idx].thoughtSignature,
@@ -860,7 +860,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         withContext(host.uiDispatcher) {
             host.updateAssistantMessage(state.assistantId, state.accumulatedText, false, state.allToolBlocks)
         }
-        val turnParts = buildTurnParts(state.allToolBlocks, acc.turnStartBlockIndex, state.allToolInputs)
+        val turnParts = ChatPayloadCodec.buildTurnParts(state.allToolBlocks, acc.turnStartBlockIndex, state.allToolInputs)
         val blockMeta = state.allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
         host.persistAssistantTurn(
             turnParts = turnParts,
@@ -980,7 +980,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
     ) {
         AppLogger.info(TAG_STREAM, "runAgentLoop turn=${acc.turn} dispatching ${acc.toolCalls.size} tool call(s), continuing")
 
-        val livePreviewParts = buildTurnParts(state.allToolBlocks, acc.turnStartBlockIndex, state.allToolInputs)
+        val livePreviewParts = ChatPayloadCodec.buildTurnParts(state.allToolBlocks, acc.turnStartBlockIndex, state.allToolInputs)
         val liveMeta = state.allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
         host.updateLiveSessionPreview(livePreviewParts, liveMeta)
 
@@ -1009,7 +1009,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             )
         }
 
-        val turnParts = buildTurnParts(state.allToolBlocks, acc.turnStartBlockIndex, state.allToolInputs)
+        val turnParts = ChatPayloadCodec.buildTurnParts(state.allToolBlocks, acc.turnStartBlockIndex, state.allToolInputs)
         val blockMeta = state.allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
         val assistantDbId = host.persistAssistantTurn(
             turnParts = turnParts,
@@ -1061,14 +1061,14 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             val refusal = prepared.truncatedWriteRefusal
             if (refusal != null) {
                 failToolBlock(state, id, "Blocked: arguments were truncated in transit", publish = true)
-                host.toolLoopDetector.record(name, parseToolParams(args.toString()), null, refusal.modelMessage, id)
+                host.toolLoopDetector.record(name, ChatPayloadCodec.parseToolParams(args.toString()), null, refusal.modelMessage, id)
                 resultParts.add(AgentContentPart.ToolResult(id = id, name = name, content = refusal.modelMessage, isError = true))
                 state.toolInputChunkRings.remove(id)
                 return resultParts
             }
 
             val argsStr = args.toString()
-            val paramsMap = parseToolParams(argsStr)
+            val paramsMap = ChatPayloadCodec.parseToolParams(argsStr)
             val preIdx = state.allToolBlocks.indexOfFirst { it.id == id }
             if (preIdx >= 0 && state.allToolBlocks[preIdx].toolStatus == ToolBlockStatus.PENDING) {
                 state.allToolBlocks[preIdx] = state.allToolBlocks[preIdx].copy(toolStatus = ToolBlockStatus.RUNNING)

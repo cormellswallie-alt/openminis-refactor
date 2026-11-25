@@ -81,7 +81,7 @@ internal interface AgentStreamHost {
         activeEntryId: String?,
         groupId: String?,
         excludeEntryIds: Set<String> = emptySet(),
-    ): List<FallbackCandidate>
+    ): Sequence<FallbackCandidate>
     fun unavailableGroupMembers(): List<String>
     fun adoptFallbackBinding(candidate: FallbackCandidate, nextProvider: LLMProvider, isRealModelChange: Boolean)
     fun systemPromptFor(provider: LLMProvider, currentSystemPrompt: String?): String?
@@ -122,7 +122,7 @@ internal interface AgentStreamHost {
     fun resetInLoopCompactionNoProgress()
     fun updateFixedContextTokens(systemPrompt: String?, tools: List<AgentToolDefinition>)
     fun effectiveContextWindowTokens(): Int?
-    fun resolvedContextWindow(model: LLMModel): Pair<Int, String>?
+    fun resolvedContextWindow(model: LLMModel): Pair<Int, Boolean>?
     fun offloadContextIfNeeded(contextWindow: Int)
     suspend fun inLoopContextCheck(inLoopCompactions: Int): InLoopContextAction
     fun recordOutboundDispatch(outboundHistory: List<LLMMessage>, model: LLMModel): Int
@@ -237,7 +237,7 @@ internal class ChatViewModelStreamHost(private val vm: ChatViewModel) : AgentStr
         activeEntryId: String?,
         groupId: String?,
         excludeEntryIds: Set<String>,
-    ): List<FallbackCandidate> = vm.fallbackCandidates(primary, activeEntryId, groupId, excludeEntryIds)
+    ): Sequence<FallbackCandidate> = vm.fallbackCandidates(primary, activeEntryId, groupId, excludeEntryIds)
 
     override fun unavailableGroupMembers(): List<String> = vm.unavailableGroupMembers()
 
@@ -282,7 +282,7 @@ internal class ChatViewModelStreamHost(private val vm: ChatViewModel) : AgentStr
         vm.chatRepository.appendMessage(
             vm.activeSessionId,
             "user",
-            """[{"type":"text","value":${escapeJson(note)}}]""",
+            """[{"type":"text","value":${ChatPayloadCodec.escapeJson(note)}}]""",
         ).id
     }.onFailure {
         AppLogger.warning(ChatViewModel.TAG, "[subagent_task] steer persist failed: ${it.message}")
@@ -399,7 +399,7 @@ internal class ChatViewModelStreamHost(private val vm: ChatViewModel) : AgentStr
     }
 
     override fun effectiveContextWindowTokens(): Int? = vm.effectiveContextWindowTokens()
-    override fun resolvedContextWindow(model: LLMModel): Pair<Int, String>? = vm.resolvedContextWindow(model)
+    override fun resolvedContextWindow(model: LLMModel): Pair<Int, Boolean>? = vm.resolvedContextWindow(model)
 
     override fun offloadContextIfNeeded(contextWindow: Int) {
         vm.offloadContextIfNeeded(
@@ -542,7 +542,7 @@ internal class ChatViewModelStreamHost(private val vm: ChatViewModel) : AgentStr
     override fun persistHiddenUserNudgeAsync(nudge: String) {
         val nudgeSid = vm.activeSessionId
         vm.viewModelScope.launch(Dispatchers.IO) {
-            vm.chatRepository.appendMessage(nudgeSid, "user", """[{"type":"text","value":${escapeJson(nudge)}}]""")
+            vm.chatRepository.appendMessage(nudgeSid, "user", """[{"type":"text","value":${ChatPayloadCodec.escapeJson(nudge)}}]""")
         }
     }
 
@@ -553,7 +553,7 @@ internal class ChatViewModelStreamHost(private val vm: ChatViewModel) : AgentStr
         if (parts.isNotEmpty()) {
             vm.chatRepository.updateSessionPreview(
                 vm.realSessionId.ifEmpty { vm.sessionId },
-                buildAssistantPartsJson(parts, blockMeta),
+                ChatPayloadCodec.buildAssistantPartsJson(parts, blockMeta),
             )
         }
     }

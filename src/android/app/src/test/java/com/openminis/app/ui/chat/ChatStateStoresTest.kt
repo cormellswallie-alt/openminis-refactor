@@ -160,13 +160,13 @@ class ChatStateStoresTest {
             ),
         )
         val stats = SessionTokenStatsAggregator.aggregate(usages, messages)
-        assertEquals(300L, stats.inputTokens)
-        assertEquals(100L, stats.outputTokens)
-        assertEquals(130L, stats.cacheReadTokens)
-        assertEquals(10L, stats.cacheCreationTokens)
-        assertEquals(300, stats.latestContextTokens)
-        assertEquals(2, stats.loops)
+        assertEquals(300L, stats.input)
+        assertEquals(100L, stats.output)
+        assertEquals(130L, stats.cacheRead)
+        assertEquals(10L, stats.cacheWrite)
+        assertEquals(300, stats.context)
+        assertEquals(2, stats.loopCount)
         assertEquals(5000L, stats.streamMs)
-        assertEquals(100L, stats.streamOutputTokens)
+        assertEquals(100L, stats.streamOutput)
     }
 }
