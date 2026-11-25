@@ -322,7 +322,7 @@ internal class ChatToolDispatcher(
      * per bash command) while keeping the exact M5 `exit 119` vanished-bash sentinel.
      */
     private fun stageHostBashScript(script: String): Pair<String, File>? {
-        if (ExecutionCoordinator.executionStrategy != ShellExecutionStrategy.FRESH_PROCESS) return null
+        if (!ShellExecutionStrategy.supportsHostStagedBash(ExecutionCoordinator.executionStrategy)) return null
         return runCatching {
             val tmpDir = File(RootfsManager.getInstance(context).rootfsDir, "tmp")
             if (!tmpDir.isDirectory) tmpDir.mkdirs()

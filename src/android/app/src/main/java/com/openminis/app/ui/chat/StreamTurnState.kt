@@ -7,7 +7,13 @@ import com.openminis.app.data.model.FallbackStrategy
 import com.openminis.app.data.model.LLMError
 import com.openminis.app.data.model.LLMMessage
 import com.openminis.app.data.model.LLMUsage
+import com.openminis.app.tools.ToolExecutionResult
+import kotlinx.coroutines.CompletableJob
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.sync.Semaphore
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Per-turn deduplication of streaming `tool_call_id`s ([T-dedupe-toolcallid]).
@@ -97,6 +103,21 @@ internal object StreamThrottlePolicy {
         elapsedSinceLastMs: Long,
         isFirstChunk: Boolean,
     ): Boolean = isFirstChunk || elapsedSinceLastMs >= thinkingDeltaThrottleMs(totalLen)
+}
+
+/**
+ * Policy deciding which side-effect-free read-only tools may begin executing
+ * as soon as their [LLMStreamChunk.ToolCallComplete] arrives mid-stream,
+ * overlapping I/O with the remainder of the LLM stream.
+ */
+internal object EarlyToolDispatchPolicy {
+    val READ_ONLY_TOOLS: Set<String> = setOf("file_read", "read_image", "memory_get")
+
+    fun isEligible(
+        toolName: String,
+        isScriptedTurn: Boolean,
+        helperWrapUpInjected: Boolean,
+    ): Boolean = !isScriptedTurn && !helperWrapUpInjected && toolName in READ_ONLY_TOOLS
 }
 
 /**
@@ -326,6 +347,24 @@ internal class TurnStreamAccumulator(
     val toolCallSignatures = mutableMapOf<String, String>()
     val deduplicator = ToolCallIdDeduplicator()
 
+    // Mid-stream read-only tool prefetch state
+    var isScriptedTurn: Boolean = false
+    var earlyToolJob: CompletableJob? = null
+    var earlyToolScope: CoroutineScope? = null
+    var earlyToolSemaphore: Semaphore? = null
+    val earlyToolJobs: MutableMap<String, Deferred<Result<ToolExecutionResult>>> = ConcurrentHashMap()
+
+    fun cancelEarlyToolJobs() {
+        for (job in earlyToolJobs.values) {
+            job.cancel()
+        }
+        earlyToolJobs.clear()
+        earlyToolJob?.cancel()
+        earlyToolJob = null
+        earlyToolScope = null
+        earlyToolSemaphore = null
+    }
+
     // Per-stream UI throttle state
     val pendingChunkSb = StringBuilder()
     var lastUiUpdateMs: Long = 0L
@@ -360,6 +399,7 @@ internal class TurnStreamAccumulator(
     }
 
     fun resetForRetry(resetThrottle: Boolean = true) {
+        cancelEarlyToolJobs()
         turnTextSb.setLength(0)
         currentTextBlockSb = null
         turnTextBlockIdx = -1

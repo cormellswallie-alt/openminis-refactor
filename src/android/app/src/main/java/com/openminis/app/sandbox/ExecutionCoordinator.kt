@@ -187,6 +187,12 @@ object ExecutionCoordinator {
     /** [T-android-fresh-shells-concurrent] Thread-safe per-session set for [freshShells]. */
     private fun newFreshShellSet(): MutableSet<FreshProcessShell> = ConcurrentHashMap.newKeySet()
 
+    /** Per-session persistent stateless PRoot worker daemons for [ShellExecutionStrategy.STATELESS_WORKER]. */
+    private val workerShells = ConcurrentHashMap<String, StatelessWorkerShell>()
+
+    /** Guards creation/replacement of a session's [StatelessWorkerShell]. */
+    private val workerLock = Mutex()
+
     /** Thread-safe per-session mutex registry. */
     private val mutexes = ConcurrentHashMap<String, Mutex>()
 
@@ -325,10 +331,13 @@ object ExecutionCoordinator {
             tag = sessionId,
             isStartFailure = ::isStartFailure,
         ) {
-            if (executionStrategy == ShellExecutionStrategy.FRESH_PROCESS) {
-                executeFresh(sessionId, command, timeout, lineCallback, fsSessionId)
-            } else {
-                executeWarm(sessionId, command, timeout, lineCallback, fsSessionId)
+            when (executionStrategy) {
+                ShellExecutionStrategy.FRESH_PROCESS ->
+                    executeFresh(sessionId, command, timeout, lineCallback, fsSessionId)
+                ShellExecutionStrategy.STATELESS_WORKER ->
+                    executeWorker(sessionId, command, timeout, lineCallback, fsSessionId)
+                ShellExecutionStrategy.WARM_SHELL ->
+                    executeWarm(sessionId, command, timeout, lineCallback, fsSessionId)
             }
         }
         return when (outcome) {
@@ -365,6 +374,92 @@ object ExecutionCoordinator {
         return "<system-reminder>This command was queued for ${secs}s before it started, because Android " +
             "limits how many processes an app may run at once.$retried It then ran to completion and its output " +
             "is complete, but its measured duration may be inaccurate.</system-reminder>"
+    }
+
+    /**
+     * Execute [command] via a persistent stateless PRoot worker for [sessionId].
+     * Transparently falls back to [executeFresh] if the worker cannot start or
+     * dies before accepting the job, so commands never fail due to daemon health.
+     */
+    private suspend fun executeWorker(
+        sessionId: String,
+        command: String,
+        timeout: Long,
+        lineCallback: ((String) -> Unit)?,
+        fsSessionId: String?,
+    ): CommandResult {
+        val startTime = System.currentTimeMillis()
+        val bindMounts = buildSessionBindMounts(fsSessionId ?: sessionId)
+        val envVars = envVarRepository?.allAsDict() ?: emptyMap()
+
+        var worker = getOrCreateWorker(sessionId, bindMounts)
+        var (rawOutput, exitCode) = worker.execute(
+            command = command,
+            timeout = timeout,
+            envVars = envVars,
+            lineCallback = lineCallback,
+        )
+        if (exitCode == StatelessWorkerShell.WORKER_UNAVAILABLE_EXIT) {
+            Log.w(TAG, "[$sessionId] stateless worker unavailable; restarting once before fallback")
+            retireWorker(sessionId, worker)
+            worker = getOrCreateWorker(sessionId, bindMounts)
+            val retry = worker.execute(
+                command = command,
+                timeout = timeout,
+                envVars = envVars,
+                lineCallback = lineCallback,
+            )
+            rawOutput = retry.first
+            exitCode = retry.second
+        }
+        if (exitCode == StatelessWorkerShell.WORKER_UNAVAILABLE_EXIT) {
+            Log.w(TAG, "[$sessionId] stateless worker unavailable after restart; falling back to executeFresh")
+            retireWorker(sessionId, worker)
+            return executeFresh(sessionId, command, timeout, lineCallback, fsSessionId)
+        }
+
+        val durationMs = System.currentTimeMillis() - startTime
+        val sanitized = TerminalSanitizer.sanitize(rawOutput)
+        val truncated = TerminalSanitizer.truncateIfNeeded(sanitized)
+        val output = if (exitCode != 0 && exitCode != 124) {
+            ShellExitCode.ensureSuffix(truncated, exitCode)
+        } else {
+            truncated
+        }
+        return CommandResult(output = output, exitCode = exitCode, durationMs = durationMs)
+    }
+
+    private suspend fun getOrCreateWorker(
+        sessionId: String,
+        bindMounts: Map<String, String>,
+    ): StatelessWorkerShell {
+        val existing = workerShells[sessionId]
+        if (existing != null && existing.isAlive && existing.bindMounts == bindMounts) {
+            return existing
+        }
+        return workerLock.withLock {
+            val recheck = workerShells[sessionId]
+            if (recheck != null && recheck.isAlive && recheck.bindMounts == bindMounts) {
+                return@withLock recheck
+            }
+            if (recheck != null) {
+                recheck.shutdown()
+            }
+            val created = StatelessWorkerShell.forPRoot(
+                context = appContext,
+                sessionId = sessionId,
+                bindMounts = bindMounts,
+                useNoSeccomp = freshUseNoSeccomp,
+            )
+            workerShells[sessionId] = created
+            created
+        }
+    }
+
+    private fun retireWorker(sessionId: String, expected: StatelessWorkerShell) {
+        if (workerShells.remove(sessionId, expected)) {
+            expected.shutdown()
+        }
     }
 
     /** The pooled warm-shell path (ShellExecutionStrategy.WARM_SHELL). */
@@ -634,6 +729,10 @@ object ExecutionCoordinator {
         // commands are untouched.
         val stoppedFresh = stopFreshShells(sessionId)
         if (stoppedFresh > 0) Log.i(TAG, "[$sessionId] $stoppedFresh fresh-process command(s) killed on terminate")
+        workerShells.remove(sessionId)?.let { worker ->
+            worker.shutdown()
+            Log.i(TAG, "[$sessionId] Stateless worker shut down on terminate")
+        }
     }
 
     /**
@@ -650,6 +749,7 @@ object ExecutionCoordinator {
             val shell = removeSessionShells(sessionId)
             shell?.stop()
             stopFreshShells(sessionId)
+            workerShells[sessionId]?.stopActiveJobs()
             Log.i(TAG, "[$sessionId] Shells stopped by user")
         } else {
             // Stop all sessions (legacy/fallback)
@@ -657,6 +757,8 @@ object ExecutionCoordinator {
             shells.clear()
             // [T-android-fresh-shells-concurrent] Snapshot via ArrayList, see stopFreshShells.
             ArrayList(freshShells.keys).forEach { stopFreshShells(it) }
+            ArrayList(workerShells.values).forEach { it.shutdown() }
+            workerShells.clear()
             lastInjectedKeys.clear()
             ShellExecutor.destroyCurrent()
         }

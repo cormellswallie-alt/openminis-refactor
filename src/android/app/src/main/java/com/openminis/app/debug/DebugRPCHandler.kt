@@ -966,10 +966,12 @@ class DebugRPCHandler(private val context: Context) {
         when (requested) {
             "fresh" -> ExecutionCoordinator.executionStrategy =
                 com.openminis.app.sandbox.ShellExecutionStrategy.FRESH_PROCESS
+            "worker", "stateless_worker" -> ExecutionCoordinator.executionStrategy =
+                com.openminis.app.sandbox.ShellExecutionStrategy.STATELESS_WORKER
             "warm" -> ExecutionCoordinator.executionStrategy =
                 com.openminis.app.sandbox.ShellExecutionStrategy.WARM_SHELL
             "" -> Unit
-            else -> throw RPCException(-32602, "strategy must be 'warm' or 'fresh'")
+            else -> throw RPCException(-32602, "strategy must be 'warm', 'fresh', or 'worker'")
         }
 
         // Mirror ChatViewModel's terminal lineCallback: scan raw lines for

@@ -15,12 +15,15 @@ import com.openminis.app.provider.LLMProvider
 import com.openminis.app.scheduled.PrefilledToolCall
 import com.openminis.app.scheduled.ScriptedToolTurn
 import com.openminis.app.tools.ToolExecutionResult
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.runTest
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -311,6 +314,112 @@ class AgentStreamEngineTest {
 
         assertEquals(2, calls)
         assertEquals(1, host.fixedTokenUpdateCount)
+    }
+
+    @Test
+    fun `early tool dispatch policy gates only pure read-only tools on non-scripted active turns`() {
+        assertTrue(EarlyToolDispatchPolicy.isEligible("file_read", isScriptedTurn = false, helperWrapUpInjected = false))
+        assertTrue(EarlyToolDispatchPolicy.isEligible("read_image", isScriptedTurn = false, helperWrapUpInjected = false))
+        assertTrue(EarlyToolDispatchPolicy.isEligible("memory_get", isScriptedTurn = false, helperWrapUpInjected = false))
+        assertFalse(EarlyToolDispatchPolicy.isEligible("shell_execute", isScriptedTurn = false, helperWrapUpInjected = false))
+        assertFalse(EarlyToolDispatchPolicy.isEligible("file_write", isScriptedTurn = false, helperWrapUpInjected = false))
+        assertFalse(EarlyToolDispatchPolicy.isEligible("file_read", isScriptedTurn = true, helperWrapUpInjected = false))
+        assertFalse(EarlyToolDispatchPolicy.isEligible("file_read", isScriptedTurn = false, helperWrapUpInjected = true))
+    }
+
+    @Test
+    fun `engine dispatches read-only file_read mid-stream before Finished and preserves result order`() = runTest {
+        val host = FakeAgentStreamHost(this)
+        host.agentHistory.add(LLMMessage(role = LLMMessage.Role.USER, content = "Read and run"))
+
+        val readStartedMidStream = AtomicBoolean(false)
+        val streamFinishedEmitted = AtomicBoolean(false)
+        val execCalls = AtomicInteger(0)
+        host.toolHandler = { name, _ ->
+            execCalls.incrementAndGet()
+            if (name == "file_read" && !streamFinishedEmitted.get()) {
+                readStartedMidStream.set(true)
+            }
+            ToolExecutionResult(output = "result:$name", success = true)
+        }
+
+        var turns = 0
+        val provider = FakeProvider("primary") {
+            turns++
+            if (turns == 1) {
+                flow {
+                    emit(LLMStreamChunk.ToolUseStart("c_read", "file_read"))
+                    emit(LLMStreamChunk.ToolCallComplete("c_read", "file_read", JSONObject("""{"path":"/a.txt"}""")))
+                    emit(LLMStreamChunk.ToolUseStart("c_shell", "shell_execute"))
+                    emit(LLMStreamChunk.ToolCallComplete("c_shell", "shell_execute", JSONObject("""{"command":"echo hi"}""")))
+                    streamFinishedEmitted.set(true)
+                    emit(LLMStreamChunk.Finished("tool_use"))
+                }
+            } else {
+                flow {
+                    emit(LLMStreamChunk.Text("All done"))
+                    emit(LLMStreamChunk.Finished("stop"))
+                }
+            }
+        }
+        host.currentProvider = provider
+
+        AgentStreamEngine(host).run(provider = provider, systemPrompt = "sys")
+
+        assertTrue("file_read should start executing before stream Finished", readStartedMidStream.get())
+        assertEquals("each tool must execute exactly once", 2, execCalls.get())
+        val results = host.agentHistory[2].contentParts.filterIsInstance<AgentContentPart.ToolResult>()
+        assertEquals(listOf("c_read", "c_shell"), results.map { it.id })
+        assertEquals(listOf("result:file_read", "result:shell_execute"), results.map { it.content })
+    }
+
+    @Test
+    fun `early read-only tool job is cancelled cleanly when stream retries after transient error`() = runTest {
+        val host = FakeAgentStreamHost(this, retryDelaysSec = intArrayOf(0))
+        host.agentHistory.add(LLMMessage(role = LLMMessage.Role.USER, content = "Retry test"))
+
+        val firstJobCancelled = AtomicBoolean(false)
+        val blocker = CompletableDeferred<Unit>()
+        var attempts = 0
+        host.toolHandler = { _, _ ->
+            if (attempts == 1) {
+                try {
+                    blocker.await()
+                } finally {
+                    firstJobCancelled.set(true)
+                }
+            }
+            ToolExecutionResult(output = "ok-after-retry", success = true)
+        }
+
+        val provider = FakeProvider("primary") {
+            attempts++
+            if (attempts == 1) {
+                flow {
+                    emit(LLMStreamChunk.ToolUseStart("c1", "file_read"))
+                    emit(LLMStreamChunk.ToolCallComplete("c1", "file_read", JSONObject("""{"path":"/x.txt"}""")))
+                    throw LLMError.TransientError("502 mid-stream", httpStatus = 502)
+                }
+            } else if (attempts == 2) {
+                flow {
+                    emit(LLMStreamChunk.ToolUseStart("c2", "file_read"))
+                    emit(LLMStreamChunk.ToolCallComplete("c2", "file_read", JSONObject("""{"path":"/x.txt"}""")))
+                    emit(LLMStreamChunk.Finished("tool_use"))
+                }
+            } else {
+                flow {
+                    emit(LLMStreamChunk.Text("Recovered"))
+                    emit(LLMStreamChunk.Finished("stop"))
+                }
+            }
+        }
+        host.currentProvider = provider
+
+        AgentStreamEngine(host).run(provider = provider, systemPrompt = "sys")
+
+        assertTrue("speculative early tool from failed stream attempt must be cancelled", firstJobCancelled.get())
+        assertEquals("Recovered", host.agentHistory.last().content)
+        assertEquals(1, host.toolLoopDetector.historySnapshot().size)
     }
 
     // ── Test Doubles ────────────────────────────────────────────────────

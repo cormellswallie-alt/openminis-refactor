@@ -17,9 +17,14 @@ import com.openminis.app.provider.LLMProvider
 import com.openminis.app.provider.anthropic.AnthropicProvider
 import com.openminis.app.scheduled.PrefilledToolCall
 import com.openminis.app.scheduled.ScriptedToolTurn
+import com.openminis.app.tools.ToolExecutionResult
 import com.openminis.app.ui.chat.ChatViewModel.Companion.TAG
 import com.openminis.app.ui.chat.ChatViewModel.Companion.TAG_STREAM
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -146,60 +151,64 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
                 turn = turn,
                 turnStartBlockIndex = state.allToolBlocks.size,
             )
-            executeTurnStreamWithRecovery(state, acc)
+            try {
+                executeTurnStreamWithRecovery(state, acc)
 
-            val turnText = acc.turnTextSb.toString()
-            state.accumulatedText += turnText
+                val turnText = acc.turnTextSb.toString()
+                state.accumulatedText += turnText
 
-            val assistantParts = mutableListOf<AgentContentPart>()
-            if (turnText.isNotEmpty()) assistantParts.add(AgentContentPart.Text(turnText))
-            for ((id, name, args) in acc.toolCalls) {
-                assistantParts.add(
-                    AgentContentPart.ToolUse(id, name, args, thoughtSignature = acc.toolCallSignatures[id]),
-                )
-                state.allToolInputs[id] = args.toString()
-            }
-            val turnReasoningContent: String? = acc.turnReasoningBlob
-                ?: acc.turnThinking.toString().takeIf { it.isNotEmpty() }
-
-            host.agentHistory.add(
-                LLMMessage(
-                    role = LLMMessage.Role.ASSISTANT,
-                    content = turnText,
-                    contentParts = assistantParts,
-                    reasoningContent = turnReasoningContent,
-                ),
-            )
-
-            if (turnText.isEmpty() && acc.toolCalls.isEmpty()) {
-                AppLogger.warning(
-                    TAG_STREAM,
-                    "empty turn detected: turn=$turn finishReason=${acc.turnFinishReason} " +
-                        "reasoningLen=${acc.turnThinking.length} reasoningBlobLen=${acc.turnReasoningBlob?.length ?: -1} " +
-                        "model=${provider.model.id} provider=${provider.name}",
-                )
-            }
-
-            if (acc.toolCalls.isEmpty()) {
-                when (handleNoToolCallsCompletion(state, acc, turnReasoningContent)) {
-                    NoToolCallsOutcome.BREAK_LOOP -> {
-                        state.loopExitedNormally = true
-                        break
-                    }
-                    NoToolCallsOutcome.CONTINUE_NEXT_TURN -> continue
+                val assistantParts = mutableListOf<AgentContentPart>()
+                if (turnText.isNotEmpty()) assistantParts.add(AgentContentPart.Text(turnText))
+                for ((id, name, args) in acc.toolCalls) {
+                    assistantParts.add(
+                        AgentContentPart.ToolUse(id, name, args, thoughtSignature = acc.toolCallSignatures[id]),
+                    )
+                    state.allToolInputs[id] = args.toString()
                 }
+                val turnReasoningContent: String? = acc.turnReasoningBlob
+                    ?: acc.turnThinking.toString().takeIf { it.isNotEmpty() }
+
+                host.agentHistory.add(
+                    LLMMessage(
+                        role = LLMMessage.Role.ASSISTANT,
+                        content = turnText,
+                        contentParts = assistantParts,
+                        reasoningContent = turnReasoningContent,
+                    ),
+                )
+
+                if (turnText.isEmpty() && acc.toolCalls.isEmpty()) {
+                    AppLogger.warning(
+                        TAG_STREAM,
+                        "empty turn detected: turn=$turn finishReason=${acc.turnFinishReason} " +
+                            "reasoningLen=${acc.turnThinking.length} reasoningBlobLen=${acc.turnReasoningBlob?.length ?: -1} " +
+                            "model=${provider.model.id} provider=${provider.name}",
+                    )
+                }
+
+                if (acc.toolCalls.isEmpty()) {
+                    when (handleNoToolCallsCompletion(state, acc, turnReasoningContent)) {
+                        NoToolCallsOutcome.BREAK_LOOP -> {
+                            state.loopExitedNormally = true
+                            break
+                        }
+                        NoToolCallsOutcome.CONTINUE_NEXT_TURN -> continue
+                    }
+                }
+
+                executeToolBatchAndPersist(state, acc, turnReasoningContent)
+
+                if (turn == 0) host.generateSessionTitleIfNeeded()
+
+                if (handlePostToolDelegationMute(state, turn)) {
+                    state.loopExitedNormally = true
+                    break
+                }
+
+                tryInjectQueuedPromptBatch(state, turn)
+            } finally {
+                acc.cancelEarlyToolJobs()
             }
-
-            executeToolBatchAndPersist(state, acc, turnReasoningContent)
-
-            if (turn == 0) host.generateSessionTitleIfNeeded()
-
-            if (handlePostToolDelegationMute(state, turn)) {
-                state.loopExitedNormally = true
-                break
-            }
-
-            tryInjectQueuedPromptBatch(state, turn)
         }
 
         if (!state.loopExitedNormally) {
@@ -452,6 +461,14 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         try {
             val scriptedTurn = state.pendingScriptedTurn?.takeUnless { state.helperWrapUpInjected }
             state.pendingScriptedTurn = null
+            acc.isScriptedTurn = scriptedTurn != null
+            acc.cancelEarlyToolJobs()
+            if (!acc.isScriptedTurn && !state.helperWrapUpInjected) {
+                val earlyJob = SupervisorJob(coroutineContext[Job])
+                acc.earlyToolJob = earlyJob
+                acc.earlyToolScope = CoroutineScope(earlyJob + host.ioDispatcher)
+                acc.earlyToolSemaphore = Semaphore(host.maxConcurrentTools)
+            }
 
             val turnChunks: Flow<LLMStreamChunk> = if (scriptedTurn != null) {
                 AppLogger.info(
@@ -786,6 +803,58 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
                 )
             }
         }
+
+        maybeStartEarlyReadOnlyTool(state, acc, toolCompleteId, chunk.name, chunk.args, argsText)
+    }
+
+    /**
+     * Begin executing pure read-only tools (`file_read`, `read_image`, `memory_get`)
+     * as soon as their arguments finish streaming, hiding I/O behind the remaining
+     * LLM stream. Speculative jobs never mutate `ToolLoopDetector` or `allToolBlocks`;
+     * they are awaited (or discarded cleanly on stream retry) at batch commit time.
+     */
+    private fun maybeStartEarlyReadOnlyTool(
+        state: RunState,
+        acc: TurnStreamAccumulator,
+        toolId: String,
+        name: String,
+        args: JSONObject,
+        argsText: String,
+    ) {
+        if (!EarlyToolDispatchPolicy.isEligible(name, acc.isScriptedTurn, state.helperWrapUpInjected)) return
+        val earlyScope = acc.earlyToolScope ?: return
+        val earlySem = acc.earlyToolSemaphore ?: return
+        val prepared = ToolCallPrecheck.prepare(
+            name, args, state.toolInputChunkRings[toolId]?.lastOrNull(), host.agentTools,
+        )
+        if (prepared.truncatedWriteRefusal != null) return
+        if (ToolCallPrecheck.validate(name, args, host.agentTools) != null) return
+        val paramsMap = ChatPayloadCodec.parseToolParams(argsText)
+        if (!ScriptedToolTurn.isScriptedId(toolId) &&
+            host.toolLoopDetector.check(name, paramsMap).level == Level.CRITICAL
+        ) {
+            return
+        }
+        acc.earlyToolJobs[toolId] = earlyScope.async {
+            earlySem.withPermit {
+                try {
+                    Result.success(
+                        host.executeTool(
+                            name = name,
+                            argsJson = argsText,
+                            toolId = toolId,
+                            toolBlocks = state.allToolBlocks,
+                            assistantId = state.assistantId,
+                            currentText = state.accumulatedText,
+                        ),
+                    )
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    Result.failure(t)
+                }
+            }
+        }
     }
 
     private suspend fun handleUsageChunk(
@@ -1097,19 +1166,30 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         val preDispatchSnapshot = snapshotToolBlocks(state)
         val livePreviewParts = ChatPayloadCodec.buildTurnParts(preDispatchSnapshot, acc.turnStartBlockIndex, state.allToolInputs)
         val liveMeta = preDispatchSnapshot.filter { it.kind == "tool_use" }.associateBy { it.id }
-        host.updateLiveSessionPreview(livePreviewParts, liveMeta)
 
-        val slots = Semaphore(host.maxConcurrentTools)
+        val slots = acc.earlyToolSemaphore ?: Semaphore(host.maxConcurrentTools)
         val slotResults = arrayOfNulls<List<AgentContentPart>>(acc.toolCalls.size)
         coroutineScope {
+            // Overlap live session preview Room write with concurrent tool execution.
+            launch(host.ioDispatcher) {
+                runCatching { host.updateLiveSessionPreview(livePreviewParts, liveMeta) }
+            }
             acc.toolCalls.mapIndexed { slotIndex, (id, name, args) ->
+                val earlyDeferred = acc.earlyToolJobs.remove(id)
                 async {
-                    slotResults[slotIndex] = slots.withPermit {
-                        executeSingleToolCall(state, acc.turn, id, name, args)
-                    }
+                    slotResults[slotIndex] = executeSingleToolCall(
+                        state = state,
+                        turn = acc.turn,
+                        id = id,
+                        name = name,
+                        args = args,
+                        slots = slots,
+                        earlyResult = earlyDeferred,
+                    )
                 }
             }.awaitAll()
         }
+        acc.cancelEarlyToolJobs()
 
         val resultParts = mutableListOf<AgentContentPart>()
         for (parts in slotResults) parts?.let { resultParts.addAll(it) }
@@ -1159,6 +1239,8 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         id: String,
         name: String,
         args: JSONObject,
+        slots: Semaphore,
+        earlyResult: Deferred<Result<ToolExecutionResult>>? = null,
     ): List<AgentContentPart> {
         val resultParts = mutableListOf<AgentContentPart>()
         host.onToolStarted()
@@ -1176,6 +1258,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             val truncationRepairTag = prepared.truncationTag
             val refusal = prepared.truncatedWriteRefusal
             if (refusal != null) {
+                earlyResult?.cancel()
                 failToolBlock(state, id, "Blocked: arguments were truncated in transit", publish = true)
                 host.toolLoopDetector.record(name, ChatPayloadCodec.parseToolParams(args.toString()), null, refusal.modelMessage, id)
                 resultParts.add(AgentContentPart.ToolResult(id = id, name = name, content = refusal.modelMessage, isError = true))
@@ -1205,6 +1288,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
                 host.toolLoopDetector.check(name, paramsMap)
             }
             if (precheck.level == Level.CRITICAL) {
+                earlyResult?.cancel()
                 val blockedMsg = precheck.message ?: "[LOOP BLOCKED] tool execution blocked"
                 failToolBlock(state, id, blockedMsg, publish = false)
                 host.toolLoopDetector.record(name, paramsMap, null, blockedMsg, id)
@@ -1214,6 +1298,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
 
             val preflightError = ToolCallPrecheck.validate(name, args, host.agentTools)
             if (preflightError != null) {
+                earlyResult?.cancel()
                 state.toolInputChunkRings.remove(id)
                 val modelMessage = ToolCallPrecheck.validationErrorMessage(preflightError)
                 failToolBlock(state, id, "Blocked invalid tool call", publish = true)
@@ -1222,7 +1307,13 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
                 return resultParts
             }
 
-            val result = host.executeTool(name, argsStr, id, state.allToolBlocks, state.assistantId, state.accumulatedText)
+            val result = if (earlyResult != null) {
+                earlyResult.await().getOrThrow()
+            } else {
+                slots.withPermit {
+                    host.executeTool(name, argsStr, id, state.allToolBlocks, state.assistantId, state.accumulatedText)
+                }
+            }
             val postRecord = host.toolLoopDetector.record(
                 toolName = name,
                 params = paramsMap,

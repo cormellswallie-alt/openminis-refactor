@@ -76,6 +76,16 @@ internal enum class ShellExecutionStrategy {
      */
     FRESH_PROCESS,
 
+    /**
+     * Persistent stateless PRoot worker daemon per session.
+     *
+     * Keeps one PRoot + `/bin/sh` dispatcher alive per session while running
+     * every command in its own isolated `setsid` process group with per-job
+     * output/pid/exit files — no in-band markers, no shared command stdout,
+     * full concurrency, and no per-command PRoot cold start.
+     */
+    STATELESS_WORKER,
+
     ;
 
     companion object {
@@ -118,5 +128,12 @@ internal enum class ShellExecutionStrategy {
          */
         fun recyclesShellOnTimeout(strategy: ShellExecutionStrategy): Boolean =
             strategy == WARM_SHELL
+
+        /**
+         * Whether bash scripts can be staged directly on the host rootfs `/tmp`
+         * instead of being base64-decoded inside the guest shell.
+         */
+        fun supportsHostStagedBash(strategy: ShellExecutionStrategy): Boolean =
+            strategy == FRESH_PROCESS || strategy == STATELESS_WORKER
     }
 }
