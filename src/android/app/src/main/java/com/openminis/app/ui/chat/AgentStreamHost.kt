@@ -18,7 +18,6 @@ import com.openminis.app.diagnostics.MemorySnapshot
 import com.openminis.app.diagnostics.StreamJitterProbe
 import com.openminis.app.logging.AppLogger
 import com.openminis.app.provider.LLMProvider
-import com.openminis.app.provider.anthropic.AnthropicProvider
 import com.openminis.app.scheduled.PrefilledToolCall
 import com.openminis.app.scheduled.ScriptedToolTurn
 import com.openminis.app.service.SessionActivityTracker
@@ -191,35 +190,35 @@ internal class ChatViewModelStreamHost(private val vm: ChatViewModel) : AgentStr
     override val firstChunkWatchdogIntervalMs: Long = 10_000L
 
     override val activeSessionId: String get() = vm.activeSessionId
-    override val helperMaxTurns: Int? get() = vm.helperConfig?.maxTurns
-    override val isHelper: Boolean get() = vm.helperConfig != null
-    override val helperWrapUpRequested: Boolean get() = vm.helperWrapUpRequested
-    override val selectedGroupId: String? get() = vm._selectedGroupId.value
-    override val activeEntryId: String? get() = vm._activeEntryId.value
-    override val thinkingLevel: ThinkingLevel get() = vm._thinkingLevel.value
+    override val helperMaxTurns: Int? get() = vm.runState.helperConfig?.maxTurns
+    override val isHelper: Boolean get() = vm.runState.isHelper
+    override val helperWrapUpRequested: Boolean get() = vm.runState.helperWrapUpRequested
+    override val selectedGroupId: String? get() = vm.modelState.selectedGroupId.value
+    override val activeEntryId: String? get() = vm.modelState.activeEntryId.value
+    override val thinkingLevel: ThinkingLevel get() = vm.runState.thinkingLevel.value
     override val enhancedCacheEnabled: Boolean get() = vm.overlaysStore.enhancedCacheEnabled.value
-    override val pendingModelSwitch: Boolean get() = vm.pendingModelSwitch
-    override val currentProvider: LLMProvider? get() = vm.currentProvider
-    override val currentModelId: String? get() = vm.currentModel?.id
+    override val pendingModelSwitch: Boolean get() = vm.modelState.pendingModelSwitch
+    override val currentProvider: LLMProvider? get() = vm.modelState.currentProvider
+    override val currentModelId: String? get() = vm.modelState.currentModel?.id
     override val agentHistory: MutableList<LLMMessage> get() = vm.agentHistory
     override val agentTools: List<AgentToolDefinition> get() = vm.agentTools
     override val toolLoopDetector: ToolLoopDetector get() = vm.toolLoopDetector
-    override val promptQueue: List<QueuedPrompt> get() = vm._promptQueue.value
+    override val promptQueue: List<QueuedPrompt> get() = vm.runState.promptQueue.value
 
     override fun nowMs(): Long = System.currentTimeMillis()
     override fun elapsedRealtimeMs(): Long = SystemClock.elapsedRealtime()
     override fun memorySnapshotLog(): String = MemorySnapshot.capture().toLogString()
 
     override fun clearPendingModelSwitchIfSame(provider: LLMProvider) {
-        if (vm.currentProvider === provider) vm.pendingModelSwitch = false
+        if (vm.modelState.currentProvider === provider) vm.modelState.pendingModelSwitch = false
     }
 
     override fun consumePendingModelSwitch(loopProvider: LLMProvider): PendingModelSwitch? {
-        val chosen = vm.currentProvider ?: return null
-        if (!ChatViewModel.modelSwitchToApply(vm.pendingModelSwitch, chosen, loopProvider)) return null
-        vm.pendingModelSwitch = false
-        val groupId = vm._selectedGroupId.value
-        val entryId = vm._activeEntryId.value
+        val chosen = vm.modelState.currentProvider ?: return null
+        if (!ChatViewModel.modelSwitchToApply(vm.modelState.pendingModelSwitch, chosen, loopProvider)) return null
+        vm.modelState.pendingModelSwitch = false
+        val groupId = vm.modelState.selectedGroupId.value
+        val entryId = vm.modelState.activeEntryId.value
         val strategy = groupId
             ?.let { gid -> vm.providerRepository.config.value.modelGroups.find { it.id == gid }?.fallbackStrategy }
             ?: FallbackStrategy.default
@@ -246,19 +245,13 @@ internal class ChatViewModelStreamHost(private val vm: ChatViewModel) : AgentStr
         nextProvider: LLMProvider,
         isRealModelChange: Boolean,
     ) {
-        vm.currentProvider = nextProvider
-        vm._modelName.value = nextProvider.model.displayName
-        val newEntry = vm.providerRepository.config.value.modelEntries.find { it.id == candidate.entryId }
-        if (newEntry != null) {
-            vm._activeEntryId.value = newEntry.id
-            vm.currentModel = newEntry.model
-            val newInstance = vm.providerRepository.instance(newEntry.providerInstanceId)
-            if (newInstance != null) {
-                vm._providerName.value = newInstance.label.ifEmpty { newEntry.model.provider }
-            }
-        }
-        if (isRealModelChange) vm._fallbackTrigger.value++
-        val groupId = vm._selectedGroupId.value
+        val newEntry = vm.modelState.applyFallbackAdoption(
+            candidate = FallbackCandidate(nextProvider, candidate.entryId),
+            config = vm.providerRepository.config.value,
+            markPreviousFailed = false,
+            bumpFallbackTrigger = isRealModelChange,
+        )
+        val groupId = vm.modelState.selectedGroupId.value
         if (groupId != null && newEntry != null) {
             vm.persistBinding("""{"type":"group","groupId":"$groupId","lastEntryId":"${newEntry.id}"}""")
         } else if (newEntry != null) {
@@ -270,13 +263,9 @@ internal class ChatViewModelStreamHost(private val vm: ChatViewModel) : AgentStr
         vm.systemPromptFor(provider, currentSystemPrompt)
 
     override fun sanitizeAgentHistory() = vm.sanitizeAgentHistory()
-    override val pendingSteerCount: Int get() = vm.pendingSteerMessages.size
+    override val pendingSteerCount: Int get() = vm.runState.pendingSteerMessages.size
 
-    override fun drainPendingSteers(): List<String> = synchronized(vm.pendingSteerMessages) {
-        val out = vm.pendingSteerMessages.toList()
-        vm.pendingSteerMessages.clear()
-        out
-    }
+    override fun drainPendingSteers(): List<String> = vm.runState.drainPendingSteers()
 
     override suspend fun persistSteerUserMessage(note: String): String? = runCatching {
         vm.chatRepository.appendMessage(
@@ -354,31 +343,20 @@ internal class ChatViewModelStreamHost(private val vm: ChatViewModel) : AgentStr
     override fun setTransientInlineError(message: String) = vm.setTransientInlineError(message)
     override fun clearInlineError() = vm.clearInlineError()
 
-    override fun setRetryState(attempt: Int, countdown: Int) {
-        vm._autoRetryAttempt.value = attempt
-        vm._autoRetryCountdown.value = countdown
-    }
+    override fun setRetryState(attempt: Int, countdown: Int) = vm.runState.setRetryState(attempt, countdown)
 
-    override fun setRetryCountdown(countdown: Int) {
-        vm._autoRetryCountdown.value = countdown
-    }
+    override fun setRetryCountdown(countdown: Int) = vm.runState.setRetryCountdown(countdown)
 
-    override fun clearRetryAttemptOnly() {
-        vm._autoRetryAttempt.value = 0
-    }
+    override fun clearRetryAttemptOnly() = vm.runState.clearRetryAttemptOnly()
 
     override fun markLiveInterruptionAndCanResume() {
-        vm.markLiveInterruption()
-        vm._canResume.value = true
+        vm.runState.markLiveInterruption()
+        vm.runState.setCanResume(true)
     }
 
-    override fun setCanResume(value: Boolean) {
-        vm._canResume.value = value
-    }
+    override fun setCanResume(value: Boolean) = vm.runState.setCanResume(value)
 
-    override fun emitStopStaleReadAloud() {
-        vm._stopStaleReadAloud.tryEmit(Unit)
-    }
+    override fun emitStopStaleReadAloud() = vm.runState.emitStopStaleReadAloud()
 
     override fun publishJitterProbe(tag: String, length: Int) {
         StreamJitterProbe.publish(tag, length)
@@ -386,16 +364,15 @@ internal class ChatViewModelStreamHost(private val vm: ChatViewModel) : AgentStr
 
     override fun publishContextUsage(crossingOnly: Boolean) = vm.publishContextUsage(crossingOnly)
 
-    override fun updateLastTurnContextTokens(tokens: Int) {
-        vm._lastTurnContextTokens.value = tokens
-    }
+    override fun updateLastTurnContextTokens(tokens: Int) = vm.contextState.setLastTurnContextTokens(tokens)
 
     override fun resetInLoopCompactionNoProgress() {
-        vm.lastInLoopCompactionMadeNoProgress = false
+        vm.contextState.lastInLoopCompactionMadeNoProgress = false
     }
 
     override fun updateFixedContextTokens(systemPrompt: String?, tools: List<AgentToolDefinition>) {
-        vm.contextMeter.fixedTokens = com.openminis.app.data.ContextSizeMeter.estimateFixedTokens(systemPrompt, tools)
+        vm.contextState.contextMeter.fixedTokens =
+            com.openminis.app.data.ContextSizeMeter.estimateFixedTokens(systemPrompt, tools)
     }
 
     override fun effectiveContextWindowTokens(): Int? = vm.effectiveContextWindowTokens()
@@ -412,27 +389,27 @@ internal class ChatViewModelStreamHost(private val vm: ChatViewModel) : AgentStr
         vm.inLoopContextCheck(inLoopCompactions)
 
     override fun recordOutboundDispatch(outboundHistory: List<LLMMessage>, model: LLMModel): Int {
-        val dispatchInputTokens = vm.contextMeter.recordDispatch(
+        val dispatchInputTokens = vm.contextState.contextMeter.recordDispatch(
             outboundHistory,
             model.id,
             vm.resolvedContextWindow(model)?.first ?: 0,
         )
         AppLogger.info(
             ChatViewModel.TAG,
-            "[CtxMeter] dispatch model=${vm.currentModel?.id ?: "?"} estimate=${vm.contextMeter.dispatchEstimate} " +
-                "ratio=${"%.3f".format(vm.contextMeter.dispatchRatio)} predicted=$dispatchInputTokens",
+            "[CtxMeter] dispatch model=${vm.modelState.currentModel?.id ?: "?"} estimate=${vm.contextState.contextMeter.dispatchEstimate} " +
+                "ratio=${"%.3f".format(vm.contextState.contextMeter.dispatchRatio)} predicted=$dispatchInputTokens",
         )
         return dispatchInputTokens
     }
 
     override fun calibrateContextUsage(reportedTokens: Int) {
-        vm.contextMeter.calibrate(reportedTokens, vm.currentModel?.id)
-        vm.lastInLoopCompactionMadeNoProgress = false
-        vm.contextMeter.sentPastExtrapolatedLimit = false
+        vm.contextState.contextMeter.calibrate(reportedTokens, vm.modelState.currentModel?.id)
+        vm.contextState.lastInLoopCompactionMadeNoProgress = false
+        vm.contextState.contextMeter.sentPastExtrapolatedLimit = false
     }
 
     override fun noteContextOverflow(detail: String) {
-        vm.contextMeter.noteOverflow(detail, vm.currentModel?.id, vm::effectiveContextWindowTokens)
+        vm.contextState.contextMeter.noteOverflow(detail, vm.modelState.currentModel?.id, vm::effectiveContextWindowTokens)
     }
 
     override fun offloadLargestPartForOverflow(): Boolean = vm.offloadLargestPartForOverflow()
@@ -445,7 +422,7 @@ internal class ChatViewModelStreamHost(private val vm: ChatViewModel) : AgentStr
     }
 
     override fun dynamicMaxTokens(provider: LLMProvider, lastContextTokens: Int): Int {
-        val model = vm.currentModel ?: return minOf(
+        val model = vm.modelState.currentModel ?: return minOf(
             ChatViewModel.GLOBAL_MAX_TOKENS_CEILING,
             provider.defaultMaxOutputTokens,
         )

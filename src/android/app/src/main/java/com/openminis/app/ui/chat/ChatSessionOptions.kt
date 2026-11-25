@@ -18,9 +18,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
-/**
- * Pure aggregator for per-session token usage stats, directly unit-testable on JVM.
- */
+/** Pure aggregator for per-session token usage stats, directly unit-testable on JVM. */
 internal object SessionTokenStatsAggregator {
     fun aggregate(usages: List<String>, messages: List<ChatMessage>): SessionTokenStats {
         var input = 0L
@@ -80,59 +78,46 @@ internal fun ChatViewModel.setAutoCompactEnabledImpl(enabled: Boolean) {
 }
 
 internal fun ChatViewModel.thinkingInfoImpl(): ThinkingInfo? {
-    val model = currentModel ?: return null
+    val model = modelState.currentModel ?: return null
     val supported = model.supportsReasoning == true
-    val level = _thinkingLevel.value
+    val level = runState.thinkingLevel.value
     val enabled = supported && level.isEnabled
-    val levelText = if (enabled) level.displayName else "—"
-    return ThinkingInfo(supported, enabled, levelText)
+    return ThinkingInfo(supported, enabled, if (enabled) level.displayName else "—")
 }
 
 internal suspend fun ChatViewModel.loadSessionTokenStatsImpl(): SessionTokenStats {
-    val sid = realSessionId.ifEmpty { sessionId }
+    val sid = activeSessionId
     if (sid.isEmpty()) return SessionTokenStats(0, 0, 0, 0, 0, 0)
     val usages = chatRepository.sessionTokenUsages(sid)
     return SessionTokenStatsAggregator.aggregate(usages, _messages.value)
 }
 
 internal fun ChatViewModel.executeSlashCommandImpl(cmd: SlashCommand, currentInput: String = ""): String {
-    val saved = savedInputBeforeSlash
-    if (cmd.isSkill || cmd.isMcp) {
+    val exec = menuStore.prepareSlashCommandExecution(cmd)
+    if (exec.builtInCommandId == null) {
         val kind = if (cmd.isMcp) "mcp" else "skill"
         AppLogger.info(TAG, "[Slash] tap $kind id=${cmd.id} title=${cmd.title} → composer fill only")
-        savedInputBeforeSlash = null
-        _showSlashMenu.value = false
-        _slashMenuSelectedIndex.value = -1
-        val prefix = "/${cmd.title} "
-        return if (saved != null) {
-            _pendingCaret.value = prefix.length
-            prefix + saved
-        } else {
-            prefix
-        }
+        exec.pendingCaret?.let { draftStore.setPendingCaret(it) }
+        return exec.nextInput
     }
-    AppLogger.info(TAG, "[Slash] tap id=${cmd.id} title=${cmd.title} streaming=${_isStreaming.value} compacting=${_isCompacting.value}")
-    savedInputBeforeSlash = null
-    _showSlashMenu.value = false
-    _slashMenuSelectedIndex.value = -1
-
-    when (cmd.id) {
+    AppLogger.info(
+        TAG,
+        "[Slash] tap id=${cmd.id} title=${cmd.title} streaming=${runState.isStreaming.value} compacting=${contextState.isCompacting.value}",
+    )
+    when (exec.builtInCommandId) {
         "compact" -> compactAll()
         "memory" -> toggleMemoryEnabled()
         "thinking" -> toggleThinking()
         "clear" -> overlaysStore.requestClearChatConfirm()
         else -> AppLogger.info(TAG, "[Slash] unrecognized id=${cmd.id} — no dispatch")
     }
-    if (saved != null) {
-        _pendingCaret.value = saved.length
-        return saved
-    }
-    return ""
+    exec.pendingCaret?.let { draftStore.setPendingCaret(it) }
+    return exec.nextInput
 }
 
 internal fun ChatViewModel.toggleMemoryEnabled() {
-    val newValue = !_memoryEnabled.value
-    _memoryEnabled.value = newValue
+    val newValue = !runState.memoryEnabled.value
+    runState.setMemoryEnabled(newValue)
     viewModelScope.launch {
         val sid = ensureSession()
         chatRepository.dao.updateMemoryEnabled(sid, if (newValue) 1 else 0)
@@ -151,8 +136,8 @@ internal fun ChatViewModel.toggleThinking() {
         )
         return
     }
-    val newLevel = if (_thinkingLevel.value.isEnabled) ThinkingLevel.OFF else ThinkingLevel.MEDIUM
-    _thinkingLevel.value = newLevel
+    val newLevel = if (runState.thinkingLevel.value.isEnabled) ThinkingLevel.OFF else ThinkingLevel.MEDIUM
+    runState.setThinkingLevel(newLevel)
     persistThinkingOverride(newLevel)
     appendSystemInfo(
         text = "Thinking set to ${newLevel.displayName.lowercase()}.",
@@ -164,8 +149,8 @@ internal fun ChatViewModel.setThinkingLevelImpl(level: ThinkingLevel) {
     if (!currentModelSupportsReasoning) return
     val ceiling = currentModelMaxThinkingLevel
     val clamped = if (level.rank > ceiling.rank) ceiling else level
-    if (_thinkingLevel.value == clamped) return
-    _thinkingLevel.value = clamped
+    if (runState.thinkingLevel.value == clamped) return
+    runState.setThinkingLevel(clamped)
     persistThinkingOverride(clamped)
 }
 
@@ -178,22 +163,13 @@ internal fun ChatViewModel.persistThinkingOverride(level: ThinkingLevel) {
 }
 
 internal fun ChatViewModel.tryExecuteInputAsSlashCommandImpl(text: String): Boolean {
-    val trimmed = text.trim()
-    if (trimmed.isEmpty()) return false
-    val first = trimmed[0]
-    if (first != '/' && first != '／') return false
-    val name = trimmed.drop(1).lowercase()
-    val cmd = availableSlashCommands.firstOrNull { it.title.lowercase() == name }
-        ?: return false
+    val cmd = menuStore.matchBuiltInSlashLiteral(text) ?: return false
     executeSlashCommand(cmd)
     return true
 }
 
 internal fun ChatViewModel.observeFastModeAvailability(): StateFlow<Boolean> =
-    combine(
-        _activeEntryId,
-        providerRepository.config,
-    ) { entryId, config ->
+    combine(modelState.activeEntryId, providerRepository.config) { entryId, config ->
         val entry = entryId?.let { id -> config.modelEntries.find { it.id == id } }
         val instance = entry?.let { e -> config.instances.find { it.id == e.providerInstanceId } }
         val isCodexOAuth = instance != null &&
@@ -207,8 +183,4 @@ internal fun ChatViewModel.observeFastModeAvailability(): StateFlow<Boolean> =
                     (instance.useResponsesAPI || isCodexOAuth)
                 )
             )
-    }.stateIn(
-        viewModelScope,
-        SharingStarted.Eagerly,
-        false,
-    )
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)

@@ -7,34 +7,19 @@ import androidx.compose.material.icons.outlined.Build
 import com.openminis.app.logging.AppLogger
 import com.openminis.app.data.model.AgentContentPart
 import com.openminis.app.data.model.LLMMessage
-import com.openminis.app.data.model.hasImageInput
 import com.openminis.app.R
 import com.openminis.app.provider.LLMProvider
 import com.openminis.app.provider.ProviderFactory
-import com.openminis.app.provider.catalogMaxThinkingLevel
-import com.openminis.app.provider.effectiveMaxThinkingLevel
 import com.openminis.app.sandbox.ExecutionCoordinator
-import com.openminis.app.tools.AskUserTool
 import com.openminis.app.service.SessionActivityTracker
 import com.openminis.app.service.SessionConcurrencyManager
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import com.openminis.app.ui.chat.ChatViewModel.Companion.CANCELLED_MARKER
 import com.openminis.app.ui.chat.ChatViewModel.Companion.IN_FLIGHT_TOOL_STATUSES
@@ -72,25 +57,10 @@ internal fun ChatViewModel.submitPromptImpl(
         // scheduled fire into an idle chat) reach this funnel without the
         // public sendMessage, and are new work too.
         com.openminis.app.agent.jobs.AgentJobRegistry.clearDelegationMute(activeSessionId)
-        // [T-android-paste-mediaref] `[Pasted#N]` markers are NOT expanded here
-        // any more.
-        //
-        // They used to be: this funnel substituted the full text inline, so the
-        // persisted message held one enormous `text` part. That is the same
-        // shape that made huge tool results freeze the app — every time the
-        // bubble scrolled into view, TextKit had to lay out the whole block on
-        // the main thread. The markers now survive down to the parts-building
-        // step below, where each becomes its own `text/plain` mediaRef; the full
-        // content is re-attached to the REQUEST from disk (see toLLMMessage and
-        // the fresh-send contentParts), so the model still sees everything while
-        // the bubble stays small.
-        //
-        // The buffer is cleared where the mediaRefs are actually written, not
-        // here — clearing at this point would strip the content out from under
-        // a send that then bails on the context-check paths below.
+        // [T-android-paste-mediaref] `[Pasted#N]` markers are NOT expanded here any more.
         val trimmed = text.trim()
         // While streaming, enqueue instead of silently dropping (iOS: send vs enqueuePrompt).
-        if (_isStreaming.value) {
+        if (runState.isStreaming.value) {
             val origin = if (headless) QueuedPromptOrigin.PROGRAMMATIC else QueuedPromptOrigin.USER
             return if (enqueuePromptImpl(text, origin, prefill)) SubmitOutcome.Queued
             else SubmitOutcome.Rejected("enqueue_declined")
@@ -104,7 +74,7 @@ internal fun ChatViewModel.submitPromptImpl(
         // upstream 400 (or have its pixels silently swapped for a placeholder).
         // The composer text is put back because ChatScreen clears it before
         // calling in; attachments are still in place (cleared further down).
-        if (_isCompacting.value) {
+        if (contextState.isCompacting.value) {
             appendSystemInfo(
                 text = "Wait for the current compact to finish before sending.",
                 iconKind = "compact",
@@ -119,16 +89,14 @@ internal fun ChatViewModel.submitPromptImpl(
             when (checkContextBeforeSend()) {
                 PreSendContextAction.PROCEED -> {}
                 PreSendContextAction.COMPACT_THEN_SEND -> {
-                    pendingSendText = text
-                    pendingSendPrefill = prefill
-                    pendingSendHeadless = headless
+                    contextState.parkPendingSend(text, prefill, headless, showDialog = false)
                     // [T-android-programmatic-prompt-keeps-draft] Only the
                     // user's own send owns the composer. A headless prompt (a
                     // scheduled fire, a sub-agent callback, the sessions CLI)
                     // carries its text in `text`; clearing here erased whatever
                     // the user was typing whenever such a prompt tripped the
                     // auto-compact threshold (iOS 2a06de66a).
-                    if (!headless) _inputText.value = ""
+                    if (!headless) draftStore.setInputText("")
                     compactAndSendPending()
                     return SubmitOutcome.Compacting
                 }
@@ -139,17 +107,15 @@ internal fun ChatViewModel.submitPromptImpl(
                     if (headless) return SubmitOutcome.Rejected("context_near_capacity")
                     // Park the text on the VM (not the composer) so the dialog
                     // owns it; cancelCompactBeforeSend puts it back.
-                    pendingSendText = text
-                    pendingSendHeadless = false
-                    _inputText.value = ""
-                    _showCompactBeforeSendPrompt.value = true
+                    contextState.parkPendingSend(text, headless = false, showDialog = true)
+                    draftStore.setInputText("")
                     return SubmitOutcome.Rejected("awaiting_user_compact_decision")
                 }
             }
         }
         // A fresh send supersedes any pending resume — mirror iOS which clears
         // canResume at the top of send().
-        _canResume.value = false
+        runState.setCanResume(false)
         // T185: clear the share-injected flag the moment the user actually
         // sends. Without this, the "Move to…" capsule (gated on
         // hasInjectedShareContent) keeps floating over the user-message row
@@ -158,16 +124,16 @@ internal fun ChatViewModel.submitPromptImpl(
         // "image attachment shows up as Move to" symptom in T185. Mirrors
         // iOS AIChatView.swift:2255 (`hasInjectedShareContent = false`
         // inside the send button's tap closure).
-        if (_hasInjectedShareContent.value) _hasInjectedShareContent.value = false
+        draftStore.clearShareInjectedFlag()
 
-        val initialProvider = currentProvider
+        val initialProvider = modelState.currentProvider
         if (initialProvider == null) {
-            _error.value = "No provider configured"
+            runState.setError("No provider configured")
             return SubmitOutcome.Rejected("no_provider")
         }
         var provider: LLMProvider = initialProvider
 
-        _error.value = null
+        runState.setError(null)
 
         val currentAttachments = overlaysStore.attachments.value
         clearAttachments()
@@ -175,18 +141,10 @@ internal fun ChatViewModel.submitPromptImpl(
         // T145: claim _isStreaming synchronously so a rapid second tap can't
         // slip past the entry guard during DB/OAuth setup. See retryFromMessage.
         AppLogger.info(TAG_STREAM, "send _isStreaming=true (sync, sid=$activeSessionId)")
-        _isStreaming.value = true
+        runState.setStreaming(true)
 
-        // [T-android-thinking-indicator-linger] Invariant sweep: a fresh send
-        // only reaches here when no turn is streaming (the _isStreaming guard
-        // at the top routes mid-stream sends to enqueuePrompt). So any residual
-        // _streamingById entry is an orphan stranded by a prior turn that
-        // exited without draining it (e.g. a late delta re-added the entry
-        // after finalizeAtTurnLimit / cancel cleared it). mergeStreamingOverlay
-        // forces isStreaming=true on any message holding such an entry, so an
-        // orphan would render a second "thinking" row alongside the new turn's.
-        // Flush them into the canonical messages (isStreaming=false) before the
-        // new streaming message is created — no two messages ever stream at once.
+        // [T-android-thinking-indicator-linger] Invariant sweep: a fresh send only reaches here when no
+        // turn is streaming (the _isStreaming guard at the top routes mid-stream sends to enqueuePrompt).
         if (streamingById.value.isNotEmpty()) {
             AppLogger.warning(TAG_STREAM, "send: sweeping ${streamingById.value.size} orphan streaming delta(s) before new turn")
             flushAllStreamingDeltas()
@@ -197,25 +155,16 @@ internal fun ChatViewModel.submitPromptImpl(
         // edited text as a fresh user turn. Snapshot + clear the id here so
         // any error in the truncate path doesn't leave the composer stuck
         // in edit mode.
-        val editingId = _editingMessageId.value
-        if (editingId != null) _editingMessageId.value = null
+        val editingId = draftStore.takeEditingMessageId()
 
         viewModelScope.launch {
             var streamLaunched = false
             try {
-            // [T-android-send-before-load] Never write this turn into the
-            // transcript while loadSession is still reading it. loadSession
-            // snapshots the DB, then REPLACES agentHistory and _messages with
-            // that snapshot; a send landing in between (a session opened and
-            // prompted at once: debug prompts, scheduled fires, sub agents, a
-            // quick tap on a long chat) had its user message wiped from the
-            // screen - the chat showed replies with no question - or from
-            // agentHistory, so the model never saw it. Title generation then
-            // found no user message and the chat stayed "New Chat". Safe mode
-            // skips the load entirely, so there is nothing to wait for there.
-            if (!sessionLoaded.value && !com.openminis.app.crash.CrashFrequencyDetector.isSafeMode()) {
+            // [T-android-send-before-load] Never write this turn into the transcript while loadSession is
+            // still reading it.
+            if (!runState.sessionLoaded.value && !com.openminis.app.crash.CrashFrequencyDetector.isSafeMode()) {
                 AppLogger.info(TAG_STREAM, "send waiting for session load (sid=${this@sendMessage.activeSessionId})")
-                sessionLoaded.first { it }
+                runState.sessionLoaded.first { it }
             }
             // Ensure session exists in DB (creates on first message for draft sessions)
             val activeSessionId = ensureSession()
@@ -233,7 +182,7 @@ internal fun ChatViewModel.submitPromptImpl(
             if (pasted != null) {
                 // Safe to clear now: the content is on disk and the parts JSON
                 // below references it, so nothing depends on the buffer any more.
-                _pastedTexts.value = _pastedTexts.value.filterNot { it.id in pasted.consumedIds }
+                draftStore.consumePastedIds(pasted.consumedIds)
             }
 
             // Save user message — text + persisted mediaRef parts so images survive
@@ -272,22 +221,9 @@ internal fun ChatViewModel.submitPromptImpl(
             _messages.value = _messages.value + userMsg
             val imageParts = prepared.imageParts
 
-            // T132: build the user contentParts in iOS order — caption first
-            // (only if non-empty), then per image emit
-            //   text("[attached image: /var/minis/attachments/uploads/<f>]")
-            //   ImageData(<bytes>, <mime>)
-            // so the caption sits adjacent to the image in the wire payload,
-            // and the agent's read_image tool can resolve the same path back
-            // to bytes. Trailing <user-attached-files> XML block lets the
-            // model see filenames/sizes without needing tool calls.
-            // [T-android-paste-mediaref] The MODEL gets the fully expanded body
-            // even though the bubble and the DB row do not. This is the whole
-            // point of the split: local rendering stays cheap, the prompt is
-            // unchanged from what it used to be.
-            //
-            // On later turns the same expansion is rebuilt from disk by
-            // toLLMMessage's mediaRef branch, so history replay (retry, rerun,
-            // session reload, compaction) sees the identical text.
+            // T132 [T-android-paste-mediaref] build the user contentParts in iOS order — caption first (only
+            // if non-empty), then per image emit text("[attached image: /var/minis/attachments/uploads/<f>]")
+            // ImageData(<bytes>,…
             val modelBody = pasted?.modelText ?: trimmed
 
             val userContentParts = mutableListOf<AgentContentPart>()
@@ -305,150 +241,154 @@ internal fun ChatViewModel.submitPromptImpl(
                 dbMessageId = persistedUser.id,
             ))
 
-            // Refresh OAuth token if needed before sending (mirrors iOS validAccessToken)
-            if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {
-                try {
-                    val activeEntryId = _activeEntryId.value
-                    val entry = activeEntryId?.let { id -> providerRepository.config.value.modelEntries.find { it.id == id } }
-                    val instance = entry?.let { e -> providerRepository.config.value.instances.find { it.id == e.providerInstanceId } }
-                    if (instance != null) {
-                        val manager = com.openminis.app.auth.OAuthManager.forInstance(context, instance)
-                        val freshToken = manager?.validAccessToken()
-                        if (freshToken != null) {
-                            val storedKey = providerRepository.loadApiKey(instance.id)
-                            if (freshToken != storedKey) {
-                                providerRepository.saveApiKey(instance.id, freshToken)
-                                // Recreate provider with fresh token
-                                provider = com.openminis.app.provider.ProviderFactory.create(
-                                    instance, freshToken, currentModel ?: provider.model, context,
-                                    sessionId = activeSessionId,
-                                    // [T-android-model-custom-params] See the
-                                    // sibling refresh site: carry overrides
-                                    // across the rebuild.
-                                    overrides = (provider as? com.openminis.app.provider.openai.OpenAIProvider)
-                                        ?.modelOverrides,
-                                )
-                                currentProvider = provider
-                                android.util.Log.i(TAG, "OAuth token refreshed before send")
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    android.util.Log.w(TAG, "OAuth token refresh failed: ${e.message}")
-                }
-            }
+            // Refresh OAuth token if needed before sending
+            provider = refreshOAuthProviderIfNeeded(provider, "send")
 
-            // Build system prompt
-            // Anthropic OAuth requires the Claude Code prefix in the system prompt
+            // Build system prompt (Anthropic OAuth requires Claude Code prefix)
             val systemPrompt = systemPromptFor(provider, buildSystemPrompt())
 
             // Start agent loop with fallback. _isStreaming was set synchronously at top.
             streamLaunched = true
-            streamJob = launch(Dispatchers.IO) {
-                AppLogger.info(TAG_STREAM, "send streamJob ENTER sid=$activeSessionId")
-                try {
-                    // [T-STALL-DIAG] Snapshot BEFORE the (possibly blocking)
-                    // acquire. If the log shows this line and then no "slot
-                    // acquired", the turn is parked in acquireSlot — and this
-                    // line already records who was holding the slots, so the
-                    // leak is diagnosable from a single log.
-                    println(
-                        "[T-STALL-DIAG] send PRE-ACQUIRE sid=$activeSessionId " +
-                            SessionConcurrencyManager.diagSnapshot(),
-                    )
-                    // Acquire concurrency slot (suspends if at max).
-                    // [T-p1-delegate-task] Helpers bypass the pool (design §4.4):
-                    // the parent awaiting them already holds a slot, so routing
-                    // children through the same 5 would deadlock every parent
-                    // behind its own helpers. AgentJobRegistry caps helpers at 3.
-                    if (helperConfig == null) SessionConcurrencyManager.acquireSlot(activeSessionId)
-                    AppLogger.debug(TAG_STREAM, "send streamJob slot acquired")
-                    SessionActivityTracker.setActive(
-                    activeSessionId,
-                    onStop = { cancelStream() },
-                    // [T-android-overlay-multitask] The capsule names the task
-                    // rather than the assistant, so it needs this session's title.
-                    sessionTitle = overlaySessionTitle(),
-                )
-
-                    // Resolve the active group's fallback strategy
-                    val activeFallbackStrategy = run {
-                        val groupId = _selectedGroupId.value
-                        groupId?.let { providerRepository.config.value.modelGroups.find { g -> g.id == it }?.fallbackStrategy }
-                            ?: com.openminis.app.data.model.FallbackStrategy.default
-                    }
-
-                    // Build full fallback provider list upfront (mirrors iOS triedEntries approach)
-                    val fallbackProviders = buildFallbackProviders(provider)
-
-                    try {
-                        AppLogger.info(TAG_STREAM, "send runAgentLoop CALL")
-                        runAgentLoop(
-                            provider = provider,
-                            systemPrompt = systemPrompt,
-                            fallbackProviders = fallbackProviders,
-                            fallbackStrategy = activeFallbackStrategy,
-                            prefill = prefill,
-                        )
-                        AppLogger.info(TAG_STREAM, "send runAgentLoop RETURN normal")
-                        // Drain any prompts the user queued while this loop was running.
-                        // Skipped on cancel: cancelled job won't reach here.
-                        drainQueuedPrompts(provider, systemPrompt, fallbackProviders, activeFallbackStrategy)
-                        AppLogger.info(TAG_STREAM, "send drainQueuedPrompts RETURN")
-                    } catch (e: CancellationException) {
-                        AppLogger.info(TAG_STREAM, "send runAgentLoop CANCELLED")
-                        Log.d(TAG, "Agent loop cancelled")
-                    } catch (e: Exception) {
-                        AppLogger.error(TAG_STREAM, "send runAgentLoop EXCEPTION ${e.javaClass.simpleName}: ${e.message}")
-                        Log.e(TAG, "Agent loop error (all fallbacks exhausted)", e)
-                        // [T-android-image-input-preflight] A 400 on a turn that
-                        // carried images almost always means the model cannot
-                        // take them (its vision support was only assumed from
-                        // the provider default); say so instead of the bare
-                        // upstream message.
-                        val imageHint = if (ImageInputPreflight.isLikelyImageRejection(e, imageParts.size)) {
-                            "\n" + context.getString(R.string.image_input_rejected_hint, imageParts.size)
-                        } else ""
-                        setInlineError((e.message ?: "Unknown error") + imageHint)
-                        // T298: completion notifier should show the ❌ variant.
-                        SessionActivityTracker.markStreamError(activeSessionId)
-                    } finally {
-                        AppLogger.info(TAG_STREAM, "send streamJob FINALLY enter")
-                        // [T-android-overlay-reply-status-34599] Surface
-                        // the assistant's most recent reply text to the
-                        // overlay BEFORE setInactive so the post-completion
-                        // overlay state (no-running, has-outcome) carries a
-                        // non-null excerpt. Reading _messages here is safe:
-                        // we're in the finally block of the agent loop and
-                        // the stream has already flushed its last delta.
-                        publishOverlayReplyExcerpt(activeSessionId)
-                        SessionActivityTracker.setInactive(activeSessionId)
-                        if (helperConfig == null) SessionConcurrencyManager.releaseSlot(activeSessionId)
-                        AppLogger.info(TAG_STREAM, "send streamJob FINALLY exit")
-                    }
-                } catch (e: CancellationException) {
-                    AppLogger.info(TAG_STREAM, "send streamJob CANCELLED waiting for slot")
-                    Log.d(TAG, "Cancelled while waiting for concurrency slot")
-                }
-                // [T-android-stale-streamjob-clears-isstreaming] guard — see
-                // `var streamJob` KDoc; identical pattern as runRerunStreamTail.
-                if (streamJob === coroutineContext[Job]) {
-                    AppLogger.info(TAG_STREAM, "send _isStreaming=false (about to set)")
-                    _isStreaming.value = false
-                } else {
-                    AppLogger.info(TAG_STREAM, "send _isStreaming SKIPPED (stale job)")
-                }
-                AppLogger.info(TAG_STREAM, "send streamJob EXIT")
-            }
+            launchManagedStreamJob(
+                label = "send",
+                provider = provider,
+                systemPrompt = systemPrompt,
+                bypassSlotForHelper = true,
+                logPreAcquireSnapshot = true,
+                markErrorOnFailure = true,
+                imageCountForHint = imageParts.size,
+                prefill = prefill,
+            )
             } finally {
                 if (!streamLaunched) {
                     AppLogger.info(TAG_STREAM, "send _isStreaming=false (setup aborted)")
-                    _isStreaming.value = false
+                    runState.setStreaming(false)
                 }
             }
         }
         return SubmitOutcome.Sent
     }
+
+/** Shared Anthropic OAuth token refresh used before launching any agent turn. */
+internal suspend fun ChatViewModel.refreshOAuthProviderIfNeeded(
+    initial: LLMProvider,
+    reason: String,
+): LLMProvider {
+    if ((initial as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth != true) return initial
+    return try {
+        val entry = modelState.activeEntryId.value?.let { id ->
+            providerRepository.config.value.modelEntries.find { it.id == id }
+        }
+        val instance = entry?.let { e ->
+            providerRepository.config.value.instances.find { it.id == e.providerInstanceId }
+        } ?: return initial
+        val freshToken = com.openminis.app.auth.OAuthManager.forInstance(context, instance)
+            ?.validAccessToken() ?: return initial
+        val storedKey = providerRepository.loadApiKey(instance.id)
+        if (freshToken == storedKey) return initial
+
+        providerRepository.saveApiKey(instance.id, freshToken)
+        val rebuilt = ProviderFactory.create(
+            instance,
+            freshToken,
+            modelState.currentModel ?: initial.model,
+            context,
+            sessionId = activeSessionId,
+            overrides = (initial as? com.openminis.app.provider.openai.OpenAIProvider)?.modelOverrides,
+        )
+        modelState.currentProvider = rebuilt
+        Log.i(TAG, "OAuth token refreshed ($reason)")
+        rebuilt
+    } catch (e: Exception) {
+        Log.w(TAG, "OAuth token refresh failed ($reason): ${e.message}")
+        initial
+    }
+}
+
+/**
+ * Shared managed IO stream-job launcher for send, retry, resume, queued-drain,
+ * and rerun paths: acquires concurrency slot, publishes active session tracking,
+ * builds fallback candidates, runs the loop + queue drain, and clears streaming
+ * only if this coroutine is still the active [ChatRunStateStore.streamJob].
+ */
+internal fun ChatViewModel.launchManagedStreamJob(
+    label: String,
+    provider: LLMProvider,
+    systemPrompt: String?,
+    bypassSlotForHelper: Boolean = false,
+    logPreAcquireSnapshot: Boolean = false,
+    markErrorOnFailure: Boolean = false,
+    imageCountForHint: Int = 0,
+    drainOnly: Boolean = false,
+    drainQueueAfterLoop: Boolean = true,
+    prefill: List<com.openminis.app.scheduled.PrefilledToolCall> = emptyList(),
+) {
+    runState.streamJob = viewModelScope.launch(Dispatchers.IO) {
+        AppLogger.info(TAG_STREAM, "$label streamJob ENTER sid=$activeSessionId")
+        try {
+            if (logPreAcquireSnapshot) {
+                println("[T-STALL-DIAG] $label PRE-ACQUIRE sid=$activeSessionId ${SessionConcurrencyManager.diagSnapshot()}")
+            }
+            val needsSlot = !bypassSlotForHelper || helperConfig == null
+            if (needsSlot) SessionConcurrencyManager.acquireSlot(activeSessionId)
+            AppLogger.debug(TAG_STREAM, "$label streamJob slot acquired")
+            SessionActivityTracker.setActive(
+                activeSessionId,
+                onStop = { cancelStream() },
+                sessionTitle = overlaySessionTitle(),
+            )
+            val activeFallbackStrategy = modelState.selectedGroupId.value
+                ?.let { gid -> providerRepository.config.value.modelGroups.find { g -> g.id == gid }?.fallbackStrategy }
+                ?: com.openminis.app.data.model.FallbackStrategy.default
+            val fallbackProviders = buildFallbackProviders(provider)
+            try {
+                if (!drainOnly) {
+                    AppLogger.info(TAG_STREAM, "$label runAgentLoop CALL")
+                    runAgentLoop(
+                        provider = provider,
+                        systemPrompt = systemPrompt,
+                        fallbackProviders = fallbackProviders,
+                        fallbackStrategy = activeFallbackStrategy,
+                        prefill = prefill,
+                    )
+                    AppLogger.info(TAG_STREAM, "$label runAgentLoop RETURN normal")
+                }
+                if (drainOnly || drainQueueAfterLoop) {
+                    drainQueuedPrompts(provider, systemPrompt, fallbackProviders, activeFallbackStrategy)
+                    AppLogger.info(TAG_STREAM, "$label drainQueuedPrompts RETURN")
+                }
+            } catch (e: CancellationException) {
+                AppLogger.info(TAG_STREAM, "$label runAgentLoop CANCELLED")
+                Log.d(TAG, "Agent loop cancelled ($label)")
+            } catch (e: Exception) {
+                AppLogger.error(TAG_STREAM, "$label runAgentLoop EXCEPTION ${e.javaClass.simpleName}: ${e.message}")
+                Log.e(TAG, "Agent loop error ($label)", e)
+                val imageHint = if (imageCountForHint > 0 && ImageInputPreflight.isLikelyImageRejection(e, imageCountForHint)) {
+                    "\n" + context.getString(R.string.image_input_rejected_hint, imageCountForHint)
+                } else ""
+                setInlineError((e.message ?: "Unknown error") + imageHint)
+                if (markErrorOnFailure) SessionActivityTracker.markStreamError(activeSessionId)
+            } finally {
+                AppLogger.info(TAG_STREAM, "$label streamJob FINALLY enter")
+                publishOverlayReplyExcerpt(activeSessionId)
+                SessionActivityTracker.setInactive(activeSessionId)
+                if (needsSlot) SessionConcurrencyManager.releaseSlot(activeSessionId)
+                AppLogger.info(TAG_STREAM, "$label streamJob FINALLY exit")
+            }
+        } catch (e: CancellationException) {
+            AppLogger.info(TAG_STREAM, "$label streamJob CANCELLED waiting for slot")
+            Log.d(TAG, "Cancelled while waiting for concurrency slot ($label)")
+        }
+        // [T-android-stale-streamjob-clears-isstreaming] Only clear streaming if still the active job.
+        if (runState.streamJob === coroutineContext[Job]) {
+            AppLogger.info(TAG_STREAM, "$label _isStreaming=false (about to set)")
+            runState.setStreaming(false)
+        } else {
+            AppLogger.info(TAG_STREAM, "$label _isStreaming SKIPPED (stale job)")
+        }
+        AppLogger.info(TAG_STREAM, "$label streamJob EXIT")
+    }
+}
 
 /** Set error inline on the last assistant message (iOS: message.error).
      *
@@ -480,16 +420,8 @@ internal fun ChatViewModel.submitPromptImpl(
                 isAwaitingModelResponse = false,
             )
             _messages.value = msgs
-            // [T-error-persist-android] Persist the terminal error so the inline
-            // error + Retry button survive a session reload. The in-memory bubble
-            // id differs from the persisted row id, so the row is found in the DB.
-            //
-            // [T-android-error-persist-current-turn] GH#263: the row must belong
-            // to the CURRENT turn. Targeting "the session's last assistant row"
-            // stamped the previous turn's good reply whenever this turn failed
-            // before persisting any output. persistTurnError stamps this turn's
-            // newest assistant row, or inserts an empty carrier row when the
-            // turn has none. Clears still use updateLastAssistantError(null).
+            // [T-error-persist-android] [T-android-error-persist-current-turn] GH#263 Persist the terminal
+            // error so the inline error + Retry button survive a session reload.
             val sid = realSessionId.ifEmpty { sessionId }
             if (sid.isNotEmpty()) {
                 viewModelScope.launch(Dispatchers.IO) {
@@ -501,7 +433,7 @@ internal fun ChatViewModel.submitPromptImpl(
             }
         } else {
             // No assistant message yet — fall back to top-level error
-            _error.value = safeError
+            runState.setError(safeError)
         }
     }
 
@@ -565,7 +497,7 @@ internal fun ChatViewModel.submitPromptImpl(
     }
 
 internal fun ChatViewModel.retryLastImpl() {
-        if (_isStreaming.value) return
+        if (runState.isStreaming.value) return
         // [T-android-mute-reset-on-drain] Retry is new work, as on iOS.
         com.openminis.app.agent.jobs.AgentJobRegistry.clearDelegationMute(activeSessionId)
         // T-streaming-side-channel: belt-and-suspenders flush in case any
@@ -576,7 +508,7 @@ internal fun ChatViewModel.retryLastImpl() {
         val lastAssistantIdx = msgs.indexOfLast { it.role == "assistant" }
         if (lastAssistantIdx < 0) return
         // [T-android-tool-autoscroll] Start-of-turn snap — see resume().
-        _forceScrollToBottom.tryEmit(Unit)
+        runState.emitForceScrollToBottom()
 
         // 1. Keep the assistant message; clear error + streaming flags + drop
         //    in-flight tool blocks (STREAMING args / PENDING dispatch /
@@ -629,13 +561,13 @@ internal fun ChatViewModel.retryLastImpl() {
             }
         }
 
-        val initialProvider = currentProvider ?: return
+        val initialProvider = modelState.currentProvider ?: return
         var provider: LLMProvider = initialProvider
-        _error.value = null
+        runState.setError(null)
 
         // T145: claim _isStreaming synchronously — see retryFromMessage for rationale.
         AppLogger.info(TAG_STREAM, "retryLast _isStreaming=true (sync, sid=$activeSessionId)")
-        _isStreaming.value = true
+        runState.setStreaming(true)
 
         viewModelScope.launch {
             var streamLaunched = false
@@ -668,102 +600,19 @@ internal fun ChatViewModel.retryLastImpl() {
                 )
             }
 
-            // Refresh OAuth token if needed
-            if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {
-                try {
-                    val activeEntryId = _activeEntryId.value
-                    val entry = activeEntryId?.let { id -> providerRepository.config.value.modelEntries.find { it.id == id } }
-                    val instance = entry?.let { e -> providerRepository.config.value.instances.find { it.id == e.providerInstanceId } }
-                    if (instance != null) {
-                        val manager = com.openminis.app.auth.OAuthManager.forInstance(context, instance)
-                        val freshToken = manager?.validAccessToken()
-                        if (freshToken != null) {
-                            val storedKey = providerRepository.loadApiKey(instance.id)
-                            if (freshToken != storedKey) {
-                                providerRepository.saveApiKey(instance.id, freshToken)
-                                provider = ProviderFactory.create(instance, freshToken, currentModel ?: provider.model, context, sessionId = activeSessionId, overrides = (provider as? com.openminis.app.provider.openai.OpenAIProvider)?.modelOverrides)
-                                currentProvider = provider
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "OAuth token refresh failed: ${e.message}")
-                }
-            }
-
+            provider = refreshOAuthProviderIfNeeded(provider, "retryLast")
             val systemPrompt = systemPromptFor(provider, buildSystemPrompt())
-
-            // _isStreaming was already set synchronously at the top.
             streamLaunched = true
-            streamJob = launch(Dispatchers.IO) {
-                AppLogger.info(TAG_STREAM, "retryLast streamJob ENTER sid=$activeSessionId")
-                try {
-                    SessionConcurrencyManager.acquireSlot(activeSessionId)
-                    AppLogger.debug(TAG_STREAM, "retryLast streamJob slot acquired")
-                    SessionActivityTracker.setActive(
-                    activeSessionId,
-                    onStop = { cancelStream() },
-                    // [T-android-overlay-multitask] The capsule names the task
-                    // rather than the assistant, so it needs this session's title.
-                    sessionTitle = overlaySessionTitle(),
-                )
-                    val activeFallbackStrategy = run {
-                        val groupId = _selectedGroupId.value
-                        groupId?.let { providerRepository.config.value.modelGroups.find { g -> g.id == it }?.fallbackStrategy }
-                            ?: com.openminis.app.data.model.FallbackStrategy.default
-                    }
-                    val fallbackProviders = buildFallbackProviders(provider)
-                    try {
-                        AppLogger.info(TAG_STREAM, "retryLast runAgentLoop CALL")
-                        runAgentLoop(
-                            provider = provider,
-                            systemPrompt = systemPrompt,
-                            fallbackProviders = fallbackProviders,
-                            fallbackStrategy = activeFallbackStrategy,
-                        )
-                        AppLogger.info(TAG_STREAM, "retryLast runAgentLoop RETURN normal")
-                        drainQueuedPrompts(provider, systemPrompt, fallbackProviders, activeFallbackStrategy)
-                        AppLogger.info(TAG_STREAM, "retryLast drainQueuedPrompts RETURN")
-                    } catch (e: CancellationException) {
-                        AppLogger.info(TAG_STREAM, "retryLast runAgentLoop CANCELLED")
-                        Log.d(TAG, "Agent loop cancelled")
-                    } catch (e: Exception) {
-                        AppLogger.error(TAG_STREAM, "retryLast runAgentLoop EXCEPTION ${e.javaClass.simpleName}: ${e.message}")
-                        Log.e(TAG, "Agent loop error (retryLast)", e)
-                        setInlineError(e.message ?: "Unknown error")
-                        // T298: completion notifier should show the ❌ variant.
-                        SessionActivityTracker.markStreamError(activeSessionId)
-                    } finally {
-                        AppLogger.info(TAG_STREAM, "retryLast streamJob FINALLY enter")
-                        // [T-android-overlay-reply-status-34599] Surface
-                        // the assistant's most recent reply text to the
-                        // overlay BEFORE setInactive so the post-completion
-                        // overlay state (no-running, has-outcome) carries a
-                        // non-null excerpt. Reading _messages here is safe:
-                        // we're in the finally block of the agent loop and
-                        // the stream has already flushed its last delta.
-                        publishOverlayReplyExcerpt(activeSessionId)
-                        SessionActivityTracker.setInactive(activeSessionId)
-                        SessionConcurrencyManager.releaseSlot(activeSessionId)
-                        AppLogger.info(TAG_STREAM, "retryLast streamJob FINALLY exit")
-                    }
-                } catch (e: CancellationException) {
-                    AppLogger.info(TAG_STREAM, "retryLast streamJob CANCELLED waiting for slot")
-                    Log.d(TAG, "Cancelled while waiting for concurrency slot")
-                }
-                // [T-android-stale-streamjob-clears-isstreaming] guard.
-                if (streamJob === coroutineContext[Job]) {
-                    AppLogger.info(TAG_STREAM, "retryLast _isStreaming=false (about to set)")
-                    _isStreaming.value = false
-                } else {
-                    AppLogger.info(TAG_STREAM, "retryLast _isStreaming SKIPPED (stale job)")
-                }
-                AppLogger.info(TAG_STREAM, "retryLast streamJob EXIT")
-            }
+            launchManagedStreamJob(
+                label = "retryLast",
+                provider = provider,
+                systemPrompt = systemPrompt,
+                markErrorOnFailure = true,
+            )
             } finally {
                 if (!streamLaunched) {
                     AppLogger.info(TAG_STREAM, "retryLast _isStreaming=false (setup aborted)")
-                    _isStreaming.value = false
+                    runState.setStreaming(false)
                 }
             }
         }
@@ -857,22 +706,22 @@ internal fun ChatViewModel.generateSessionTitleIfNeeded() {
         sessionTitleGenerator.generateIfNeeded(
             sessionId = realSessionId.ifEmpty { sessionId },
             activeSessionId = activeSessionId,
-            currentTitle = _sessionTitle.value,
-            selectedGroupId = _selectedGroupId.value,
-            activeEntryId = _activeEntryId.value,
-            currentModelId = currentModel?.id,
-            currentProvider = currentProvider,
+            currentTitle = runState.sessionTitle.value,
+            selectedGroupId = modelState.selectedGroupId.value,
+            activeEntryId = modelState.activeEntryId.value,
+            currentModelId = modelState.currentModel?.id,
+            modelState.currentProvider = modelState.currentProvider,
             messagesSnapshot = _messages.value,
             readLatestMessages = { _messages.value },
             onTitleAndCategoryUpdated = { title, category ->
-                if (_sessionTitle.value == UNTITLED_SESSION_TITLE || _sessionTitle.value.isEmpty()) {
-                    _sessionTitle.value = title
+                if (runState.setSessionTitle(= UNTITLED_SESSION_TITLE || runState.sessionTitle.value.isEmpty()) {)
+                    runState.setSessionTitle(title)
                 }
-                _sessionCategory.value = category
+                runState.setSessionCategory(category)
             },
             onFallbackTitleUpdated = { fallbackTitle ->
-                if (_sessionTitle.value == UNTITLED_SESSION_TITLE || _sessionTitle.value.isEmpty()) {
-                    _sessionTitle.value = fallbackTitle
+                if (runState.setSessionTitle(= UNTITLED_SESSION_TITLE || runState.sessionTitle.value.isEmpty()) {)
+                    runState.setSessionTitle(fallbackTitle)
                 }
             },
         )
@@ -900,48 +749,22 @@ internal fun ChatViewModel.cancelStreamImpl() {
         // [T-android-context-usage-hint] Suppress this turn's usage line — see
         // [lastTurnWasCancelled]. Set before `_isStreaming = false` below, so
         // the edge collector observes the flag already raised.
-        lastTurnWasCancelled = true
-        // [T-sub-agents-queue] The user stopped this turn, so work it queued
-        // must not start afterwards.
-        //
-        // [T-android-stop-sibling-subagent] The comment here used to claim
-        // running sub agents were "cancelled by the existing paths". They were
-        // not: the only caller of cancelAll was session deletion, so stopping a
-        // turn left its whole fan-out running. Mute first (so a sibling that
-        // already finished cannot re-wake this turn), then drop the queue
-        // before cancelling, because each cancel drains the queue and would
-        // otherwise start the very delegations being stopped.
+        runState.lastTurnWasCancelled = true
+        // [T-sub-agents-queue] [T-android-stop-sibling-subagent] The user stopped this turn, so work it
+        // queued must not start afterwards.
         com.openminis.app.agent.jobs.AgentJobRegistry.muteDelegationResults(activeSessionId)
         com.openminis.app.agent.jobs.AgentJobRegistry.dropQueuedDelegations(activeSessionId, "user-stopped")
         com.openminis.app.agent.jobs.AgentJobRegistry.cancelAll(activeSessionId, "user-stopped")
-        _pendingQuestionnaire.value?.let { pending ->
-            _pendingQuestionnaire.value = null
-            if (!pending.deferred.isCompleted) {
-                pending.deferred.complete(
-                    AskUserTool.QuestionnaireResult(
-                        status = "cancelled",
-                        note = "User cancelled generation while questionnaire was open.",
-                    ),
-                )
-            }
-        }
-        streamJob?.cancel()
-        _isStreaming.value = false
+        runState.cancelActiveQuestionnaire()
+        runState.streamJob?.cancel()
+        runState.setStreaming(false)
         // T-streaming-side-channel: flush any in-flight delta back into the
         // canonical message so the rest of cancelStream's cleanup (publish
         // overlay excerpt, persist, retry-eligible state) sees the real
         // content rather than a stale pre-stream snapshot.
         flushAllStreamingDeltas()
-        // T171: drop activity tracker immediately, don't wait for the
-        // streamJob's finally block. When OkHttp is wedged in a blocking
-        // execute() call.cancel() may unwind eventually but the finally
-        // doesn't run until then — meanwhile RPC chat.session.status would
-        // still report isRunning=true and the user thinks the stop button
-        // did nothing.
-        // [T-android-overlay-reply-status-34599] User-initiated cancel:
-        // surface any reply we already streamed + tag outcome as
-        // Cancelled so the overlay's glyph reflects the actual end
-        // state (⊘) instead of carrying over the prior tool's outcome.
+        // T171 [T-android-overlay-reply-status-34599] drop activity tracker immediately, don't wait for
+        // the streamJob's finally block.
         publishOverlayReplyExcerpt(activeSessionId)
         SessionActivityTracker.clearToolRunning(com.openminis.app.service.ToolOutcome.Cancelled)
         SessionActivityTracker.setInactive(activeSessionId)
@@ -961,9 +784,8 @@ internal fun ChatViewModel.cancelStreamImpl() {
         // clears it after the delay completes, which a cancelled job never
         // reaches. Take it down here, the same as the model-switch cancel does,
         // so the row does not keep a transient error nothing will advance.
-        if (_autoRetryAttempt.value != 0 || _autoRetryCountdown.value != 0) {
-            _autoRetryAttempt.value = 0
-            _autoRetryCountdown.value = 0
+        if (runState.isBoundToAbandonedModel()) {
+            runState.clearRetryState()
             clearInlineError()
         }
         handleUserCancelledCleanup()
@@ -972,8 +794,8 @@ internal fun ChatViewModel.cancelStreamImpl() {
         // enqueued prompts during the cancelled stream, auto-resume the drain
         // instead of leaving them stuck as dashed bubbles waiting for a manual
         // long-press retry.
-        val pending = _promptQueue.value
-        if (pending.isNotEmpty() || streamJob?.isCompleted == false) {
+        val pending = runState.promptQueue.value
+        if (pending.isNotEmpty() || runState.streamJob?.isCompleted == false) {
             AppLogger.info(TAG_STREAM, "cancel — ${pending.size} queued prompt(s) remain, restarting drain")
             resumeQueueAfterCancel()
         }
@@ -990,136 +812,45 @@ internal fun ChatViewModel.cancelStreamImpl() {
      * prompt drain after cancel uses the same plumbing as a fresh send.
      */
     internal fun ChatViewModel.resumeQueueAfterCancel() {
-        val previousStream = streamJob
+        val previousStream = runState.streamJob
         viewModelScope.launch {
             kotlinx.coroutines.yield()
             previousStream?.join()
-            if (_promptQueue.value.isEmpty()) return@launch
-            if (_isStreaming.value) return@launch
+            if (runState.promptQueue.value.isEmpty()) return@launch
+            if (runState.isStreaming.value) return@launch
             // [T-android-compact-queued-drain] Defer while a compact is in
             // flight — draining would mutate agentHistory mid-marker-write.
             // Safe to just return: every SUCCESSFUL compact re-kicks this
             // function from its own tail, so a deferred drain is never lost
             // (and a failed compact leaves the queue pending by design).
-            if (_isCompacting.value) {
+            if (contextState.isCompacting.value) {
                 AppLogger.info(TAG, "resumeQueueAfterCancel: compact in flight — deferring to its completion kick")
                 return@launch
             }
 
-            val initialProvider = currentProvider
+            val initialProvider = modelState.currentProvider
             if (initialProvider == null) {
                 AppLogger.warning(TAG, "resumeQueueAfterCancel: no provider, dropping queue")
-                _promptQueue.value = emptyList()
+                runState.clearPromptQueue()
                 _messages.value = _messages.value.filterNot { it.isQueued }
                 return@launch
             }
-            var provider: LLMProvider = initialProvider
-
-            // Refresh OAuth token if needed (mirrors sendMessage L2477-2501).
-            if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {
-                try {
-                    val activeEntryId = _activeEntryId.value
-                    val entry = activeEntryId?.let { id -> providerRepository.config.value.modelEntries.find { it.id == id } }
-                    val instance = entry?.let { e -> providerRepository.config.value.instances.find { it.id == e.providerInstanceId } }
-                    if (instance != null) {
-                        val manager = com.openminis.app.auth.OAuthManager.forInstance(context, instance)
-                        val freshToken = manager?.validAccessToken()
-                        if (freshToken != null) {
-                            val storedKey = providerRepository.loadApiKey(instance.id)
-                            if (freshToken != storedKey) {
-                                providerRepository.saveApiKey(instance.id, freshToken)
-                                provider = com.openminis.app.provider.ProviderFactory.create(
-                                    instance, freshToken, currentModel ?: provider.model, context,
-                                    sessionId = activeSessionId,
-                                    // [T-android-model-custom-params] See the
-                                    // sibling refresh site: carry overrides
-                                    // across the rebuild.
-                                    overrides = (provider as? com.openminis.app.provider.openai.OpenAIProvider)
-                                        ?.modelOverrides,
-                                )
-                                currentProvider = provider
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "OAuth token refresh failed (resumeQueueAfterCancel): ${e.message}")
-                }
-            }
-
+            val provider = refreshOAuthProviderIfNeeded(initialProvider, "resumeQueueAfterCancel")
             val systemPrompt = systemPromptFor(provider, buildSystemPrompt())
-            if (streamJob !== previousStream || _isStreaming.value || _isCompacting.value ||
-                _promptQueue.value.isEmpty()
+            if (runState.streamJob !== previousStream || runState.isStreaming.value || contextState.isCompacting.value ||
+                runState.promptQueue.value.isEmpty()
             ) return@launch
 
-            // T145: claim the streaming flag synchronously before launching
-            // the streamJob so a concurrent send/retry tap is rejected by the
-            // entry guard. Mirrors sendMessage discipline.
             AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel _isStreaming=true (sync, sid=$activeSessionId)")
-            _isStreaming.value = true
-            _canResume.value = false
-            _error.value = null
-
-            streamJob = launch(Dispatchers.IO) {
-                AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel streamJob ENTER sid=$activeSessionId")
-                try {
-                    SessionConcurrencyManager.acquireSlot(activeSessionId)
-                    AppLogger.debug(TAG_STREAM, "resumeQueueAfterCancel streamJob slot acquired")
-                    SessionActivityTracker.setActive(
-                    activeSessionId,
-                    onStop = { cancelStream() },
-                    // [T-android-overlay-multitask] The capsule names the task
-                    // rather than the assistant, so it needs this session's title.
-                    sessionTitle = overlaySessionTitle(),
-                )
-
-                    val activeFallbackStrategy = run {
-                        val groupId = _selectedGroupId.value
-                        groupId?.let { providerRepository.config.value.modelGroups.find { g -> g.id == it }?.fallbackStrategy }
-                            ?: com.openminis.app.data.model.FallbackStrategy.default
-                    }
-                    val fallbackProviders = buildFallbackProviders(provider)
-
-                    try {
-                        AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel drainQueuedPrompts CALL")
-                        drainQueuedPrompts(
-                            provider = provider,
-                            systemPrompt = systemPrompt,
-                            fallbackProviders = fallbackProviders,
-                            fallbackStrategy = activeFallbackStrategy,
-                        )
-                        AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel drainQueuedPrompts RETURN")
-                    } catch (e: CancellationException) {
-                        AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel drain CANCELLED")
-                    } catch (e: Exception) {
-                        AppLogger.error(TAG_STREAM, "resumeQueueAfterCancel drain EXCEPTION ${e.javaClass.simpleName}: ${e.message}")
-                        Log.e(TAG, "Queued drain error (resumeQueueAfterCancel)", e)
-                        setInlineError(e.message ?: "Unknown error")
-                    } finally {
-                        AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel streamJob FINALLY enter")
-                        // [T-android-overlay-reply-status-34599] Surface
-                        // the assistant's most recent reply text to the
-                        // overlay BEFORE setInactive so the post-completion
-                        // overlay state (no-running, has-outcome) carries a
-                        // non-null excerpt. Reading _messages here is safe:
-                        // we're in the finally block of the agent loop and
-                        // the stream has already flushed its last delta.
-                        publishOverlayReplyExcerpt(activeSessionId)
-                        SessionActivityTracker.setInactive(activeSessionId)
-                        SessionConcurrencyManager.releaseSlot(activeSessionId)
-                        AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel streamJob FINALLY exit")
-                    }
-                } catch (e: CancellationException) {
-                    AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel streamJob CANCELLED waiting for slot")
-                }
-                // [T-android-stale-streamjob-clears-isstreaming] guard.
-                if (streamJob === coroutineContext[Job]) {
-                    AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel _isStreaming=false (about to set)")
-                    _isStreaming.value = false
-                } else {
-                    AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel _isStreaming SKIPPED (stale job)")
-                }
-                AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel streamJob EXIT")
-            }
+            runState.setStreaming(true)
+            runState.setCanResume(false)
+            runState.setError(null)
+            launchManagedStreamJob(
+                label = "resumeQueueAfterCancel",
+                provider = provider,
+                systemPrompt = systemPrompt,
+                drainOnly = true,
+            )
         }
     }
 
@@ -1188,7 +919,7 @@ internal fun ChatViewModel.cancelStreamImpl() {
             // unconsumed re-detection mark left by a prior load so it cannot
             // suppress the re-stamp here.
             markLiveInterruption()
-            _canResume.value = true
+            runState.setCanResume(true)
             return
         }
 
@@ -1248,7 +979,7 @@ internal fun ChatViewModel.cancelStreamImpl() {
             // unconsumed re-detection mark left by a prior load so it cannot
             // suppress the re-stamp here.
             markLiveInterruption()
-            _canResume.value = true
+            runState.setCanResume(true)
         } else if (historyEndsWithAssistant) {
             // Already committed (tool cancel path above handled or prior turn
             // wrote an assistant row). Still allow resume.
@@ -1258,20 +989,20 @@ internal fun ChatViewModel.cancelStreamImpl() {
             // unconsumed re-detection mark left by a prior load so it cannot
             // suppress the re-stamp here.
             markLiveInterruption()
-            _canResume.value = true
+            runState.setCanResume(true)
         }
     }
 
 internal fun ChatViewModel.resumeImpl() {
-        if (_isStreaming.value || !_canResume.value) return
+        if (runState.isStreaming.value || !runState.canResume.value) return
         // [T-android-mute-reset-on-drain] Resume is new work, as on iOS.
         com.openminis.app.agent.jobs.AgentJobRegistry.clearDelegationMute(activeSessionId)
-        val provider = currentProvider ?: run {
-            _error.value = "No provider configured"
+        val provider = modelState.currentProvider ?: run {
+            runState.setError("No provider configured")
             return
         }
-        _canResume.value = false
-        _error.value = null
+        runState.setCanResume(false)
+        runState.setError(null)
         // [T-error-persist-android] resume() follows finalizeAtTurnLimit's
         // setInlineError (which persisted an error sticker on the last assistant
         // row). Clear it now so a successful resume doesn't merge-resurrect the
@@ -1283,7 +1014,7 @@ internal fun ChatViewModel.resumeImpl() {
         // token, and the auto-follow tuple won't advance until content
         // streams — ChatScreen would otherwise leave the placeholder
         // behind the input bar.
-        _forceScrollToBottom.tryEmit(Unit)
+        runState.emitForceScrollToBottom()
 
         // If history ends with assistant (Case 2: text-cancel committed a
         // partial assistant turn), append a continue reminder as a user
@@ -1310,76 +1041,16 @@ internal fun ChatViewModel.resumeImpl() {
 
         viewModelScope.launch {
             val systemPrompt = systemPromptFor(provider, buildSystemPrompt())
-
             AppLogger.info(TAG_STREAM, "resume _isStreaming=true (sid=$activeSessionId)")
-            _isStreaming.value = true
-            streamJob = launch(Dispatchers.IO) {
-                AppLogger.info(TAG_STREAM, "resume streamJob ENTER sid=$activeSessionId")
-                try {
-                    SessionConcurrencyManager.acquireSlot(activeSessionId)
-                    AppLogger.debug(TAG_STREAM, "resume streamJob slot acquired")
-                    SessionActivityTracker.setActive(
-                    activeSessionId,
-                    onStop = { cancelStream() },
-                    // [T-android-overlay-multitask] The capsule names the task
-                    // rather than the assistant, so it needs this session's title.
-                    sessionTitle = overlaySessionTitle(),
-                )
-                    val activeFallbackStrategy = run {
-                        val groupId = _selectedGroupId.value
-                        groupId?.let {
-                            providerRepository.config.value.modelGroups.find { g -> g.id == it }?.fallbackStrategy
-                        } ?: com.openminis.app.data.model.FallbackStrategy.default
-                    }
-                    val fallbackProviders = buildFallbackProviders(provider)
-                    try {
-                        AppLogger.info(TAG_STREAM, "resume runAgentLoop CALL")
-                        runAgentLoop(
-                            provider = provider,
-                            systemPrompt = systemPrompt,
-                            fallbackProviders = fallbackProviders,
-                            fallbackStrategy = activeFallbackStrategy,
-                        )
-                        AppLogger.info(TAG_STREAM, "resume runAgentLoop RETURN normal")
-                        drainQueuedPrompts(provider, systemPrompt, fallbackProviders, activeFallbackStrategy)
-                        AppLogger.info(TAG_STREAM, "resume drainQueuedPrompts RETURN")
-                    } catch (e: CancellationException) {
-                        AppLogger.info(TAG_STREAM, "resume runAgentLoop CANCELLED")
-                        Log.d(TAG, "Agent loop cancelled (resume)")
-                    } catch (e: Exception) {
-                        AppLogger.error(TAG_STREAM, "resume runAgentLoop EXCEPTION ${e.javaClass.simpleName}: ${e.message}")
-                        Log.e(TAG, "Agent loop error (resume)", e)
-                        setInlineError(e.message ?: "Unknown error")
-                    } finally {
-                        AppLogger.info(TAG_STREAM, "resume streamJob FINALLY enter")
-                        // [T-android-overlay-reply-status-34599] Surface
-                        // the assistant's most recent reply text to the
-                        // overlay BEFORE setInactive so the post-completion
-                        // overlay state (no-running, has-outcome) carries a
-                        // non-null excerpt. Reading _messages here is safe:
-                        // we're in the finally block of the agent loop and
-                        // the stream has already flushed its last delta.
-                        publishOverlayReplyExcerpt(activeSessionId)
-                        SessionActivityTracker.setInactive(activeSessionId)
-                        SessionConcurrencyManager.releaseSlot(activeSessionId)
-                        AppLogger.info(TAG_STREAM, "resume streamJob FINALLY exit")
-                    }
-                } catch (e: CancellationException) {
-                    AppLogger.info(TAG_STREAM, "resume streamJob CANCELLED waiting for slot")
-                    Log.d(TAG, "Cancelled while waiting for concurrency slot (resume)")
-                }
-                // [T-android-stale-streamjob-clears-isstreaming] guard.
-                if (streamJob === coroutineContext[Job]) {
-                    AppLogger.info(TAG_STREAM, "resume _isStreaming=false (about to set)")
-                    _isStreaming.value = false
-                } else {
-                    AppLogger.info(TAG_STREAM, "resume _isStreaming SKIPPED (stale job)")
-                }
-                AppLogger.info(TAG_STREAM, "resume streamJob EXIT")
-            }
+            runState.setStreaming(true)
+            launchManagedStreamJob(
+                label = "resume",
+                provider = provider,
+                systemPrompt = systemPrompt,
+            )
         }
     }
 
 internal fun ChatViewModel.clearErrorImpl() {
-        _error.value = null
+        runState.setError(null)
     }

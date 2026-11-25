@@ -27,13 +27,11 @@ internal fun ChatViewModel.clearAllStreamOverlays() =
 internal fun ChatViewModel.streamFlushThrottleMs(len: Int): Long =
     StreamProjectionStore.streamFlushThrottleMs(len)
 
-internal fun ChatViewModel.markRedetectingInterruptedTail() {
-    redetectingInterruptedTailGen += 1
-}
+internal fun ChatViewModel.markRedetectingInterruptedTail() =
+    runState.markRedetectingInterruptedTail()
 
-internal fun ChatViewModel.markLiveInterruption() {
-    consumedRedetectGen = redetectingInterruptedTailGen
-}
+internal fun ChatViewModel.markLiveInterruption() =
+    runState.markLiveInterruption()
 
 internal fun ChatViewModel.appendSystemInfo(text: String, iconKind: String, payload: String? = null) {
     val block = AssistantBlock(
@@ -59,7 +57,7 @@ internal suspend fun ChatViewModel.persistFinalDelegateResult(
     withContext(Dispatchers.Main) {
         historyStore.updateToolResult(toolId, content, success)
     }
-    val sid = realSessionId.ifEmpty { sessionId }
+    val sid = activeSessionId
     val rows = runCatching { chatRepository.dao.loadMessages(sid) }.getOrElse { return }
     for (row in rows) {
         if (row.role != "user" || !row.partsJson.contains(toolId)) continue
@@ -87,7 +85,7 @@ internal suspend fun ChatViewModel.persistFinalDelegateResult(
 }
 
 internal fun ChatViewModel.mergeDelegateOverrides(blocks: List<AssistantBlock>): List<AssistantBlock> =
-    streamProjectionStore.mergeDelegateOverrides(blocks, isLiveRun = _isStreaming.value)
+    streamProjectionStore.mergeDelegateOverrides(blocks, isLiveRun = runState.isStreaming.value)
 
 internal fun ChatViewModel.writeDelegateBlockImpl(toolId: String, content: String, status: ToolBlockStatus?) =
     streamProjectionStore.writeDelegateOverride(toolId, content, status, _messages)
@@ -107,7 +105,7 @@ internal fun ChatViewModel.updateAssistantMessage(
     isStreaming = isStreaming,
     toolBlocksIn = toolBlocksIn,
     isAwaitingModelResponse = isAwaitingModelResponse,
-    isLiveRun = _isStreaming.value,
+    isLiveRun = runState.isStreaming.value,
     messages = _messages,
 )
 
@@ -143,17 +141,16 @@ internal suspend fun ChatViewModel.persistAssistantTurn(
     if (parts.isEmpty()) return null
     val partsJson = buildAssistantPartsJson(parts, toolBlockMeta)
     val tokenJson = usage?.let {
-        """{"inputTokens":${it.inputTokens},"outputTokens":${it.outputTokens},"cacheCreationTokens":${it.cacheCreationInputTokens ?: 0},"cacheReadTokens":${it.cacheReadInputTokens ?: 0},"latestContextTokens":${it.latestContextTokens},"streamMs":$streamMs${contextMeter.calibrationJsonFields()}}"""
+        """{"inputTokens":${it.inputTokens},"outputTokens":${it.outputTokens},"cacheCreationTokens":${it.cacheCreationInputTokens ?: 0},"cacheReadTokens":${it.cacheReadInputTokens ?: 0},"latestContextTokens":${it.latestContextTokens},"streamMs":$streamMs${contextState.contextMeter.calibrationJsonFields()}}"""
     }
     val entity = chatRepository.appendMessage(
-        realSessionId.ifEmpty { sessionId },
+        activeSessionId,
         "assistant",
         partsJson,
         tokenJson,
         reasoningContent = reasoningContent,
         modelSnapshot = currentModelSnapshot(),
     )
-
     if (uiAssistantId != null) {
         val stampedUsage = ChatTokenUsage.parse(entity.tokenUsage)
         withContext(Dispatchers.Main) {
@@ -162,14 +159,11 @@ internal suspend fun ChatViewModel.persistAssistantTurn(
                 if (m.id == uiAssistantId) {
                     hit = true
                     m.copy(tokenUsage = stampedUsage ?: m.tokenUsage, completedAt = entity.createdAt)
-                } else {
-                    m
-                }
+                } else m
             }
             AppLogger.info(
                 TAG_STREAM,
-                "[UsageCapsule] live stamp ui=${uiAssistantId.take(20)} hit=$hit " +
-                    "ctx=${stampedUsage?.latestContextTokens ?: -1} db=${entity.id.take(8)}",
+                "[UsageCapsule] live stamp ui=${uiAssistantId.take(20)} hit=$hit ctx=${stampedUsage?.latestContextTokens ?: -1} db=${entity.id.take(8)}",
             )
         }
     }
@@ -178,8 +172,7 @@ internal suspend fun ChatViewModel.persistAssistantTurn(
 
 internal suspend fun ChatViewModel.persistToolResultMessage(parts: List<AgentContentPart>): String? {
     val partsJson = ChatPayloadCodec.buildToolResultPartsJson(parts) ?: return null
-    val entity = chatRepository.appendMessage(realSessionId.ifEmpty { sessionId }, "user", partsJson)
-    return entity.id
+    return chatRepository.appendMessage(activeSessionId, "user", partsJson).id
 }
 
 internal fun ChatViewModel.buildAssistantPartsJson(parts: List<AgentContentPart>): String =

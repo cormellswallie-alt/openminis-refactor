@@ -5,34 +5,14 @@ import androidx.lifecycle.viewModelScope
 import com.openminis.app.data.db.MessageEntity
 import androidx.compose.material.icons.filled.Delete
 import com.openminis.app.logging.AppLogger
-import com.openminis.app.data.model.hasImageInput
 import com.openminis.app.data.repository.ChatRepository
 import com.openminis.app.data.repository.MemoryRepository
 import com.openminis.app.provider.LLMProvider
-import com.openminis.app.provider.ProviderFactory
-import com.openminis.app.provider.catalogMaxThinkingLevel
-import com.openminis.app.provider.effectiveMaxThinkingLevel
-import com.openminis.app.service.SessionActivityTracker
-import com.openminis.app.service.SessionConcurrencyManager
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.yield
 import org.json.JSONObject
 import com.openminis.app.ui.chat.ChatViewModel.Companion.TAG
 import com.openminis.app.ui.chat.ChatViewModel.Companion.TAG_STREAM
@@ -44,7 +24,7 @@ internal fun ChatViewModel.revokeMemoryRecordImpl(record: MemoryToolRecord): com
             ?: return com.openminis.app.data.repository.MemoryRepository.EntryMutationResult.NotFound
         val result = repo.revokeEntry(written)
         if (result is com.openminis.app.data.repository.MemoryRepository.EntryMutationResult.Success) {
-            _memoryToolRecords.update { it - record }
+            runState.updateMemoryToolRecords { it - record }
         }
         return result
     }
@@ -84,7 +64,7 @@ internal fun ChatViewModel.revokeMemoryRecordImpl(record: MemoryToolRecord): com
             // Find the latest matching record so revoke targets the most
             // recent disk entry first. Snapshot value because revoke mutates
             // the flow.
-            val record = _memoryToolRecords.value.lastOrNull {
+            val record = runState.memoryToolRecords.value.lastOrNull {
                 it.isWrite && it.writtenContent == content
             } ?: continue
             val result = revokeMemoryRecord(record)
@@ -102,7 +82,7 @@ internal fun ChatViewModel.replaceMemoryRecordImpl(
             ?: return com.openminis.app.data.repository.MemoryRepository.EntryMutationResult.NotFound
         val result = repo.replaceEntryBody(old, newContent)
         if (result is com.openminis.app.data.repository.MemoryRepository.EntryMutationResult.Success) {
-            _memoryToolRecords.update { records ->
+            runState.updateMemoryToolRecords { records ->
                 records.map {
                     if (it === record) it.copy(
                         writtenContent = newContent,
@@ -120,7 +100,7 @@ internal fun ChatViewModel.assistantMessageIdForToolBlockImpl(blockId: String): 
         }?.id
 
 internal fun ChatViewModel.rerunFromToolBlockImpl(assistantMessageId: String, blockId: String): Boolean {
-        if (_isStreaming.value) return false
+        if (runState.isStreaming.value) return false
         val messages = _messages.value
         val asstIdx = messages.indexOfFirst { it.id == assistantMessageId }
         if (asstIdx < 0) return false
@@ -132,7 +112,7 @@ internal fun ChatViewModel.rerunFromToolBlockImpl(assistantMessageId: String, bl
         // tool_use id we match against in agentHistory / parts_json.
         if (targetBlock.kind != "tool_use" || targetBlock.id.isBlank()) return false
         // [T-android-tool-autoscroll] Start-of-turn snap — see resume().
-        _forceScrollToBottom.tryEmit(Unit)
+        runState.emitForceScrollToBottom()
         val targetToolUseId = targetBlock.id
 
         // Degenerate: nothing of substance precedes the target in this turn —
@@ -143,17 +123,9 @@ internal fun ChatViewModel.rerunFromToolBlockImpl(assistantMessageId: String, bl
         val hasPrecedingContent = asstMsg.toolBlocks.take(blockIdx).any { blk ->
             if (blk.isText) blk.content.isNotEmpty() else true
         }
-        // [T-android-rerun-from-tool-deletes-earlier-turns] The degenerate
-        // shortcut is ONLY equivalent to truncating at the preceding user
-        // message when there is NOTHING between that user message and this
-        // assistant turn. If an EARLIER assistant turn/bubble sits right before
-        // this one (asstIdx-1 is also assistant), retryFromMessage(precedingUser)
-        // would delete that earlier turn's tools too — exactly the "rerun from
-        // the last tool wiped the tools above it / re-ran from the very start"
-        // bug (logged: historySize 29 → 3 on the 2nd consecutive rerun). In
-        // that case fall through to the DB-precise cut below, which keeps every
-        // row before the target row (its cutPartIdx==0 branch deletes only the
-        // target row onward) and preserves the earlier turns.
+        // [T-android-rerun-from-tool-deletes-earlier-turns] The degenerate shortcut is ONLY equivalent to
+        // truncating at the preceding user message when there is NOTHING between that user message and
+        // this assistant turn.
         val precededByUserOnly = asstIdx == 0 || messages[asstIdx - 1].role != "assistant"
         if (!hasPrecedingContent && precededByUserOnly) {
             val userMsg = (asstIdx - 1 downTo 0).asSequence()
@@ -165,13 +137,13 @@ internal fun ChatViewModel.rerunFromToolBlockImpl(assistantMessageId: String, bl
             return true
         }
 
-        val initialProvider = currentProvider
+        val initialProvider = modelState.currentProvider
         if (initialProvider == null) {
-            _error.value = "No provider configured"
+            runState.setError("No provider configured")
             return false
         }
-        _canResume.value = false
-        _error.value = null
+        runState.setCanResume(false)
+        runState.setError(null)
 
         // T149 parity: revoke memory_writes in the parts we're about to drop
         // so the on-disk daily log doesn't keep entries the user rewound past.
@@ -188,7 +160,7 @@ internal fun ChatViewModel.rerunFromToolBlockImpl(assistantMessageId: String, bl
         // Claim the streaming flag synchronously so a rapid second tap is
         // rejected by the entry guard (same rationale as retryFromMessage T145).
         AppLogger.info(TAG_STREAM, "rerunFromToolBlock _isStreaming=true (sync, sid=$activeSessionId)")
-        _isStreaming.value = true
+        runState.setStreaming(true)
 
         viewModelScope.launch {
             var streamLaunched = false
@@ -305,7 +277,7 @@ internal fun ChatViewModel.rerunFromToolBlockImpl(assistantMessageId: String, bl
             } finally {
                 if (!streamLaunched) {
                     AppLogger.info(TAG_STREAM, "rerunFromToolBlock _isStreaming=false (setup aborted)")
-                    _isStreaming.value = false
+                    runState.setStreaming(false)
                 }
             }
         }
@@ -313,25 +285,25 @@ internal fun ChatViewModel.rerunFromToolBlockImpl(assistantMessageId: String, bl
     }
 
 internal fun ChatViewModel.retryFromMessageImpl(messageId: String) {
-        if (_isStreaming.value) return
+        if (runState.isStreaming.value) return
         // [T-android-mute-reset-on-drain] Retry is new work, as on iOS.
         com.openminis.app.agent.jobs.AgentJobRegistry.clearDelegationMute(activeSessionId)
-        _canResume.value = false
+        runState.setCanResume(false)
         val messages = _messages.value
         val index = messages.indexOfFirst { it.id == messageId }
         if (index < 0) return
         val message = messages[index]
         // [T-android-tool-autoscroll] Start-of-turn snap — see resume().
-        _forceScrollToBottom.tryEmit(Unit)
+        runState.emitForceScrollToBottom()
         if (message.role != "user" || message.content.isBlank()) return
 
-        val initialProvider = currentProvider
+        val initialProvider = modelState.currentProvider
         if (initialProvider == null) {
-            _error.value = "No provider configured"
+            runState.setError("No provider configured")
             return
         }
         val provider: LLMProvider = initialProvider
-        _error.value = null
+        runState.setError(null)
 
         // T149: snapshot messages about to be truncated so we can revoke any
         // memory_write tool blocks they contain. Without this, a retry leaves
@@ -350,7 +322,7 @@ internal fun ChatViewModel.retryFromMessageImpl(messageId: String) {
         val retainedHead = messages.subList(0, keepThrough + 1).map { m ->
             if (m.id == messageId && m.isQueued) {
                 m.queuedPromptId?.let { pid ->
-                    _promptQueue.value = _promptQueue.value.filterNot { it.id == pid }
+                    runState.removePromptAtomically(pid)
                 }
                 m.copy(isQueued = false, queuedPromptId = null)
             } else m
@@ -371,7 +343,7 @@ internal fun ChatViewModel.retryFromMessageImpl(messageId: String) {
         // The orphaned first job's `_isStreaming = false` at completion would
         // then flip the UI to "stopped" while the second job was still running.
         AppLogger.info(TAG_STREAM, "retry _isStreaming=true (sync, sid=$activeSessionId)")
-        _isStreaming.value = true
+        runState.setStreaming(true)
 
         viewModelScope.launch {
             // If setup throws before the inner streamJob is launched, the
@@ -405,15 +377,15 @@ internal fun ChatViewModel.retryFromMessageImpl(messageId: String) {
             } finally {
                 if (!streamLaunched) {
                     AppLogger.info(TAG_STREAM, "retry _isStreaming=false (setup aborted)")
-                    _isStreaming.value = false
+                    runState.setStreaming(false)
                 }
             }
         }
     }
 
 internal fun ChatViewModel.deleteFromMessageImpl(messageId: String) {
-        if (_isStreaming.value) return
-        _canResume.value = false
+        if (runState.isStreaming.value) return
+        runState.setCanResume(false)
         val messages = _messages.value
         val index = messages.indexOfFirst { it.id == messageId }
         if (index < 0) return
@@ -434,7 +406,7 @@ internal fun ChatViewModel.deleteFromMessageImpl(messageId: String) {
         val retainedHead = messages.subList(0, cutFrom)
         for (m in deletedMessages) {
             m.queuedPromptId?.let { pid ->
-                _promptQueue.value = _promptQueue.value.filterNot { it.id == pid }
+                runState.removePromptAtomically(pid)
             }
         }
         _messages.value = retainedHead
@@ -541,121 +513,20 @@ internal fun ChatViewModel.deleteFromMessageImpl(messageId: String) {
         initialProvider: LLMProvider,
         label: String,
     ): Boolean {
-        var provider = initialProvider
-        // Refresh OAuth token if needed
-        if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {
-            try {
-                val activeEntryId = _activeEntryId.value
-                val entry = activeEntryId?.let { id -> providerRepository.config.value.modelEntries.find { it.id == id } }
-                val instance = entry?.let { e -> providerRepository.config.value.instances.find { it.id == e.providerInstanceId } }
-                if (instance != null) {
-                    val manager = com.openminis.app.auth.OAuthManager.forInstance(context, instance)
-                    val freshToken = manager?.validAccessToken()
-                    if (freshToken != null) {
-                        val storedKey = providerRepository.loadApiKey(instance.id)
-                        if (freshToken != storedKey) {
-                            providerRepository.saveApiKey(instance.id, freshToken)
-                            provider = com.openminis.app.provider.ProviderFactory.create(
-                                instance, freshToken, currentModel ?: provider.model, context,
-                                sessionId = activeSessionId,
-                                // [T-android-model-custom-params] Carry the
-                                // overrides across a token-refresh rebuild. No
-                                // entry is in scope here, but the provider being
-                                // replaced already holds them — without this a
-                                // refresh would silently drop the user's
-                                // temperature/headers mid-conversation.
-                                overrides = (provider as? com.openminis.app.provider.openai.OpenAIProvider)
-                                    ?.modelOverrides,
-                            )
-                            currentProvider = provider
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "OAuth token refresh failed: ${e.message}")
-            }
-        }
-
+        val provider = refreshOAuthProviderIfNeeded(initialProvider, label)
         val systemPrompt = systemPromptFor(provider, buildSystemPrompt())
-
-        // _isStreaming was already set synchronously by the caller.
-        val launchedProvider = provider
-        streamJob = viewModelScope.launch(Dispatchers.IO) {
-            AppLogger.info(TAG_STREAM, "$label streamJob ENTER sid=$activeSessionId")
-            try {
-                SessionConcurrencyManager.acquireSlot(activeSessionId)
-                AppLogger.debug(TAG_STREAM, "$label streamJob slot acquired")
-                SessionActivityTracker.setActive(
-                    activeSessionId,
-                    onStop = { cancelStream() },
-                    // [T-android-overlay-multitask] The capsule names the task
-                    // rather than the assistant, so it needs this session's title.
-                    sessionTitle = overlaySessionTitle(),
-                )
-                val activeFallbackStrategy = run {
-                    val groupId = _selectedGroupId.value
-                    groupId?.let { providerRepository.config.value.modelGroups.find { g -> g.id == it }?.fallbackStrategy }
-                        ?: com.openminis.app.data.model.FallbackStrategy.default
-                }
-                val fallbackProviders = buildFallbackProviders(launchedProvider)
-                try {
-                    AppLogger.info(TAG_STREAM, "$label runAgentLoop CALL")
-                    runAgentLoop(
-                        provider = launchedProvider,
-                        systemPrompt = systemPrompt,
-                        fallbackProviders = fallbackProviders,
-                        fallbackStrategy = activeFallbackStrategy,
-                    )
-                    AppLogger.info(TAG_STREAM, "$label runAgentLoop RETURN normal")
-                } catch (e: CancellationException) {
-                    AppLogger.info(TAG_STREAM, "$label runAgentLoop CANCELLED")
-                    Log.d(TAG, "Agent loop cancelled")
-                } catch (e: Exception) {
-                    AppLogger.error(TAG_STREAM, "$label runAgentLoop EXCEPTION ${e.javaClass.simpleName}: ${e.message}")
-                    Log.e(TAG, "Agent loop error ($label)", e)
-                    setInlineError(e.message ?: "Unknown error")
-                    // T298: flag the upcoming setInactive() so the
-                    // background completion notifier renders the ❌
-                    // variant instead of a clean success.
-                    SessionActivityTracker.markStreamError(activeSessionId)
-                } finally {
-                    AppLogger.info(TAG_STREAM, "$label streamJob FINALLY enter")
-                    // [T-android-overlay-reply-status-34599] Surface
-                    // the assistant's most recent reply text to the
-                    // overlay BEFORE setInactive so the post-completion
-                    // overlay state (no-running, has-outcome) carries a
-                    // non-null excerpt. Reading _messages here is safe:
-                    // we're in the finally block of the agent loop and
-                    // the stream has already flushed its last delta.
-                    publishOverlayReplyExcerpt(activeSessionId)
-                    SessionActivityTracker.setInactive(activeSessionId)
-                    SessionConcurrencyManager.releaseSlot(activeSessionId)
-                    AppLogger.info(TAG_STREAM, "$label streamJob FINALLY exit")
-                }
-            } catch (e: CancellationException) {
-                AppLogger.info(TAG_STREAM, "$label streamJob CANCELLED waiting for slot")
-                Log.d(TAG, "Cancelled while waiting for concurrency slot")
-            }
-            // [T-android-stale-streamjob-clears-isstreaming] Only the current
-            // streamJob is allowed to flip _isStreaming false. An orphaned
-            // earlier job (cancelled but its finally still draining downstream
-            // I/O) reaching this tail AFTER a fresh send/resume/retry has
-            // already taken over would otherwise hide the Stop button while
-            // the new turn is still streaming. See `var streamJob` KDoc and
-            // Field log 2026-06-12 (20:22:26 / 20:23:25).
-            if (streamJob === coroutineContext[Job]) {
-                AppLogger.info(TAG_STREAM, "$label _isStreaming=false (about to set)")
-                _isStreaming.value = false
-            } else {
-                AppLogger.info(TAG_STREAM, "$label _isStreaming SKIPPED (stale job; current=${streamJob?.hashCode()} this=${coroutineContext[Job]?.hashCode()})")
-            }
-            AppLogger.info(TAG_STREAM, "$label streamJob EXIT")
-        }
+        launchManagedStreamJob(
+            label = label,
+            provider = provider,
+            systemPrompt = systemPrompt,
+            markErrorOnFailure = true,
+            drainQueueAfterLoop = false,
+        )
         return true
     }
 
 internal fun ChatViewModel.editMessageImpl(messageId: String): String? {
-        if (_isStreaming.value) return null
+        if (runState.isStreaming.value) return null
         val msg = _messages.value.firstOrNull { it.id == messageId } ?: return null
         if (msg.role != "user") return null
         var text = msg.content
@@ -669,30 +540,8 @@ internal fun ChatViewModel.editMessageImpl(messageId: String): String? {
                 text.substring(0, startIdx).trim()
             }
         }
-        // [T-android-edit-loses-attachments] Restore the message's attachments
-        // into the composer alongside its text.
-        //
-        // Without this, editing a message that carried an image silently
-        // dropped it: the composer showed only the text, and re-sending
-        // produced a turn the model could no longer see the picture in. The
-        // XML strip above is what makes the loss invisible — the
-        // `<user-attached-files>` block naming the files is removed from the
-        // text, so nothing on screen hints that anything was attached.
-        //
-        // iOS has done this since AIChatViewModel.editMessage (L3891-3920);
-        // this side only ever returned the text. Android needs no copy step,
-        // unlike iOS: `imageUris`/`attachmentUris` on a restored message
-        // already point at files inside the app's own media store (see the
-        // `mediaRef` branch of loadSessionMessages, which resolves them
-        // against mediaStore.mediaBaseDir and skips any that no longer
-        // exist), and that is exactly what the send path re-reads.
-        //
-        // Ordering matches ChatMessage's own convention — images first, then
-        // files — so the composer's preview row shows them the same way the
-        // sent bubble did. Names come from `attachmentNames`, which is built
-        // image-first to align with these two lists; it is indexed
-        // defensively anyway, since a row persisted by an older build could
-        // be short.
+        // [T-android-edit-loses-attachments] Restore the message's attachments into the composer alongside
+        // its text.
         val restored = mutableListOf<InputAttachment>()
         msg.imageUris.forEachIndexed { i, uri ->
             val name = msg.attachmentNames.getOrNull(i) ?: uri.lastPathSegment ?: "image"
@@ -724,7 +573,7 @@ internal fun ChatViewModel.editMessageImpl(messageId: String): String? {
         // empty keeps that true for a message that genuinely had no files.
         overlaysStore.replaceAttachments(restored)
 
-        _editingMessageId.value = messageId
+        draftStore.setEditingMessageId(messageId)
         AppLogger.info(
             TAG_STREAM,
             "✏️ editMessage id=${messageId.take(8)} text=${text.length}ch " +
@@ -734,22 +583,13 @@ internal fun ChatViewModel.editMessageImpl(messageId: String): String? {
     }
 
 internal fun ChatViewModel.cancelEditImpl() {
-        if (_editingMessageId.value != null) {
+        if (draftStore.editingMessageId.value != null) {
             AppLogger.info(TAG_STREAM, "✏️ cancelEdit")
-            // [T-android-edit-loses-attachments] Drop the attachments
-            // editMessage restored, mirroring how the caller clears the text.
-            //
-            // Symmetry with editMessage is the whole point: it REPLACES the
-            // composer's attachments with the edited message's, so leaving
-            // them behind on cancel would strand files the user never picked
-            // in a composer they thought they had backed out of — and the next
-            // ordinary send would silently attach them.
-            //
-            // Guarded by the same non-null check as the log so a stray call
-            // outside edit mode cannot wipe a draft's real attachments.
+            // [T-android-edit-loses-attachments] Drop the attachments editMessage restored, mirroring how the
+            // caller clears the text.
             overlaysStore.clearAttachments()
         }
-        _editingMessageId.value = null
+        draftStore.setEditingMessageId(null)
     }
 
 /**

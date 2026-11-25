@@ -9,8 +9,6 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.drag
-import androidx.compose.foundation.relocation.BringIntoViewRequester
-import androidx.compose.foundation.relocation.bringIntoViewRequester
 import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -57,7 +55,6 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.foundation.lazy.LazyListState
-import kotlin.math.abs
 
 /**
  * Long-press + drag selection gesture for MinisTextKit. Mounted on the
@@ -146,16 +143,8 @@ fun Modifier.minisTextKitSelectionGesture(
             return@awaitEachGesture
         }
 
-        // ── Handle-drag short-circuit ────────────────────────────────────
-        // If a selection already exists and the user pressed within reach
-        // of one of its endpoint handles, skip the long-press wait and go
-        // straight to handle-drag mode. This is what makes the existing
-        // selection feel "grippable" — without it the user would have to
-        // long-press inside the selection again before they could resize.
-        // Handle grabs are detected by the handle Popups themselves (their
-        // own pointerInput consumes the DOWN before it propagates here, so
-        // a press inside a popup never reaches the LazyColumn). No
-        // short-circuit needed in this gesture.
+        // ── Handle-drag short-circuit ──────────────────────────────────── If a selection already exists
+        // and the user pressed within reach of one of its endpoint handles, skip the long-press wait…
 
         // ── Phase 1: wait for the long-press timeout ─────────────────────
         val abortReason = withTimeoutOrNull(longPressTimeoutMs) {
@@ -430,17 +419,8 @@ private fun edgeAutoScrollNudge(
     listState: LazyListState,
     reverseLayout: Boolean,
 ) {
-    // Sign meaning here is "viewport reveals content in the direction the
-    // finger is pulling": at the BOTTOM edge the user wants to see content
-    // BELOW the viewport, at the TOP edge content ABOVE.
-    //
-    // For a normal LazyColumn that maps to:
-    //   bottom edge → scrollBy(+) (move viewport down)
-    //   top edge    → scrollBy(-)
-    // For a reverseLayout=true LazyColumn (chat, index 0 at the bottom),
-    // dispatchRawDelta's sign is FLIPPED relative to user intent:
-    //   bottom edge → scrollBy(-) (reveal newer / lower-index items)
-    //   top edge    → scrollBy(+)
+    // Sign meaning here is "viewport reveals content in the direction the finger is pulling": at the
+    // BOTTOM edge the user wants to see content BELOW the viewport, at the TOP edge content ABOVE.
     val rawMagnitude = when {
         localY < EDGE_AUTO_SCROLL_ZONE_PX ->
             -((EDGE_AUTO_SCROLL_ZONE_PX - localY) / EDGE_AUTO_SCROLL_ZONE_PX) * EDGE_AUTO_SCROLL_MAX_PX
@@ -513,30 +493,7 @@ fun SelectionDragTracker(
     listRootCoordinates: () -> LayoutCoordinates?,
     reverseLayout: Boolean = false,
 ) {
-    // [T-android-text-selection-scroll-jitter] Two responsibilities split
-    // into two LaunchedEffects:
-    //
-    // 1) Hit-test re-run on every dragIntent change so the grabbed
-    //    endpoint stays under the finger as it moves OR as auto-scroll
-    //    shifts content underneath. Triggered by snapshotFlow on
-    //    dragIntent.value.
-    //
-    // 2) Edge auto-scroll driven by a frame-rate tick loop while a drag
-    //    is active. Pre-fix, the nudge was called both from the gesture
-    //    handlers (every pointer event) AND from inside the hit-test
-    //    collect block above. That stacked two nudges per pointer event
-    //    AND coupled selection layout recompose to scroll dispatch, which
-    //    created a feedback loop on the upward-direction drag: scroll
-    //    shifted content under the handle → next pointer event hit-tested
-    //    against a new shard → dragIntent updated → another nudge piled
-    //    on → handle position visually jumped → user micro-corrected →
-    //    new pointer event → repeat. Symptom was "constant jitter + cannot scroll up"
-    //    (field reports).
-    //
-    // The tick loop reads the latest dragIntent point each frame
-    // independently of pointer events, so a stationary finger inside the
-    // edge zone still drives the list AND the nudge cadence is fixed at
-    // ~60Hz regardless of how often the OS delivers MOVE events.
+    // [T-android-text-selection-scroll-jitter] Two responsibilities split into two LaunchedEffects:
     LaunchedEffect(controller, listState, reverseLayout) {
         androidx.compose.runtime.snapshotFlow { controller.dragIntent.value }
             .collect { intent ->
@@ -709,37 +666,11 @@ private fun SelectionHandleDot(
         Box(
             modifier = Modifier
                 .size(HANDLE_HIT_SIZE_DP)
-                // The hit-target box sits inside a Popup that *re-positions*
-                // every frame to follow the selection endpoint as the
-                // LazyColumn scrolls. If we computed window coords via raw
-                // delta accumulation (popup-local position - down position
-                // + anchor), we'd get phantom motion: even with a stationary
-                // finger the Popup moves under it during scroll, so the
-                // popup-local position changes → false drag delta → fake
-                // selection updates → "selection shifts on scroll" symptom.
-                //
-                // Capture the popup body's current windowOrigin via
-                // onGloballyPositioned. The drag handler then computes
-                // window-absolute = position + windowOrigin **every event**,
-                // which is invariant under popup motion: when popup moves
-                // by dy, the local position changes by -dy in the same
-                // frame, and the sum stays put.
+                // The hit-target box sits inside a Popup that *re-positions* every frame to follow the selection
+                // endpoint as the LazyColumn scrolls.
                 .pointerInput(controller, handleKind) {
-                    // Popup is its OWN window; pointer positions inside the
-                    // popup are NOT in the main app window's coordinate
-                    // space. positionInWindow() on anything inside the popup
-                    // returns popup-local coords (0,0 = popup's top-left).
-                    //
-                    // We DO know where the popup body sits in main-window
-                    // coords: HandlePositionProvider placed it at
-                    //   x = (isStart ? anchorWindow.x - popupWidth : anchorWindow.x)
-                    //   y = anchorWindow.y
-                    // We don't have popupWidth at runtime, so anchor the
-                    // gesture against a delta from the long-press / drag
-                    // start position. Compose's detectDragGestures gives us
-                    // both the absolute popup-local PointerInputChange and
-                    // a per-frame delta — use the delta to accumulate a
-                    // total drag, then publish (anchorWindow + total).
+                    // Popup is its OWN window; pointer positions inside the popup are NOT in the main app window's
+                    // coordinate space.
                     var dragTotal = Offset.Zero
                     var dragStartAnchor = anchorWindow
                     detectDragGestures(
@@ -821,16 +752,7 @@ private class HandlePositionProvider(
         layoutDirection: LayoutDirection,
         popupContentSize: IntSize,
     ): IntOffset {
-        // Center the popup body horizontally on anchorWindow.x. The visible
-        // dot inside the body is drawn at TopEnd (start handle) or TopStart
-        // (end handle), so:
-        //   - START handle: dot's right edge lines up with the box's
-        //     horizontal center → dot at (anchorWindow.x − dotRadius)
-        //   - END handle: dot's left edge lines up with the box's center →
-        //     dot at (anchorWindow.x + dotRadius)
-        // Both flavours expose roughly the same hit-target area, but the
-        // visible knob sits at the selection edge instead of overhanging
-        // the line by an entire 56 dp.
+        // Center the popup body horizontally on anchorWindow.x.
         val halfBox = popupContentSize.width / 2
         val x = (anchorWindow.x - halfBox).toInt()
         val y = (anchorWindow.y).toInt()
@@ -902,19 +824,8 @@ fun MinisSelectionToolbarHost(
 ) {
     val sel by controller.selection
     if (sel == null) return
-    // Anchor the toolbar above the VISIBLE portion of the selection — the
-    // union of every shard's drawn rectangle in window coords (computed by
-    // visibleSelectionWindowRect). This way the menu tracks the highlight
-    // as the user scrolls: when the top of the selection is visible, the
-    // menu hovers above it; when only the bottom is visible, the menu
-    // moves down to hug what's still on screen; when nothing's on screen,
-    // the position provider falls back to pinning the menu to the top of
-    // the window (sentinel anchor (0,0,0,0)).
-    //
-    // Frame-tick recomposition: shard positionInWindow() changes inside
-    // LazyColumn's layout pass without invalidating this composable, so
-    // we drive a per-frame tick so the menu re-positions every scroll
-    // frame instead of locking to a stale rect.
+    // Anchor the toolbar above the VISIBLE portion of the selection — the union of every shard's drawn
+    // rectangle in window coords (computed by visibleSelectionWindowRect).
     val tick = remember { androidx.compose.runtime.mutableStateOf(0) }
     LaunchedEffect(controller) {
         while (true) {
@@ -923,17 +834,8 @@ fun MinisSelectionToolbarHost(
         }
     }
     @Suppress("UNUSED_VARIABLE") val t = tick.value
-    // Anchor choice:
-    //  - During a handle drag, follow the GRABBED handle so the menu
-    //    shadows whichever endpoint the user is moving.
-    //  - After the drag ends, KEEP the menu over that same handle until
-    //    something else happens (new long-press, the other handle gets
-    //    grabbed, selection cleared). Otherwise the menu would snap back
-    //    to the end-line default the instant the user lifts a finger,
-    //    which feels jumpy — the user just dragged the start handle,
-    //    they want the menu to keep tracking it.
-    //  - Idle with no last-dragged handle (fresh long-press) → anchor at
-    //    the end-line of the highlight.
+    // Anchor choice: - During a handle drag, follow the GRABBED handle so the menu shadows whichever
+    // endpoint the user is moving.
     val activeDragHandle = controller.dragIntent.value?.handle
     val lastDraggedHandle = remember { androidx.compose.runtime.mutableStateOf<SelectionController.Handle?>(null) }
     LaunchedEffect(controller) {
@@ -1079,16 +981,8 @@ fun MinisSelectionToolbarHost(
                 val labelReadAloud = androidx.compose.ui.res.stringResource(com.openminis.app.R.string.read_aloud_group)
                 val toastCopiedAsMarkdown = androidx.compose.ui.res.stringResource(com.openminis.app.R.string.selection_copied_as_markdown_toast)
                 val toastCopiedAsRichText = androidx.compose.ui.res.stringResource(com.openminis.app.R.string.selection_copied_as_rich_text_toast)
-                // [T-android-markdown-table-copy-actions] Copy Table / Copy
-                // Table Image, when the selected message contains a table.
-                //
-                // This is the toolbar that ACTUALLY shows for a MinisTextKit
-                // selection (a table-cell long-press). The table actions were
-                // previously wired only into MinisMarkdownTextToolbar — the
-                // Compose-SelectionContainer toolbar that this MinisTextKit
-                // selection never triggers — so the buttons registered fine
-                // (debug.selectionState: tableActionsHit=true) but appeared in
-                // a toolbar the user never sees.
+                // [T-android-markdown-table-copy-actions] Copy Table / Copy Table Image, when the selected message
+                // contains a table.
                 val tableActions = controller.selectionTableActions()
                 val labelCopyTable = androidx.compose.ui.res.stringResource(
                     com.openminis.app.R.string.markdown_table_copy_table)
@@ -1127,26 +1021,8 @@ fun MinisSelectionToolbarHost(
                             controller.clearSelection()
                         })
                     }
-                    // Copy Markdown / Copy Rich Text are ALWAYS offered when the
-                    // selection contains rendered text. Earlier we gated them on
-                    // resolveSelectionMarkdown() returning non-null, but that hid
-                    // them in common cases (user bubbles before SideEffect
-                    // publish, the recompose race after a previous click, cross-
-                    // shard selections where the cache briefly hadn't populated).
-                    // Resolve lazily at click time and fall back to plain text.
-                    // [T-android-selection-copy-full-submenu] The three
-                    // whole-message copies live under one "Copy Full Text"
-                    // parent rather than sitting loose beside plain "Copy",
-                    // mirroring iOS's grouped edit menu.
-                    //
-                    // Grouping is what makes the labels honest. These actions
-                    // copy the ENTIRE message (resolveSelectionMarkdown returns
-                    // the owning message's source), while the bar they appear on
-                    // was raised BY a selection and sits inches from "Copy". Flat
-                    // entries reading "Copy Markdown" let a user who highlighted
-                    // one sentence walk away with the whole reply and nothing in
-                    // the UI explaining the gap. Under a parent that says "Full
-                    // Text", the scope is stated once and inherited by all three.
+                    // [T-android-selection-copy-full-submenu] Copy Markdown / Copy Rich Text are ALWAYS offered when
+                    // the selection contains rendered text.
                     add(
                         SelectionAction(
                             label = labelCopyFullText,
@@ -1188,24 +1064,8 @@ fun MinisSelectionToolbarHost(
                             ),
                         ),
                     )
-                    // [T-android-readaloud-selection-vs-reply] The read-aloud
-                    // PAIR, mirroring iOS: "Read Selection" speaks the
-                    // highlighted range, "Read from Start" replays the whole
-                    // reply. Grouped under one parent rather than sitting as
-                    // two loose entries.
-                    //
-                    // Grouped for the same reason "Copy Full Text" is: the two
-                    // differ only in SCOPE, and a flat pair puts a
-                    // whole-message action inches from a selection-scoped one
-                    // with nothing but the label to separate them. The parent
-                    // also costs one bar slot instead of two — which is what
-                    // lets read-aloud sit inline at all, instead of being
-                    // stranded in the overflow where it was.
-                    //
-                    // A single child collapses to a flat entry (see below), so
-                    // a user message — no whole-reply action — still gets a
-                    // direct "Read Selection" button rather than a submenu
-                    // wrapping one item.
+                    // [T-android-readaloud-selection-vs-reply] The read-aloud PAIR, mirroring iOS: "Read Selection"
+                    // speaks the highlighted range, "Read from Start" replays the whole reply.
                     run {
                         val readChildren = buildList {
                             if (actions?.onReadAloud != null) {
@@ -1251,21 +1111,8 @@ fun MinisSelectionToolbarHost(
                     }
                 }
 
-                // Mirror iOS's edit menu: a few actions inline, the rest behind
-                // a chevron. On iOS UIEditMenuInteraction provides that overflow
-                // for free; this bar is hand-built, so it is implemented here.
-                //
-                // The horizontalScroll above still exists as a backstop for very
-                // narrow screens, but it was never a good primary answer — an
-                // action reachable only by swiping a 40dp bar is an action most
-                // users never find.
-                // [T-android-selection-add-to-input-first] As many actions as
-                // FIT, up to MAX_INLINE_SELECTION_ACTIONS: in Chinese Copy ·
-                // Add to Chat Input · Copy Full Text · Read Aloud all fit a
-                // phone-width bar, while German/Russian/French labels are two
-                // to three times longer and would push the "⋯" off the edge.
-                // Each label is measured in the button's own style, plus its
-                // padding and divider, against the capped bar width.
+                // [T-android-selection-add-to-input-first] Mirror iOS's edit menu: a few actions inline, the rest
+                // behind a chevron.
                 val toolbarMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
                 val buttonStyle = MaterialTheme.typography.labelLarge
                 val buttonPadPx = with(density) { (14.dp * 2 + 1.dp).toPx() }
@@ -1278,23 +1125,8 @@ fun MinisSelectionToolbarHost(
                     maxWidth = with(density) { maxBarWidth.toPx() },
                     cap = MAX_INLINE_SELECTION_ACTIONS,
                 )
-                // [T-android-selection-copy-full-inline] Submenu parents may now
-                // sit inline: tapping one opens the same expandable menu the
-                // overflow uses, anchored to its own button.
-                //
-                // Previously a parent was force-moved into the overflow, because
-                // the bar rendered a flat button whose (empty) onClick would
-                // silently do nothing. That constraint made "Copy Full Text"
-                // reachable only behind the "⋯" — a whole-message copy hidden
-                // one level deeper than the single-sentence copy beside it,
-                // which is the wrong way round for how often it is wanted.
-                //
-                // Rather than flattening the group (which would put three
-                // "Copy …" entries loose next to plain "Copy" and re-create the
-                // scope confusion the grouping exists to prevent), the parent
-                // keeps its children and the BAR learns to expand it. The
-                // overflow keeps working unchanged, so the folding capability is
-                // preserved for whatever actions get added later.
+                // [T-android-selection-copy-full-inline] Submenu parents may now sit inline: tapping one opens the
+                // same expandable menu the overflow uses, anchored to its own button.
                 val inlineItems = items.take(inlineCount)
                 val overflowItems = items.drop(inlineCount)
 
@@ -1371,30 +1203,8 @@ fun MinisSelectionToolbarHost(
                 if (overflowItems.isNotEmpty()) {
                     MinisToolbarDivider()
                     var overflowOpen by remember(items.size) { mutableStateOf(false) }
-                    // [T-android-selection-overflow-anchor] Window coordinates of
-                    // the "⋯" button, captured so the overflow menu can anchor to
-                    // it explicitly.
-                    //
-                    // This bar is itself a Popup, i.e. its own window. A
-                    // DropdownMenu nested inside it is ALSO a Popup, and it
-                    // resolves its anchor against the real window rather than the
-                    // parent Popup's coordinate space — so the menu ignored the
-                    // "⋯" button entirely and got clamped into the screen corner,
-                    // far from the selection it belongs to (user-reported: the
-                    // submenu jumped to the top-right while the bar stayed by the
-                    // text). Nesting is the bug; no amount of offset on the
-                    // DropdownMenu fixes an anchor measured in the wrong window.
-                    //
-                    // Fix: track the button in SCREEN space and drive a sibling
-                    // Popup from those absolute coordinates.
-                    //
-                    // positionOnScreen(), NOT positionInWindow(): the button lives
-                    // inside the toolbar's Popup, so "window" means that Popup and
-                    // the coordinates come back near zero — which is what kept the
-                    // menu pinned to the top of the display even after it was
-                    // un-nested. Screen coordinates are the only frame both windows
-                    // agree on; the provider subtracts the new Popup's own screen
-                    // origin to get back to its local space.
+                    // [T-android-selection-overflow-anchor] Window coordinates of the "⋯" button, captured so the
+                    // overflow menu can anchor to it explicitly.
                     var overflowAnchor by remember { mutableStateOf(Offset.Zero) }
                     MinisToolbarButton(
                         label = "⋯",
@@ -1408,19 +1218,6 @@ fun MinisSelectionToolbarHost(
                     ) { overflowOpen = true }
                     if (overflowOpen) {
                         // The anchor is already in SCREEN space and is used as-is.
-                        //
-                        // An earlier attempt rebased it by `view.rootView`'s screen
-                        // location, on the assumption that rootView meant the
-                        // Activity's decor view. Measured on-device, it does not:
-                        // inside a Popup, rootView is THAT POPUP's root, which here
-                        // reported (44, 1409) — the toolbar's own origin. Subtracting
-                        // it mapped a correct y of 1519 down to 110 and pinned the
-                        // menu to the top of the display, which is exactly the
-                        // symptom this fix was meant to remove.
-                        //
-                        // A new Popup with default flags is laid out against the
-                        // full display, so screen coordinates are already the right
-                        // frame for calculatePosition().
                         val overflowProvider = remember(overflowAnchor) {
                             SelectionOverflowPositionProvider(anchorWindow = overflowAnchor)
                         }
@@ -1683,15 +1480,6 @@ private class FloatingSelectionToolbarPositionProvider(
         val centerX = preferredCenterX?.toInt() ?: (anchor.left + anchor.width / 2)
         val x = (centerX - popupContentSize.width / 2).coerceIn(viewLeft, maxX)
         // Vertical placement. The two anchor kinds want OPPOSITE defaults:
-        //
-        //  - A selection rect prefers ABOVE, because the text it describes is
-        //    below and a menu over it would hide the thing being acted on.
-        //  - A right-click cursor prefers BELOW, the desktop convention — and
-        //    there is nothing to hide, the cursor occupies no area.
-        //
-        // Each falls back to the other side when its preferred side has no
-        // room, and both clamp to [viewTop, maxY] so the menu cannot escape
-        // the chat content area.
         val aboveY = anchor.top - popupContentSize.height - gap
         val belowY = anchor.bottom + gap
         val y = if (atCursor) {

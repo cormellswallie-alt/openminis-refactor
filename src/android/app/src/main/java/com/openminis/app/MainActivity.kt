@@ -168,114 +168,91 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Register the crash-share "Save to..." launcher BEFORE the
-        // safe-mode early-return below — ActivityResultLauncher must be
-        // registered before STARTED, and the safe-mode path needs it.
-        // The launcher pairs with `pendingCrashZip` to copy the zip into
-        // whatever URI the user picked in the system file picker, then
-        // opens that URI with ACTION_VIEW so they see it land.
-        val crashSaveLauncher = registerForActivityResult(
-            ActivityResultContracts.StartActivityForResult()
-        ) { result ->
-            val targetUri = result.data?.data
-            val zip = pendingCrashZip
-            pendingCrashZip = null
-            if (result.resultCode != android.app.Activity.RESULT_OK || targetUri == null || zip == null) {
-                pendingCrashSaveOnClosed?.invoke()
-                pendingCrashSaveOnClosed = null
-                return@registerForActivityResult
+        // Register SAF launcher before STARTED (needed by the safe-mode crash dialog).
+        val crashSaveLauncher = registerCrashSaveLauncher()
+        val minisApp = application as? MinisApp
+        if (handleDegradedOrSafeModeStartup(minisApp, crashSaveLauncher)) return
+
+        restoredChatSessionId = savedInstanceState?.getString(KEY_CURRENT_CHAT_SESSION_ID)
+            ?.takeUnless { com.openminis.app.crash.CrashFrequencyDetector.shouldForceHomeOnLaunch(this) }
+
+        registerPermissionAndRecoveryBridges()
+        applySavedLanguage()
+        com.openminis.app.share.ShareCoordinator.processPendingShare(this)
+
+        lifecycleScope.launch {
+            SessionActivityTracker.activeSessions.collect { active ->
+                applyKeepScreenAwakeFlag(active.isNotEmpty())
             }
-            try {
-                contentResolver.openOutputStream(targetUri)?.use { out ->
-                    java.io.FileInputStream(zip).use { input -> input.copyTo(out) }
-                } ?: throw java.io.IOException("openOutputStream returned null")
-                // Auto-open the saved file so the user sees where it
-                // landed. ACTION_VIEW with the SAF URI hands control to
-                // whatever app the system associates with .zip /
-                // application/zip (file managers, archive viewers).
-                try {
-                    val view = Intent(Intent.ACTION_VIEW).apply {
+        }
+
+        if (BuildConfig.DEV_TOOLS) {
+            com.openminis.app.debug.DebugRPCHandler.currentActivity = java.lang.ref.WeakReference(this)
+        }
+
+        val app = requireNotNull(minisApp)
+        val launchDeepLink = resolveLaunchDeepLink()
+        com.openminis.app.ui.RefreshRateController.apply(this)
+
+        setContent {
+            MainActivityRoot(app = app, launchDeepLink = launchDeepLink)
+        }
+    }
+
+    private fun registerCrashSaveLauncher() = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val targetUri = result.data?.data
+        val zip = pendingCrashZip
+        pendingCrashZip = null
+        if (result.resultCode != android.app.Activity.RESULT_OK || targetUri == null || zip == null) {
+            pendingCrashSaveOnClosed?.invoke()
+            pendingCrashSaveOnClosed = null
+            return@registerForActivityResult
+        }
+        try {
+            contentResolver.openOutputStream(targetUri)?.use { out ->
+                java.io.FileInputStream(zip).use { input -> input.copyTo(out) }
+            } ?: throw java.io.IOException("openOutputStream returned null")
+            runCatching {
+                startActivity(
+                    Intent(Intent.ACTION_VIEW).apply {
                         setDataAndType(targetUri, "application/zip")
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    startActivity(view)
-                } catch (t: Throwable) {
-                    android.util.Log.w("MainActivity", "ACTION_VIEW after save failed: ${t.message}")
-                }
-            } catch (t: Throwable) {
-                android.util.Log.w("MainActivity", "crash zip save failed: ${t.message}")
-            } finally {
-                pendingCrashSaveOnClosed?.invoke()
-                pendingCrashSaveOnClosed = null
-            }
+                    },
+                )
+            }.onFailure { android.util.Log.w("MainActivity", "ACTION_VIEW after save failed: ${it.message}") }
+        } catch (t: Throwable) {
+            android.util.Log.w("MainActivity", "crash zip save failed: ${t.message}")
+        } finally {
+            pendingCrashSaveOnClosed?.invoke()
+            pendingCrashSaveOnClosed = null
         }
+    }
 
-        // Safe-mode short-circuit: if CrashFrequencyDetector tripped in
-        // MinisApp.onCreate (≥THRESHOLD recent crash files), the
-        // Application skipped all heavy init — no DB, no repos, no
-        // offload server. We must NOT call setContent() / ChatViewModel /
-        // any code that touches MinisApp's lateinit deps; doing so would
-        // throw UninitializedPropertyAccessException and overwrite the
-        // very crash logs we're trying to ship.
-        //
-        // Pop the share/dismiss dialog directly and finish() on close so
-        // the user's next launch starts fresh. The dialog UI uses
-        // AlertDialog (system-level) which doesn't touch MinisApp state.
-        // T-android-safemode-lateinit-crash: gate on the Application's own
-        // "did init actually run" flag, NOT on isSafeMode(). The two are
-        // not equivalent, and the difference was a hard crash loop:
-        // finishClose() sets safe-mode back to false as soon as the user
-        // dismisses the share dialog, but MinisApp.onCreate already
-        // early-returned and never re-runs for the life of the process.
-        // Any MainActivity created after that dismissal (launcher icon —
-        // including the MainActivityIconDark alias — notification tap, or
-        // MIUI restoring the task) therefore sailed past the old
-        // isSafeMode() check and hit `app.chatRepository` inside
-        // setContent(), throwing UninitializedPropertyAccessException on
-        // the first Compose frame (onAttachedToWindow →
-        // setOnViewTreeOwnersAvailable). That crash wrote another
-        // crash-*.log, which re-tripped the burst detector on the next
-        // launch — a self-sustaining loop the user could not escape.
-        //
-        // `subsystemsInitialized` only goes true after every repository is
-        // assigned, so it stays false for exactly as long as composing is
-        // genuinely unsafe.
-        val minisApp = application as? MinisApp
-
-        // [T-android-downgrade-compat] A database written by a NEWER build is
-        // not a crash — it is a recoverable state with a specific remedy, and
-        // the file has deliberately been left untouched. Handle it before the
-        // generic crash-share path below, which would otherwise ask the user to
-        // send a bug report for something that is not a bug and offer no way
-        // out.
+    /**
+     * Handles newer-schema downgrade guidance and uninitialized/safe-mode startup.
+     * Returns true when normal Activity setup must be skipped.
+     */
+    private fun handleDegradedOrSafeModeStartup(
+        minisApp: MinisApp?,
+        crashSaveLauncher: androidx.activity.result.ActivityResultLauncher<Intent>,
+    ): Boolean {
         if (minisApp != null &&
-            minisApp.dbVersionDecision ==
-            com.openminis.app.data.db.DatabaseVersionGuard.Decision.SHOW_NEWER_DB_GUIDANCE
+            minisApp.dbVersionDecision == com.openminis.app.data.db.DatabaseVersionGuard.Decision.SHOW_NEWER_DB_GUIDANCE
         ) {
             android.util.Log.w("MainActivity", "showing newer-database guidance screen")
             setContent { NewerDatabaseGuidanceScreen(onExit = { finishAndRemoveTask() }) }
-            return
+            return true
         }
-
         if (minisApp == null || !minisApp.subsystemsInitialized) {
             android.util.Log.w(
                 "MainActivity",
-                "app subsystems not initialized (safeMode=" +
-                    "${com.openminis.app.crash.CrashFrequencyDetector.isSafeMode()}) — " +
-                    "showing crash share dialog and finishing",
+                "app subsystems not initialized (safeMode=${com.openminis.app.crash.CrashFrequencyDetector.isSafeMode()}) — showing crash share dialog and finishing",
             )
             com.openminis.app.crash.CrashFrequencyDetector.maybeShowOnActivity(
                 activity = this,
-                // T-android-safemode-lateinit-crash: plain finish() here is a
-                // dead end on the second launch. maybeShowOnActivity invokes
-                // onClosed immediately when pendingShareFiles is null, which
-                // is exactly the state after the user dismissed the dialog on
-                // the previous launch — the app would close the instant it was
-                // tapped, reading as "Minis won't open at all". The process
-                // still holds a permanently uninitialized Application, so the
-                // only real recovery is a fresh process: tell the user, then
-                // exit hard so the next tap gets a clean init.
                 onClosed = { finishAndRestartProcess() },
                 saveLauncher = { zip, onSaveDone ->
                     pendingCrashZip = zip
@@ -295,337 +272,183 @@ class MainActivity : ComponentActivity() {
                     }
                 },
             )
-            return
+            return true
         }
+        return false
+    }
 
-        // T166: if we were killed by LMK while the user was inside a
-        // chat, restore the sessionId now so the synthesised deep-link
-        // re-opens it before any composable is composed. ChatViewModel
-        // rehydrates messages from SQLite via session id, so the user
-        // lands in the same chat with the same history rendered.
-        // Process death loses streamJob coroutine state — any in-flight
-        // stream is treated as cancelled and the user can tap Retry.
-        // Honour the crash-frequency force-home grace: when the previous
-        // boot tripped the burst detector we don't want LMK-restore to
-        // drop the user straight back into the chat that may have been
-        // the crash trigger. AppNavigation also reads this flag for its
-        // own launch-mode resolution; gating restoredChatSessionId here
-        // covers the path where saved-state would override the
-        // launch-mode dispatch entirely.
-        restoredChatSessionId = savedInstanceState?.getString(KEY_CURRENT_CHAT_SESSION_ID)
-            ?.takeUnless {
-                com.openminis.app.crash.CrashFrequencyDetector.shouldForceHomeOnLaunch(this)
-            }
-
+    private fun registerPermissionAndRecoveryBridges() {
         permissionLauncher = registerForActivityResult(
-            ActivityResultContracts.RequestMultiplePermissions()
+            ActivityResultContracts.RequestMultiplePermissions(),
         ) { results ->
-            val allGranted = results.isNotEmpty() && results.values.all { it }
-            OffloadPermissionManager.respondToAndroidPermission(allGranted)
+            OffloadPermissionManager.respondToAndroidPermission(results.isNotEmpty() && results.values.all { it })
         }
         settingsLauncher = registerForActivityResult(
-            ActivityResultContracts.StartActivityForResult()
+            ActivityResultContracts.StartActivityForResult(),
         ) { /* polled by OffloadPermissionManager.requestSettingsGate */ }
 
-        // Bridge: system permission dialog (first ask / can-ask-again).
-        // If the permission has already been permanently denied (dialog
-        // would no-op), report DENIED so the handler can fall back to the
-        // in-app settings gate.
         lifecycleScope.launch {
-            OffloadPermissionManager.pendingAndroidPermission
-                .filterNotNull()
-                .collect { req ->
-                    val permanentlyDenied = req.permissions.any { permission ->
-                        ContextCompat.checkSelfPermission(this@MainActivity, permission) !=
-                            android.content.pm.PackageManager.PERMISSION_GRANTED &&
-                            !ActivityCompat.shouldShowRequestPermissionRationale(
-                                this@MainActivity, permission
-                            ) &&
-                            OffloadPermissionManager.hasAskedForPermission(this@MainActivity, permission)
-                    }
-                    if (permanentlyDenied) {
-                        OffloadPermissionManager.respondToAndroidPermission(
-                            OffloadPermissionManager.AndroidPermissionResult.DENIED
-                        )
-                    } else {
-                        for (p in req.permissions) {
-                            OffloadPermissionManager.markPermissionAsked(this@MainActivity, p)
-                        }
-                        permissionLauncher.launch(req.permissions.toTypedArray())
-                    }
+            OffloadPermissionManager.pendingAndroidPermission.filterNotNull().collect { req ->
+                val permanentlyDenied = req.permissions.any { permission ->
+                    ContextCompat.checkSelfPermission(this@MainActivity, permission) !=
+                        android.content.pm.PackageManager.PERMISSION_GRANTED &&
+                        !ActivityCompat.shouldShowRequestPermissionRationale(this@MainActivity, permission) &&
+                        OffloadPermissionManager.hasAskedForPermission(this@MainActivity, permission)
                 }
-        }
-
-        // Bridge: in-app "open settings" dialog. Used for already-denied
-        // runtime permissions AND for special-access capabilities like
-        // Notification Access.
-        lifecycleScope.launch {
-            OffloadPermissionManager.pendingSettingsGate
-                .filterNotNull()
-                .collect { gate ->
-                    AlertDialog.Builder(this@MainActivity)
-                        .setTitle(gate.title)
-                        .setMessage(gate.message)
-                        .setCancelable(false)
-                        .setPositiveButton(gate.positiveLabel) { d, _ ->
-                            d.dismiss()
-                            val intent = Intent(gate.settingsAction).apply {
-                                if (gate.requiresPackageUri) {
-                                    data = Uri.fromParts("package", packageName, null)
-                                }
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            }
-                            try {
-                                settingsLauncher.launch(intent)
-                            } catch (_: Throwable) {
-                                // Some OEMs don't expose every settings panel.
-                                // Fall through — the polling loop will time out.
-                            }
-                            OffloadPermissionManager.respondToSettingsGate(
-                                OffloadPermissionManager.SettingsGateDecision.OPEN
-                            )
-                        }
-                        .setNegativeButton(gate.negativeLabel) { d, _ ->
-                            d.dismiss()
-                            OffloadPermissionManager.respondToSettingsGate(
-                                OffloadPermissionManager.SettingsGateDecision.CANCEL
-                            )
-                        }
-                        .show()
+                if (permanentlyDenied) {
+                    OffloadPermissionManager.respondToAndroidPermission(
+                        OffloadPermissionManager.AndroidPermissionResult.DENIED,
+                    )
+                } else {
+                    req.permissions.forEach { OffloadPermissionManager.markPermissionAsked(this@MainActivity, it) }
+                    permissionLauncher.launch(req.permissions.toTypedArray())
                 }
-        }
-
-        // [T-android-a11y-force-stop-recovery] Bridge: the accessibility-grant
-        // repair prompt. Raised from the a11y tool path when the framework has
-        // stripped our component out of ENABLED_ACCESSIBILITY_SERVICES (the
-        // force-stop case). Two shapes depending on whether Shizuku can do the
-        // privileged write for us.
-        //
-        // setCancelable(true) + setOnCancelListener, unlike the settings gate
-        // above: the spec requires that an interrupted dialog counts as a
-        // cancel and does not wedge the waiting agent turn. Every exit path —
-        // button, back press, outside tap — resolves the continuation exactly
-        // once (respond() no-ops if already resolved, e.g. after a timeout).
-        lifecycleScope.launch {
-            AccessibilityRecoveryManager.pendingPrompt
-                .filterNotNull()
-                .collect { prompt ->
-                    val b = AlertDialog.Builder(this@MainActivity)
-                        .setTitle(getString(R.string.a11y_repair_dialog_title))
-                        .setCancelable(true)
-                        .setOnCancelListener {
-                            AccessibilityRecoveryManager.respond(
-                                AccessibilityRecoveryManager.Decision.CANCEL
-                            )
-                        }
-                        .setNegativeButton(R.string.a11y_repair_cancel) { d, _ ->
-                            d.dismiss()
-                            AccessibilityRecoveryManager.respond(
-                                AccessibilityRecoveryManager.Decision.CANCEL
-                            )
-                        }
-                    if (prompt.shizukuAvailable) {
-                        b.setMessage(getString(R.string.a11y_repair_dialog_message_shizuku))
-                            .setPositiveButton(R.string.a11y_repair_action_repair) { d, _ ->
-                                d.dismiss()
-                                AccessibilityRecoveryManager.respond(
-                                    AccessibilityRecoveryManager.Decision.REPAIR
-                                )
-                            }
-                    } else {
-                        b.setMessage(getString(R.string.a11y_repair_dialog_message_manual))
-                            .setPositiveButton(R.string.a11y_repair_action_open_settings) { d, _ ->
-                                d.dismiss()
-                                try {
-                                    startActivity(
-                                        Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
-                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                        }
-                                    )
-                                } catch (_: Throwable) {
-                                    // Some OEMs hide this panel; the user can
-                                    // still reach it from Settings manually.
-                                }
-                                AccessibilityRecoveryManager.respond(
-                                    AccessibilityRecoveryManager.Decision.OPEN_SETTINGS
-                                )
-                            }
-                    }
-                    b.show()
-                }
-        }
-
-        // Apply saved language before composing UI
-        applySavedLanguage()
-
-        // T51: ShareReceiverActivity re-launches MainActivity with the
-        // `shared_content=true` extra after persisting a PendingShare to
-        // share_prefs. Process it now so ShareCoordinator's in-memory
-        // buffer is populated before any ChatScreen composes.
-        //
-        // [T-android-share-launch-crash] Deliberately UNCONDITIONAL, matching
-        // iOS `checkForPendingShare()` which runs on every launch
-        // (MinisApp.swift:279) rather than keying off a launch parameter.
-        // Gating on the extra made the share unrecoverable in exactly the case
-        // the OEM-crash fallback creates: when ShareReceiverActivity cannot
-        // start MainActivity at all, the extra is never delivered, so a user
-        // who then opens the app from the launcher had their already-persisted
-        // share sit unread — the toast tells them to open the app, and opening
-        // it did nothing. Reading it here is the safety net that makes that
-        // advice true.
-        //
-        // Safe to call on every launch: processPendingShare returns
-        // immediately when share_prefs holds no record (the overwhelmingly
-        // common case), and consumes-and-clears the record when it does, so a
-        // share is never injected twice. Staleness is still enforced inside
-        // (LAUNCH_MAX_AGE_MS), so an abandoned record cannot resurface later.
-        com.openminis.app.share.ShareCoordinator.processPendingShare(this)
-
-        // Wire FLAG_KEEP_SCREEN_ON to (Appearance → Keep Screen Awake) AND
-        // SessionActivityTracker.activeSessions. Lock held iff toggle is on
-        // AND at least one session is currently running a task. Mirrors iOS
-        // KeepScreenAwakeController (AIChatViewModel.swift:320), which holds
-        // UIApplication.isIdleTimerDisabled under the same conditions.
-        // Re-evaluates on every prefs change (the existing prefs listener
-        // below covers the toggle) and on every activeSessions transition.
-        lifecycleScope.launch {
-            SessionActivityTracker.activeSessions.collect { active ->
-                applyKeepScreenAwakeFlag(active.isNotEmpty())
             }
         }
 
-        // Register for debug screenshot capture (debug builds only)
-        if (BuildConfig.DEV_TOOLS) {
-            com.openminis.app.debug.DebugRPCHandler.currentActivity = java.lang.ref.WeakReference(this)
+        lifecycleScope.launch {
+            OffloadPermissionManager.pendingSettingsGate.filterNotNull().collect { gate ->
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle(gate.title)
+                    .setMessage(gate.message)
+                    .setCancelable(false)
+                    .setPositiveButton(gate.positiveLabel) { d, _ ->
+                        d.dismiss()
+                        val intent = Intent(gate.settingsAction).apply {
+                            if (gate.requiresPackageUri) data = Uri.fromParts("package", packageName, null)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        runCatching { settingsLauncher.launch(intent) }
+                        OffloadPermissionManager.respondToSettingsGate(
+                            OffloadPermissionManager.SettingsGateDecision.OPEN,
+                        )
+                    }
+                    .setNegativeButton(gate.negativeLabel) { d, _ ->
+                        d.dismiss()
+                        OffloadPermissionManager.respondToSettingsGate(
+                            OffloadPermissionManager.SettingsGateDecision.CANCEL,
+                        )
+                    }
+                    .show()
+            }
         }
 
-        // Non-null and fully initialized — proven by the guard above.
-        val app = requireNotNull(application as? MinisApp)
+        lifecycleScope.launch {
+            AccessibilityRecoveryManager.pendingPrompt.filterNotNull().collect { prompt ->
+                val builder = AlertDialog.Builder(this@MainActivity)
+                    .setTitle(getString(R.string.a11y_repair_dialog_title))
+                    .setCancelable(true)
+                    .setOnCancelListener {
+                        AccessibilityRecoveryManager.respond(AccessibilityRecoveryManager.Decision.CANCEL)
+                    }
+                    .setNegativeButton(R.string.a11y_repair_cancel) { d, _ ->
+                        d.dismiss()
+                        AccessibilityRecoveryManager.respond(AccessibilityRecoveryManager.Decision.CANCEL)
+                    }
+                if (prompt.shizukuAvailable) {
+                    builder.setMessage(getString(R.string.a11y_repair_dialog_message_shizuku))
+                        .setPositiveButton(R.string.a11y_repair_action_repair) { d, _ ->
+                            d.dismiss()
+                            AccessibilityRecoveryManager.respond(AccessibilityRecoveryManager.Decision.REPAIR)
+                        }
+                } else {
+                    builder.setMessage(getString(R.string.a11y_repair_dialog_message_manual))
+                        .setPositiveButton(R.string.a11y_repair_action_open_settings) { d, _ ->
+                            d.dismiss()
+                            runCatching {
+                                startActivity(
+                                    Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    },
+                                )
+                            }
+                            AccessibilityRecoveryManager.respond(AccessibilityRecoveryManager.Decision.OPEN_SETTINGS)
+                        }
+                }
+                builder.show()
+            }
+        }
+    }
 
-        // Parse deep link from launch intent. A real deep-link in the
-        // launch intent always wins over a saved-state restore (the
-        // user explicitly tapped a link). Otherwise, if we were killed
-        // while inside a chat, synthesise an OpenSession deep-link so
-        // the navigation stack lands on that chat instead of the
-        // sessions list. T166.
+    private fun resolveLaunchDeepLink(): DeepLinkAction {
         val explicitDeepLink = DeepLinkHandler.parse(intent?.data)
-        val launchDeepLink = if (explicitDeepLink !is DeepLinkAction.Unknown) {
+        return if (explicitDeepLink !is DeepLinkAction.Unknown) {
             explicitDeepLink
         } else {
-            restoredChatSessionId
-                ?.let { DeepLinkAction.OpenSession(it) }
-                ?: DeepLinkAction.Unknown
+            restoredChatSessionId?.let { DeepLinkAction.OpenSession(it) } ?: DeepLinkAction.Unknown
+        }
+    }
+
+    @androidx.compose.runtime.Composable
+    private fun MainActivityRoot(app: MinisApp, launchDeepLink: DeepLinkAction) {
+        val prefs = remember { getAppearancePrefs(this) }
+        var themeMode by remember { mutableIntStateOf(prefs.getInt(KEY_THEME_MODE, 0)) }
+        var appBaseLevel by remember { mutableIntStateOf(prefs.getInt(KEY_FONT_APP_BASE, 0)) }
+        var dynamicColor by remember { mutableStateOf(prefs.getBoolean(KEY_DYNAMIC_COLOR, false)) }
+
+        DisposableEffect(prefs) {
+            val listener = SharedPreferences.OnSharedPreferenceChangeListener { sp, key ->
+                when (key) {
+                    KEY_THEME_MODE -> themeMode = sp.getInt(KEY_THEME_MODE, 0)
+                    KEY_FONT_APP_BASE -> appBaseLevel = sp.getInt(KEY_FONT_APP_BASE, 0)
+                    KEY_DYNAMIC_COLOR -> dynamicColor = sp.getBoolean(KEY_DYNAMIC_COLOR, false)
+                    KEY_KEEP_SCREEN_AWAKE -> applyKeepScreenAwakeFlag(
+                        SessionActivityTracker.activeSessions.value.isNotEmpty(),
+                    )
+                    com.openminis.app.ui.RefreshRateController.KEY_REFRESH_RATE_MODE ->
+                        com.openminis.app.ui.RefreshRateController.apply(this@MainActivity)
+                }
+            }
+            prefs.registerOnSharedPreferenceChangeListener(listener)
+            onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
         }
 
-        // [refresh-rate] Request the user's preferred display refresh rate
-        // (default: the panel's highest, e.g. 120 Hz) before the first frame.
-        com.openminis.app.ui.RefreshRateController.apply(this)
+        val darkTheme = when (themeMode) {
+            1 -> false
+            2 -> true
+            else -> isSystemInDarkTheme()
+        }
+        val fontScale = fontScaleForLevel(appBaseLevel)
 
-        setContent {
-            val prefs = remember { getAppearancePrefs(this) }
-            var themeMode by remember { mutableIntStateOf(prefs.getInt(KEY_THEME_MODE, 0)) }
-            var appBaseLevel by remember { mutableIntStateOf(prefs.getInt(KEY_FONT_APP_BASE, 0)) }
-            var dynamicColor by remember { mutableStateOf(prefs.getBoolean(KEY_DYNAMIC_COLOR, false)) }
-
-            DisposableEffect(prefs) {
-                val listener = SharedPreferences.OnSharedPreferenceChangeListener { sp, key ->
-                    when (key) {
-                        KEY_THEME_MODE -> themeMode = sp.getInt(KEY_THEME_MODE, 0)
-                        KEY_FONT_APP_BASE -> appBaseLevel = sp.getInt(KEY_FONT_APP_BASE, 0)
-                        KEY_DYNAMIC_COLOR -> dynamicColor = sp.getBoolean(KEY_DYNAMIC_COLOR, false)
-                        KEY_KEEP_SCREEN_AWAKE -> applyKeepScreenAwakeFlag(
-                            SessionActivityTracker.activeSessions.value.isNotEmpty()
-                        )
-                        // [refresh-rate] Apply immediately when changed in Settings.
-                        com.openminis.app.ui.RefreshRateController.KEY_REFRESH_RATE_MODE ->
-                            com.openminis.app.ui.RefreshRateController.apply(this@MainActivity)
-                    }
-                }
-                prefs.registerOnSharedPreferenceChangeListener(listener)
-                onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+        SideEffect {
+            val barStyle = if (darkTheme) {
+                SystemBarStyle.dark(Color.TRANSPARENT)
+            } else {
+                SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT)
             }
+            enableEdgeToEdge(statusBarStyle = barStyle, navigationBarStyle = barStyle)
+        }
 
-            val darkTheme = when (themeMode) {
-                1 -> false
-                2 -> true
-                else -> isSystemInDarkTheme()
-            }
-            val fontScale = fontScaleForLevel(appBaseLevel)
-
-            SideEffect {
-                val barStyle = if (darkTheme) {
-                    SystemBarStyle.dark(Color.TRANSPARENT)
-                } else {
-                    // T205: SystemBarStyle.light(...) auto-applies a ~30% black
-                    // scrim behind the status bar on Android 13+ for icon
-                    // legibility, which leaks through as a grey strip even
-                    // when the activity paints its own surface color
-                    // edge-to-edge. SystemBarStyle.auto with both scrim args
-                    // TRANSPARENT lets the system pick light/dark icons by
-                    // luminance but suppresses the auto-scrim, so the screen's
-                    // own background color paints all the way to the top/bottom
-                    // edges. Per-screen `isAppearanceLightStatusBars` overrides
-                    // (e.g. FilePreviewScreen DisposableEffect) still control
-                    // icon contrast.
-                    SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT)
-                }
-                enableEdgeToEdge(statusBarStyle = barStyle, navigationBarStyle = barStyle)
-            }
-
-            MinisTheme(darkTheme = darkTheme, fontScale = fontScale, dynamicColor = dynamicColor) {
-                val navController = rememberNavController().also { this.navController = it }
-
-                // T166: drive `SessionActivityTracker.setPresent` /
-                // `setAbsent` from the nav back-stack so the foreground
-                // service runs the entire time the user is inside a
-                // chat, not only while a stream is in flight. Without
-                // this hook the process drops from adj=200 to adj=700
-                // the moment Home is pressed and a Pixel 4a will
-                // reclaim within a couple of minutes (see
-                // docs/parity/android-keep-alive-audit.md).
-                DisposableEffect(navController) {
-                    val job = lifecycleScope.launch {
-                        navController.currentBackStackEntryFlow.collect { entry ->
-                            // [T-android-hang-caller-attribution] Let a stall
-                            // sample name the screen it happened on.
-                            com.openminis.app.diagnostics.HangDetector.noteScreen(entry.destination.route)
-                            val isChatRoute = entry.destination.route == Routes.CHAT
-                            val sid = entry.arguments?.getString("sessionId").takeIf { isChatRoute }
-                            val previous = currentChatSessionId
-                            if (sid != previous) {
-                                if (previous != null) {
-                                    SessionActivityTracker.setAbsent(previous)
-                                }
-                                if (sid != null) {
-                                    SessionActivityTracker.setPresent(sid)
-                                }
-                                currentChatSessionId = sid
-                            }
+        MinisTheme(darkTheme = darkTheme, fontScale = fontScale, dynamicColor = dynamicColor) {
+            val navController = rememberNavController().also { this.navController = it }
+            DisposableEffect(navController) {
+                val job = lifecycleScope.launch {
+                    navController.currentBackStackEntryFlow.collect { entry ->
+                        com.openminis.app.diagnostics.HangDetector.noteScreen(entry.destination.route)
+                        val isChatRoute = entry.destination.route == Routes.CHAT
+                        val sid = entry.arguments?.getString("sessionId").takeIf { isChatRoute }
+                        val previous = currentChatSessionId
+                        if (sid != previous) {
+                            if (previous != null) SessionActivityTracker.setAbsent(previous)
+                            if (sid != null) SessionActivityTracker.setPresent(sid)
+                            currentChatSessionId = sid
                         }
                     }
-                    onDispose { job.cancel() }
                 }
-
-                AppNavigation(
-                    chatRepository = app.chatRepository,
-                    providerRepository = app.providerRepository,
-                    envVarRepository = app.envVarRepository,
-                    skillRepository = app.skillRepository,
-                    mcpRepository = app.mcpRepository,
-                    memoryRepository = app.memoryRepository,
-                    navController = navController,
-                    initialDeepLink = launchDeepLink,
-                )
-
-                // T-config: root-level minis-config confirm dialog.
-                // Bound to ConfigConfirmationGate.pending — the gate
-                // fires whenever a CLI write is awaiting user OK. The
-                // dialog is rendered on top of any active screen, so
-                // it works regardless of where the user is when the
-                // agent triggers a change. Mirrors iOS MinisApp.swift
-                // root-level `.sheet(item: gate.pending)`.
-                com.openminis.app.ui.settings.ConfigConfirmDialogHost()
+                onDispose { job.cancel() }
             }
+
+            AppNavigation(
+                chatRepository = app.chatRepository,
+                providerRepository = app.providerRepository,
+                envVarRepository = app.envVarRepository,
+                skillRepository = app.skillRepository,
+                mcpRepository = app.mcpRepository,
+                memoryRepository = app.memoryRepository,
+                navController = navController,
+                initialDeepLink = launchDeepLink,
+            )
+            com.openminis.app.ui.settings.ConfigConfirmDialogHost()
         }
     }
 

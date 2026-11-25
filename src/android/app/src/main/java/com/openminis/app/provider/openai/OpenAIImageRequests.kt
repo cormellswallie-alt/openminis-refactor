@@ -6,18 +6,10 @@ import com.openminis.app.data.model.LLMMediaAttachment
 import com.openminis.app.data.model.LLMMessage
 import com.openminis.app.data.model.LLMResponse
 import com.openminis.app.data.model.LLMStreamChunk
-import com.openminis.app.data.model.hasImageInput
 import com.openminis.app.provider.applyUserAgentOverride
 import com.openminis.app.provider.safeOptString
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.Request
@@ -26,7 +18,6 @@ import java.io.IOException
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
-import com.openminis.app.provider.failOnSilentEmptyCompletion
 import com.openminis.app.provider.openai.OpenAIProvider.Companion.CODEX_IMAGE_25_MODEL_IDS
 
 internal suspend fun OpenAIProvider.generateImageImpl(

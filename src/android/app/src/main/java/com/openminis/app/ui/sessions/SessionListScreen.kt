@@ -95,7 +95,6 @@ import com.openminis.app.data.db.ChatSessionEntity
 import com.openminis.app.data.db.FolderEntity
 import com.openminis.app.ui.theme.ChatColors
 import com.openminis.app.ui.theme.ExpressiveTokens
-import com.openminis.app.ui.theme.articulatedItemShape
 import com.openminis.app.data.repository.ChatRepository
 import com.openminis.app.data.repository.ProviderRepository
 import kotlinx.coroutines.flow.drop
