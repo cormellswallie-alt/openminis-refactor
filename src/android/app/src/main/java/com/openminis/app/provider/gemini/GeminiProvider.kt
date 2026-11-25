@@ -38,7 +38,7 @@ class GeminiProvider(
     private val apiKey: String,
     override var model: LLMModel = LLMModel.gemini25Flash,
     private val basePath: String = OFFICIAL_BASE_PATH,
-    private val isOAuth: Boolean = false,
+    val isOAuth: Boolean = false,
     private val customUserAgent: String? = null,
 ) : LLMProvider {
     override val name = "Google"

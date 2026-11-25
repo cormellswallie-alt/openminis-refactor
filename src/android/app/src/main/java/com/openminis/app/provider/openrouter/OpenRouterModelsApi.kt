@@ -15,9 +15,14 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 
 object OpenRouterModelsApi {
-    private val client = OkHttpClient()
+    // OpenRouter's /api/v1/models payload is >1 MB and frequently exceeds OkHttp's 10 s default timeout on mobile/VPNs.
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .build()
     // [T-openrouter-voice-catalog] "-v2": entries saved before the speech /
     // transcription catalogs were merged in hold no voice models and no
     // voiceRole, and would otherwise be served for up to 7 more days — the
@@ -26,35 +31,22 @@ object OpenRouterModelsApi {
 
     private const val MODELS_URL = "https://openrouter.ai/api/v1/models"
 
-    /**
-     * Fetch OpenRouter's model catalog. OpenRouter returns rich metadata
-     * alongside each model (context window, max output, reasoning support,
-     * input/output modalities) — we parse it here instead of waiting for
-     * `ModelsDevApi.enrichModels` to match, matching iOS `OpenRouterModelsAPI`.
-     *
-     * @param context When provided, results are cached for 7 days at
-     *   `cacheDir/models-cache/openrouter-v2/<sha256(apiKey)>.json`. Pass null to
-     *   bypass the cache entirely (matches existing callers).
-     * @param forceRefresh Skip the cache read but still write-through on success.
-     */
     suspend fun fetchModels(
         apiKey: String,
         context: Context? = null,
         forceRefresh: Boolean = false,
+        onError: ((String) -> Unit)? = null,
     ): List<LLMModel> = withContext(Dispatchers.IO) {
-        val cacheKey = apiKey
+        val trimmedKey = apiKey.trim()
+        val cacheKey = trimmedKey
         if (context != null && !forceRefresh) {
             cache.load(context, cacheKey)?.let { return@withContext it }
         }
 
-        // [T-openrouter-voice-catalog] OpenMinis#280. The default list holds
-        // only chat models; speech and transcription models are listed solely
-        // by their output_modalities filters. Fetch all three at once and tag
-        // each model with the list it came from.
         val (defaultResult, speech, transcription) = coroutineScope {
-            val d = async { fetchList(MODELS_URL, apiKey) }
-            val tts = async { fetchList("$MODELS_URL?output_modalities=speech", apiKey) }
-            val stt = async { fetchList("$MODELS_URL?output_modalities=transcription", apiKey) }
+            val d = async { fetchList(MODELS_URL, trimmedKey) }
+            val tts = async { fetchList("$MODELS_URL?output_modalities=speech", trimmedKey) }
+            val stt = async { fetchList("$MODELS_URL?output_modalities=transcription", trimmedKey) }
             Triple(d.await(), tts.await(), stt.await())
         }
 
@@ -64,11 +56,10 @@ object OpenRouterModelsApi {
                 if (context != null && (defaultResult.code == 401 || defaultResult.code == 403)) {
                     cache.invalidate(context, cacheKey)
                 }
+                onError?.invoke(defaultResult.reason ?: "HTTP ${defaultResult.code}")
                 return@withContext emptyList()
             }
         }
-        // A failed filter endpoint only costs its voice models; the chat
-        // catalog still loads.
         val speechModels = (speech as? ListResult.Ok)?.models.orEmpty()
         val transcriptionModels = (transcription as? ListResult.Ok)?.models.orEmpty()
         if (speech is ListResult.Failed || transcription is ListResult.Failed) {
@@ -89,34 +80,36 @@ object OpenRouterModelsApi {
 
     private sealed class ListResult {
         class Ok(val models: List<LLMModel>) : ListResult()
-        class Failed(val code: Int) : ListResult()
+        class Failed(val code: Int, val reason: String? = null) : ListResult()
 
         fun describe(): String = when (this) {
             is Ok -> "${models.size}"
-            is Failed -> "failed(HTTP $code)"
+            is Failed -> reason ?: "failed(HTTP $code)"
         }
     }
 
     private fun fetchList(url: String, apiKey: String): ListResult = try {
-        val request = Request.Builder()
+        val builder = Request.Builder()
             .url(url)
-            .header("Authorization", "Bearer $apiKey")
+            .header("Accept", "application/json")
             .header("HTTP-Referer", "https://github.com/OpenMinis/OpenMinis")
             .header("X-Title", "Minis App")
-            // [T-android-default-ua] brand outbound /api/v1/models request.
             .applyUserAgentOverride(null)
-            .build()
-        client.newCall(request).execute().use { response ->
+        if (apiKey.isNotEmpty()) {
+            builder.header("Authorization", "Bearer $apiKey")
+        }
+        client.newCall(builder.build()).execute().use { response ->
             val body = response.body?.string()
             if (!response.isSuccessful || body == null) {
-                ListResult.Failed(response.code)
+                ListResult.Failed(response.code, "HTTP ${response.code}")
             } else {
                 val data = JSONObject(body).optJSONArray("data")
-                if (data == null) ListResult.Failed(response.code) else ListResult.Ok(parseModels(data))
+                if (data == null) ListResult.Failed(response.code, "Missing data array in response")
+                else ListResult.Ok(parseModels(data))
             }
         }
-    } catch (_: Exception) {
-        ListResult.Failed(-1)
+    } catch (e: Exception) {
+        ListResult.Failed(-1, e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName)
     }
 
     /**
@@ -159,10 +152,11 @@ object OpenRouterModelsApi {
 
     private fun parseModels(data: JSONArray): List<LLMModel> {
         val models = mutableListOf<LLMModel>()
+        val seenIds = HashSet<String>()
         for (i in 0 until data.length()) {
-            val obj = data.getJSONObject(i)
-            val id = obj.optString("id")
-            if (id.isEmpty()) continue
+            val obj = data.optJSONObject(i) ?: continue
+            val id = obj.optString("id").trim()
+            if (id.isEmpty() || !seenIds.add(id)) continue
             val name = obj.optString("name", "").ifBlank { LLMModel.modelDisplayName(id) }
 
             // OpenRouter exposes `architecture.input_modalities` / `output_modalities`

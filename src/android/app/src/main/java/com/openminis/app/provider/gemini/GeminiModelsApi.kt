@@ -10,13 +10,16 @@ import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 
 object GeminiModelsApi {
     private const val OFFICIAL_BASE = "https://generativelanguage.googleapis.com/v1beta"
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(25, TimeUnit.SECONDS)
+        .build()
     private val cache = ProviderModelsCache("gemini")
 
     /**
@@ -44,7 +47,9 @@ object GeminiModelsApi {
         context: Context? = null,
         forceRefresh: Boolean = false,
         customUserAgent: String? = null,
+        onError: ((String) -> Unit)? = null,
     ): List<LLMModel> = withContext(Dispatchers.IO) {
+        val trimmedKey = apiKey.trim()
         val normalizedBase = baseURL?.trim()?.trimEnd('/')?.takeIf { it.isNotEmpty() }
         val isCustomEndpoint = normalizedBase != null &&
             !normalizedBase.lowercase().contains("generativelanguage.googleapis.com")
@@ -55,55 +60,70 @@ object GeminiModelsApi {
             append(if (isOAuth) "oauth|" else "key|")
             append(normalizedBase ?: "default")
             append('|')
-            append(apiKey)
+            append(trimmedKey)
         }
         if (context != null && !forceRefresh) {
             cache.load(context, cacheKey)?.let { return@withContext it }
         }
 
         val candidateUrls = buildCandidateUrls(normalizedBase)
+        var lastError: String? = null
         for ((idx, rawUrl) in candidateUrls.withIndex()) {
             val builder = Request.Builder()
+                .header("Accept", "application/json")
             if (isOAuth) {
                 builder.url(rawUrl)
-                if (apiKey.isNotBlank()) {
-                    builder.header("Authorization", "Bearer $apiKey")
+                if (trimmedKey.isNotBlank()) {
+                    builder.header("Authorization", "Bearer $trimmedKey")
                 }
             } else if (isCustomEndpoint) {
-                val urlWithKey = if (apiKey.isNotBlank()) appendKeyParam(rawUrl, apiKey) else rawUrl
+                val urlWithKey = if (trimmedKey.isNotBlank()) appendKeyParam(rawUrl, trimmedKey) else rawUrl
                 builder.url(urlWithKey)
-                if (apiKey.isNotBlank()) {
-                    builder.header("x-goog-api-key", apiKey)
-                    builder.header("Authorization", "Bearer $apiKey")
+                if (trimmedKey.isNotBlank()) {
+                    builder.header("x-goog-api-key", trimmedKey)
+                    builder.header("Authorization", "Bearer $trimmedKey")
                 }
             } else {
-                builder.url(appendKeyParam(rawUrl, apiKey))
+                builder.url(appendKeyParam(rawUrl, trimmedKey))
             }
 
             // [T-android-default-ua] brand outbound /v1beta/models request (or apply custom UA).
             builder.applyUserAgentOverride(if (isCustomEndpoint) customUserAgent else null)
 
-            val response: Response = try {
-                client.newCall(builder.build()).execute()
+            val request = try {
+                builder.build()
             } catch (e: Exception) {
-                android.util.Log.w("GeminiModels", "Fetch error (candidate=$idx url=$rawUrl): ${e.message}")
+                lastError = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+                android.util.Log.w("GeminiModels", "Invalid request (candidate=$idx url=$rawUrl): $lastError")
                 continue
             }
-            val body = response.use { it.body?.string().orEmpty() }
 
-            if (!response.isSuccessful) {
+            val outcome = try {
+                client.newCall(request).execute().use { resp ->
+                    Triple(resp.isSuccessful, resp.code, resp.body?.string().orEmpty())
+                }
+            } catch (e: Exception) {
+                lastError = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+                android.util.Log.w("GeminiModels", "Fetch error (candidate=$idx url=$rawUrl): $lastError")
+                continue
+            }
+            val (successful, code, body) = outcome
+
+            if (!successful) {
+                lastError = "HTTP $code"
                 // 403 on official OAuth almost always means the token lacks the
                 // generative-language scope — fall back to built-in list.
-                if (!isCustomEndpoint && isOAuth && response.code == 403) {
+                if (!isCustomEndpoint && isOAuth && code == 403) {
                     return@withContext LLMModel.allGemini
                 }
-                if (context != null && (response.code == 401 || response.code == 403)) {
+                if (context != null && (code == 401 || code == 403)) {
                     cache.invalidate(context, cacheKey)
                 }
                 android.util.Log.w(
                     "GeminiModels",
-                    "Fetch HTTP ${response.code} (candidate=$idx url=$rawUrl): ${body.take(180)}",
+                    "Fetch HTTP $code (candidate=$idx url=$rawUrl): ${body.take(180)}",
                 )
+                if (code == 401 || code == 403) break
                 continue
             }
 
@@ -113,8 +133,10 @@ object GeminiModelsApi {
                 if (context != null) cache.save(context, cacheKey, enriched)
                 return@withContext enriched
             }
+            lastError = "Empty or unrecognized model list payload"
         }
 
+        lastError?.let { onError?.invoke(it) }
         return@withContext if (isCustomEndpoint) emptyList() else LLMModel.allGemini
     }
 
@@ -213,9 +235,13 @@ object GeminiModelsApi {
             }
 
             if (result.isEmpty()) {
-                val dataArr = json.optJSONArray("data")
-                if (dataArr != null) {
-                    parseModelArray(dataArr, isCustomEndpoint = true, ::addCandidate)
+                when (val dataField = json.opt("data")) {
+                    is JSONArray -> parseModelArray(dataField, isCustomEndpoint = true, ::addCandidate)
+                    is JSONObject -> {
+                        (dataField.optJSONArray("models") ?: dataField.optJSONArray("data"))?.let {
+                            parseModelArray(it, isCustomEndpoint = true, ::addCandidate)
+                        }
+                    }
                 }
             }
             result
@@ -236,7 +262,10 @@ object GeminiModelsApi {
                 continue
             }
             val obj = item as? JSONObject ?: continue
-            val rawName = obj.optString("name", "").ifBlank { obj.optString("id", "") }
+            val rawName = obj.optString("name", "").trim()
+                .ifEmpty { obj.optString("id", "").trim() }
+                .ifEmpty { obj.optString("model", "").trim() }
+                .ifEmpty { obj.optString("slug", "").trim() }
             if (rawName.isBlank()) continue
 
             val methods = obj.optJSONArray("supportedGenerationMethods")

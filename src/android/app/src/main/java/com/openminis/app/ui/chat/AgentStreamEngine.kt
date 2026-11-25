@@ -219,7 +219,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
                         TAG_STREAM,
                         "empty turn detected: turn=$turn finishReason=${acc.turnFinishReason} " +
                             "reasoningLen=${acc.turnThinking.length} reasoningBlobLen=${acc.turnReasoningBlob?.length ?: -1} " +
-                            "model=${provider.model.id} provider=${provider.name}",
+                            "model=${state.loopProvider.model.id} provider=${state.loopProvider.name}",
                     )
                 }
 

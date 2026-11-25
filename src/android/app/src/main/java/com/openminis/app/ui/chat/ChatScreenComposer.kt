@@ -24,6 +24,7 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -319,6 +320,7 @@ private fun Modifier.composerDeckSurface(
     )
 }
 
+@Composable
 private fun Modifier.composerSwipeUpToSendGesture(
     viewModel: ChatViewModel,
     swipeThresholdPx: Float,
@@ -331,52 +333,61 @@ private fun Modifier.composerSwipeUpToSendGesture(
     inputFocusRequester: FocusRequester,
     keyboardController: SoftwareKeyboardController?,
     performSendOrEnqueue: (String) -> Unit,
-): Modifier = pointerInput(Unit) {
-    val slop = viewConfiguration.touchSlop
-    awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false)
-        var totalDx = 0f
-        var totalDy = 0f
-        var claimed = false
-        var lastPos = down.position
-        verticalDrag(down.id) { change ->
-            val delta = change.positionChange()
-            totalDx += delta.x
-            totalDy += delta.y
-            lastPos = change.position
-            if (!claimed) {
-                if (abs(totalDy) < slop || abs(totalDy) <= abs(totalDx)) return@verticalDrag
-                claimed = true
-            }
-            change.consume()
-            if (totalDy < 0) {
-                val hasText = viewModel.inputText.value.isNotBlank() || VoiceSendGate.owesText()
-                if (hasText) {
-                    val newProgress = (-totalDy / swipeThresholdPx).coerceIn(0f, 1f)
-                    if (newProgress >= swipeArmFraction && getSendSwipeProgress() < swipeArmFraction) {
-                        swipeHaptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    }
-                    onSendSwipeProgressChange(newProgress)
-                    onSendSwipeLocationChange(lastPos)
-                } else if (getSendSwipeProgress() != 0f) {
-                    onSendSwipeProgressChange(0f)
-                }
-            } else if (getSendSwipeProgress() != 0f) {
-                onSendSwipeProgressChange(0f)
-            }
-        }
+): Modifier {
+    val latestGetProgress by rememberUpdatedState(getSendSwipeProgress)
+    val latestOnProgressChange by rememberUpdatedState(onSendSwipeProgressChange)
+    val latestOnLocationChange by rememberUpdatedState(onSendSwipeLocationChange)
+    val latestIsFocused by rememberUpdatedState(isInputFocused)
+    val latestKeyboardController by rememberUpdatedState(keyboardController)
+    val latestPerformSend by rememberUpdatedState(performSendOrEnqueue)
 
-        val hasText = viewModel.inputText.value.isNotBlank() || VoiceSendGate.owesText()
-        val swipedUp = claimed && totalDy < 0 && abs(totalDy) > abs(totalDx)
-        if (swipedUp && hasText) {
-            val canSendNow = hasText || viewModel.attachments.value.isNotEmpty()
-            if (getSendSwipeProgress() >= swipeArmFraction && canSendNow) {
-                performSendOrEnqueue(viewModel.inputText.value)
+    return pointerInput(viewModel, swipeThresholdPx, swipeArmFraction) {
+        val slop = viewConfiguration.touchSlop
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            var totalDx = 0f
+            var totalDy = 0f
+            var claimed = false
+            var lastPos = down.position
+            verticalDrag(down.id) { change ->
+                val delta = change.positionChange()
+                totalDx += delta.x
+                totalDy += delta.y
+                lastPos = change.position
+                if (!claimed) {
+                    if (abs(totalDy) < slop || abs(totalDy) <= abs(totalDx)) return@verticalDrag
+                    claimed = true
+                }
+                change.consume()
+                if (totalDy < 0) {
+                    val hasText = viewModel.inputText.value.isNotBlank() || VoiceSendGate.owesText()
+                    if (hasText) {
+                        val newProgress = (-totalDy / swipeThresholdPx).coerceIn(0f, 1f)
+                        if (newProgress >= swipeArmFraction && latestGetProgress() < swipeArmFraction) {
+                            swipeHaptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        }
+                        latestOnProgressChange(newProgress)
+                        latestOnLocationChange(lastPos)
+                    } else if (latestGetProgress() != 0f) {
+                        latestOnProgressChange(0f)
+                    }
+                } else if (latestGetProgress() != 0f) {
+                    latestOnProgressChange(0f)
+                }
             }
-        } else if (swipedUp && !hasText && !isInputFocused()) {
-            inputFocusRequester.requestFocus()
-            keyboardController?.show()
+
+            val hasText = viewModel.inputText.value.isNotBlank() || VoiceSendGate.owesText()
+            val swipedUp = claimed && totalDy < 0 && abs(totalDy) > abs(totalDx)
+            if (swipedUp && hasText) {
+                val canSendNow = hasText || viewModel.attachments.value.isNotEmpty()
+                if (latestGetProgress() >= swipeArmFraction && canSendNow) {
+                    latestPerformSend(viewModel.inputText.value)
+                }
+            } else if (swipedUp && !hasText && !latestIsFocused()) {
+                inputFocusRequester.requestFocus()
+                latestKeyboardController?.show()
+            }
+            latestOnProgressChange(0f)
         }
-        onSendSwipeProgressChange(0f)
     }
 }

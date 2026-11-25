@@ -161,6 +161,7 @@ fun ProviderDetailScreen(
 
     val entries = providerRepository.entriesFor(instanceId)
     var isRefreshing by remember { mutableStateOf(false) }
+    var refreshError by remember(instanceId) { mutableStateOf<String?>(null) }
     // [T-codex-dynamic-discovery GH#319] Set when the Codex discovery endpoint
     // rejects the stored credential. Shown as a dialog rather than silently
     // leaving the old list on screen, which would read as a successful refresh
@@ -241,16 +242,24 @@ fun ProviderDetailScreen(
                             keyVisible = false
                         },
                         onSave = {
-                            providerRepository.saveApiKey(instanceId, editKeyValue)
+                            val trimmedKey = editKeyValue.trim()
+                            if (trimmedKey.isNotEmpty()) {
+                                providerRepository.saveApiKey(instanceId, trimmedKey)
+                            } else if (instance.allowsEmptyAPIKey) {
+                                providerRepository.deleteApiKey(instanceId)
+                            }
+                            providerRepository.invalidateModelCache(instanceId)
                             // [T-android-provider-apikey-save-stale] Reflect the
                             // just-saved value in UI state immediately rather than
                             // re-reading the async-written prefs on recomposition.
-                            storedKey = editKeyValue
+                            storedKey = trimmedKey
+                            refreshError = null
                             AppLogger.info(TAG, "Saved API key for ${instance.id}")
                             isEditingKey = false
                             editKeyValue = ""
                             keyVisible = false
                         },
+                        allowEmptySave = instance.allowsEmptyAPIKey,
                     )
                 }
             }
@@ -332,6 +341,7 @@ fun ProviderDetailScreen(
                 // gateways reject Minis' default UA and only allow official
                 // clients. Blank → default UA.
                 val showUserAgentField = instance.providerType == ProviderType.openAI ||
+                    instance.providerType == ProviderType.openAIResponses ||
                     instance.providerType == ProviderType.anthropic ||
                     instance.providerType == ProviderType.gemini
                 if (showUserAgentField) {
@@ -358,22 +368,23 @@ fun ProviderDetailScreen(
                 // row rather than a floating filled button inside the card.
                 MinisSmallTextButton(
                     onClick = {
+                        val trimmedBase = customBaseURL.trim()
+                        val trimmedUa = customUserAgent.trim()
+                        customBaseURL = trimmedBase
+                        customUserAgent = trimmedUa
+                        refreshError = null
                         providerRepository.updateInstance(
                             instance.copy(
-                                customBaseURL = customBaseURL.ifBlank { null },
+                                customBaseURL = trimmedBase.ifEmpty { null },
                                 appendV1Suffix = if (instance.providerType == ProviderType.gemini) false else appendV1Suffix,
-                                // [T-provider-custom-user-agent] Blank → null →
-                                // default UA. Only the gated providers can edit
-                                // this; for others customUserAgent equals the
-                                // unchanged instance value, so the copy is inert.
-                                customUserAgent = customUserAgent.ifBlank { null },
+                                customUserAgent = trimmedUa.ifEmpty { null },
                             )
                         )
                         AppLogger.info(
                             TAG,
                             "Saved base URL for ${instance.id}: " +
-                                "url='${customBaseURL.ifBlank { "<default>" }}', appendV1=$appendV1Suffix, " +
-                                "ua='${customUserAgent.ifBlank { "<default>" }}'",
+                                "url='${trimmedBase.ifEmpty { "<default>" }}', appendV1=$appendV1Suffix, " +
+                                "ua='${trimmedUa.ifEmpty { "<default>" }}'",
                         )
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -569,23 +580,53 @@ fun ProviderDetailScreen(
             // tap-to-refresh affordance in the section header area.
             SettingsRow(
                 title = if (isRefreshing) "Refreshing…" else "Refresh model list",
+                subtitle = refreshError,
                 onClick = if (isRefreshing) {
                     null
                 } else {
                     {
                         isRefreshing = true
                         refreshAuthError = false
+                        refreshError = null
+                        // Persist pending URL / v1 / User-Agent edits first so Refresh uses what the user typed.
+                        val trimmedBase = customBaseURL.trim()
+                        val trimmedUa = customUserAgent.trim()
+                        val effectiveAppendV1 = if (instance.providerType == ProviderType.gemini) false else appendV1Suffix
+                        val targetInstance = if (
+                            instance.providerType != ProviderType.openRouter && (
+                                (instance.customBaseURL ?: "") != trimmedBase ||
+                                    instance.appendV1Suffix != effectiveAppendV1 ||
+                                    (instance.customUserAgent ?: "") != trimmedUa
+                                )
+                        ) {
+                            customBaseURL = trimmedBase
+                            customUserAgent = trimmedUa
+                            instance.copy(
+                                customBaseURL = trimmedBase.ifEmpty { null },
+                                appendV1Suffix = effectiveAppendV1,
+                                customUserAgent = trimmedUa.ifEmpty { null },
+                            ).also { providerRepository.updateInstance(it) }
+                        } else {
+                            instance
+                        }
                         scope.launch {
+                            var vendorErr: String? = null
                             try {
-                                // [T-codex-dynamic-discovery GH#319]
-                                // forceRefresh: this is the manual Refresh tap,
-                                // which must bypass the discovery cache — a
-                                // Refresh that returns a cached list is not one.
-                                providerRepository.refreshModels(instance, forceRefresh = true)
-                                AppLogger.info(TAG, "Refreshed models for ${instance.id}")
+                                providerRepository.refreshModels(
+                                    targetInstance,
+                                    forceRefresh = true,
+                                    onVendorError = { vendorErr = it },
+                                )
+                                refreshError = vendorErr
+                                AppLogger.info(TAG, "Refreshed models for ${targetInstance.id} (vendorErr=$vendorErr)")
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
                             } catch (e: com.openminis.app.data.repository.CodexDiscoveryAuthException) {
                                 AppLogger.warning(TAG, "Refresh rejected credential: ${e.message}")
                                 refreshAuthError = true
+                            } catch (e: Exception) {
+                                AppLogger.warning(TAG, "Refresh models failed: ${e.message}")
+                                refreshError = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
                             } finally {
                                 isRefreshing = false
                             }
@@ -1107,6 +1148,7 @@ private fun ApiKeyCredentialBlock(
     onBeginEdit: () -> Unit,
     onCancelEdit: () -> Unit,
     onSave: () -> Unit,
+    allowEmptySave: Boolean = false,
 ) {
     if (isEditing) {
         SectionTextField(
@@ -1143,7 +1185,7 @@ private fun ApiKeyCredentialBlock(
                 Text(stringResource(R.string.common_cancel))
             }
             Spacer(modifier = Modifier.width(8.dp))
-            MinisSmallButton(onClick = onSave, enabled = editValue.isNotBlank()) {
+            MinisSmallButton(onClick = onSave, enabled = allowEmptySave || editValue.isNotBlank()) {
                 Text(stringResource(R.string.provider_detail_save_key))
             }
         }

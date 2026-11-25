@@ -314,10 +314,10 @@ data class ProviderInstance(
     var azureMode: Boolean = false,
 
 ) {
-    /** Returns the effective API base URL, applying v1 suffix if configured. */
+    /** Returns the effective API base URL, trimming whitespace and applying v1 suffix if configured. */
     val effectiveBaseURL: String?
         get() {
-            val base = customBaseURL?.trimEnd('/') ?: return null
+            val base = customBaseURL?.trim()?.trimEnd('/')?.takeIf { it.isNotEmpty() } ?: return null
             return if (appendV1Suffix && !base.endsWith("/v1")) "$base/v1" else base
         }
 
@@ -330,14 +330,14 @@ data class ProviderInstance(
      * Deliberately NOT extended to official endpoints (no custom base URL —
      * an empty key against the official API is always a misconfiguration) or
      * OAuth instances (their credential is the token). Mirrors iOS
-     * `ProviderInstance.allowsEmptyAPIKey`; Android has no `openAIResponses`
-     * type — the `useResponsesAPI` flag rides on `.openAI`, so the type gate
-     * is just {openAI, anthropic}.
+     * `ProviderInstance.allowsEmptyAPIKey`.
      */
     val allowsEmptyAPIKey: Boolean
         get() = credentialType == ProviderCredential.apiKey &&
             !customBaseURL.isNullOrBlank() &&
-            (providerType == ProviderType.openAI || providerType == ProviderType.anthropic)
+            (providerType == ProviderType.openAI ||
+                providerType == ProviderType.openAIResponses ||
+                providerType == ProviderType.anthropic)
 
     /**
      * [T-android-image-endpoint-mode] Whether the "Image Generation" endpoint
@@ -354,13 +354,12 @@ data class ProviderInstance(
     /**
      * [T-android-azure-openai] Whether the Azure toggle applies to this
      * instance — only OpenAI instances using an API key (Azure auths with an
-     * api-key header). Covers both Chat-Completions and Responses formats since
-     * Android models Responses as the `useResponsesAPI` flag on an openAI
-     * instance rather than a separate provider type. Mirrors iOS
-     * supportsAzureMode.
+     * api-key header). Covers both Chat-Completions and Responses formats.
+     * Mirrors iOS supportsAzureMode.
      */
     val supportsAzureMode: Boolean
-        get() = providerType == ProviderType.openAI && credentialType == ProviderCredential.apiKey
+        get() = (providerType == ProviderType.openAI || providerType == ProviderType.openAIResponses) &&
+            credentialType == ProviderCredential.apiKey
 
 
     /**

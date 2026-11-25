@@ -223,6 +223,8 @@ class ProviderRepository(internal val context: Context) {
 
     suspend fun awaitConfigLoaded() = configLoadComplete.await()
 
+    internal val configLock = Any()
+
     init {
         loadScope.launch {
             var adoptedByAsyncLoader = false
@@ -274,20 +276,7 @@ class ProviderRepository(internal val context: Context) {
         }
     }
 
-    /**
-     * Lock guarding all mutate-and-save sequences against concurrent writers
-     * (notably the `for instance in enabled { scope.launch { autoRefreshModels(...) } }`
-     * fan-out in [refreshAllModelsIfNeeded] / [triggerBackgroundRefreshIfStale]).
-     *
-     * Without this lock, two parallel `replaceEntries(instanceA, …)` and
-     * `replaceEntries(instanceB, …)` calls share the same `_config.value`
-     * reference (its inner ArrayLists are the same objects across reads),
-     * so one's `removeAll` / `addAll` runs while the other's `saveConfig`
-     * is mid-`Json.encodeToString` — that's the
-     * `ConcurrentModificationException → ArrayList.next` crash captured on
-     * Pixel 6 / 4a.
-     */
-    internal val configLock = Any()
+    // configLock is declared above init{} so loadScope cannot observe it uninitialized.
 
     private fun loadConfig(): ProviderConfig = runBlocking { loadConfigSuspending() }
 
@@ -1807,6 +1796,7 @@ class ProviderRepository(internal val context: Context) {
         ProviderType.xAI -> com.openminis.app.auth.XAIOAuthManager(context, instance.id)
         ProviderType.gemini -> com.openminis.app.auth.GeminiOAuthManager(context, instance.id)
         ProviderType.kimiCode -> com.openminis.app.auth.KimiOAuthManager(context, instance.id)
+        ProviderType.githubCopilot -> com.openminis.app.auth.CopilotOAuthManager(context, instance.id)
         else -> null
     }
 

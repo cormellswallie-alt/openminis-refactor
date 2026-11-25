@@ -736,7 +736,7 @@ private fun ChatTranscriptRegion(
             }
         }
 
-        val lastToolBlocks = rememberLiveToolBlocks(messages, viewModel)
+        val lastToolBlocks = rememberLiveToolBlocks(sessionId, messages, viewModel)
         ChatFloatingToolBarOverlay(
             lastToolBlocks = lastToolBlocks,
             onToolBarHeightPxChange = { toolBarHeightPx = it },

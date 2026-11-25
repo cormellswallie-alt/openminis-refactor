@@ -512,7 +512,7 @@ internal class ChatCompletionsStreamSession(
             val toolCalls = delta?.optJSONArray("tool_calls")
             if (toolCalls != null) {
                 for (i in 0 until toolCalls.length()) {
-                    val tc = toolCalls.getJSONObject(i)
+                    val tc = toolCalls.optJSONObject(i) ?: continue
                     val idx = tc.optInt("index", 0)
                     val acc = toolCallAccumulators.getOrPut(idx) { ToolCallAccumulator() }
 
@@ -574,6 +574,11 @@ internal class ChatCompletionsStreamSession(
         for ((idx, acc) in toolCallAccumulators) {
             if (acc.name.isNotEmpty()) {
                 val effectiveId = acc.id.ifEmpty { "call_idx_$idx" }
+                if (!acc.started) {
+                    acc.started = true
+                    android.util.Log.d("ToolChain[Provider]", "→ ToolUseStart (synthesized) id=$effectiveId name=${acc.name}")
+                    emit(LLMStreamChunk.ToolUseStart(effectiveId, acc.name))
+                }
                 val args = try { JSONObject(acc.args.toString()) } catch (_: Exception) { JSONObject() }
                 android.util.Log.d("ToolChain[Provider]", "→ ToolCallComplete id=$effectiveId name=${acc.name} args=${args.toString().take(300)}")
                 emit(LLMStreamChunk.ToolCallComplete(effectiveId, acc.name, args))

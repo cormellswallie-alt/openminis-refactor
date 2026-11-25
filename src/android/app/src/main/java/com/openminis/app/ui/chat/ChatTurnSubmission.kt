@@ -269,12 +269,14 @@ internal fun ChatViewModel.submitPromptImpl(
         return SubmitOutcome.Sent
     }
 
-/** Shared Anthropic OAuth token refresh used before launching any agent turn. */
+/** Shared static-token OAuth refresh (Anthropic & Gemini) used before launching any agent turn. */
 internal suspend fun ChatViewModel.refreshOAuthProviderIfNeeded(
     initial: LLMProvider,
     reason: String,
 ): LLMProvider {
-    if ((initial as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth != true) return initial
+    val isStaticOAuth = (initial as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true ||
+        (initial as? com.openminis.app.provider.gemini.GeminiProvider)?.isOAuth == true
+    if (!isStaticOAuth) return initial
     return try {
         val entry = modelState.activeEntryId.value?.let { id ->
             providerRepository.config.value.modelEntries.find { it.id == id }
@@ -282,8 +284,8 @@ internal suspend fun ChatViewModel.refreshOAuthProviderIfNeeded(
         val instance = entry?.let { e ->
             providerRepository.config.value.instances.find { it.id == e.providerInstanceId }
         } ?: return initial
-        val freshToken = com.openminis.app.auth.OAuthManager.forInstance(context, instance)
-            ?.validAccessToken() ?: return initial
+        val freshToken = providerRepository.oauthManagerFor(instance)
+            ?.validAccessToken()?.trim()?.takeIf { it.isNotEmpty() } ?: return initial
         val storedKey = providerRepository.loadApiKey(instance.id)
         if (freshToken == storedKey) return initial
 
@@ -294,7 +296,7 @@ internal suspend fun ChatViewModel.refreshOAuthProviderIfNeeded(
             modelState.currentModel ?: initial.model,
             context,
             sessionId = activeSessionId,
-            overrides = (initial as? com.openminis.app.provider.openai.OpenAIProvider)?.modelOverrides,
+            overrides = entry.overrides,
         )
         modelState.currentProvider = rebuilt
         Log.i(TAG, "OAuth token refreshed ($reason)")

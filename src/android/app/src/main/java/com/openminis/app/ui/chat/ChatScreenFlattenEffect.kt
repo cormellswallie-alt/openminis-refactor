@@ -17,13 +17,82 @@ import com.openminis.app.diagnostics.PerfLongCtx
 import com.openminis.app.diagnostics.StreamJitterProbe
 import com.openminis.app.diagnostics.StreamPerfMonitor
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicReference
+
+/**
+ * Leading- and trailing-edge throttle: emits the very first item immediately (zero initial lag),
+ * coalesces bursts within [windowMs], and guarantees the latest trailing item is always emitted
+ * once the window elapses or upstream completes.
+ *
+ * Unlike `Flow.sample(windowMs)` — which delays the first emission by a full window and drops
+ * updates if restarted before the tick — this ensures session opens, newly sent messages, and
+ * tool-detail sheets see fresh state immediately while keeping streaming updates bounded.
+ */
+internal fun <T> Flow<T>.throttleLeadingTrailing(windowMs: Long): Flow<T> = channelFlow {
+    if (windowMs <= 0L) {
+        collect { send(it) }
+        return@channelFlow
+    }
+    val emptySentinel = Any()
+    val pending = AtomicReference<Any?>(emptySentinel)
+    val lock = Mutex()
+    var inWindow = false
+    var windowJob: Job? = null
+
+    collect { value ->
+        val shouldEmitNow = lock.withLock {
+            if (inWindow) {
+                pending.set(value)
+                false
+            } else {
+                inWindow = true
+                pending.set(emptySentinel)
+                true
+            }
+        }
+        if (shouldEmitNow) {
+            send(value)
+            windowJob = launch {
+                while (true) {
+                    delay(windowMs)
+                    val next = lock.withLock {
+                        val buffered = pending.getAndSet(emptySentinel)
+                        if (buffered === emptySentinel) {
+                            inWindow = false
+                            null
+                        } else {
+                            buffered
+                        }
+                    } ?: break
+                    @Suppress("UNCHECKED_CAST")
+                    send(next as T)
+                }
+            }
+        }
+    }
+
+    windowJob?.cancelAndJoin()
+    val trailing = lock.withLock {
+        inWindow = false
+        pending.getAndSet(emptySentinel)
+    }
+    if (trailing !== emptySentinel) {
+        @Suppress("UNCHECKED_CAST")
+        send(trailing as T)
+    }
+}
 
 /**
  * Computes whether any assistant message (persisted or live-streamed) has floating tool blocks
@@ -75,7 +144,6 @@ internal fun rememberBottomReserveForFloatingTools(
  * [T-android-stream-pipeline-incremental] Off-main incremental message flattener with frozen/live
  * prefix reuse, parallel viewport markdown prewarm, and key-deduped trailing-row pin.
  */
-@OptIn(FlowPreview::class)
 @Composable
 internal fun rememberFlattenedChatItems(
     sessionId: String,
@@ -103,7 +171,7 @@ internal fun rememberFlattenedChatItems(
                 viewModel.streamingById,
             ) { msgs, stream -> msgs to stream }
                 .conflate()
-                .sample(80L)
+                .throttleLeadingTrailing(80L)
                 .collect { (msgs, stream) ->
                     val tickStartNs = System.nanoTime()
                     if (stream.isNotEmpty() && !streamWasActive) {
@@ -251,20 +319,22 @@ internal fun rememberFlattenedChatItems(
  * Collects all non-thinking, non-info tool blocks across persisted messages plus the live
  * streaming side-channel without forcing ChatScreen to recompose on every token.
  */
-@OptIn(FlowPreview::class)
 @Composable
 internal fun rememberLiveToolBlocks(
+    sessionId: String,
     messages: List<ChatMessage>,
     viewModel: ChatViewModel,
 ): List<AssistantBlock> {
-    var lastToolBlocks by remember { mutableStateOf<List<AssistantBlock>>(emptyList()) }
-    LaunchedEffect(messages) {
+    var lastToolBlocks by remember(sessionId) {
+        mutableStateOf(collectLiveFloatingToolBlocks(messages, viewModel.streamingById.value))
+    }
+    LaunchedEffect(messages, sessionId) {
         combine(
             flowOf(messages),
             viewModel.streamingById,
         ) { msgs, stream -> msgs to stream }
             .conflate()
-            .sample(100L)
+            .throttleLeadingTrailing(100L)
             .collect { (msgs, stream) ->
                 val next = withContext(Dispatchers.Default) {
                     collectLiveFloatingToolBlocks(msgs, stream)

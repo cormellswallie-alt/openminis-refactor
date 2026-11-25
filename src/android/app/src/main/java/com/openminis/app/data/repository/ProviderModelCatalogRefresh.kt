@@ -301,54 +301,52 @@ internal class ProviderCatalogRefresher(private val repo: ProviderRepository) {
             // [T-android-refresh-models-empty-key] usableApiKey, NOT loadApiKey.
             var apiKey = usableApiKey(instance)
 
-            // [T-android-copilot-models-fallback] Copilot holds NO api key, and the `apiKey != null`
-            // conditions below (this refresh, and the whole Step-1 vendor fetch) therefore skipped it entirely
-            // — so `/models` was never called and…
-            if (instance.providerType == ProviderType.githubCopilot && apiKey == null) {
-                apiKey = try {
-                    com.openminis.app.auth.CopilotOAuthManager(context, instance.id).validAccessToken()
-                } catch (e: Exception) {
-                    android.util.Log.w("ProviderRepo", "Copilot session token unavailable: ${e.message}")
+            // Resolve OAuth credentials even when `apikey_<id>` is absent (e.g. after backup restore,
+            // manual bearer entry, Gemini OAuth, or Copilot which stores tokens exclusively in OAuthManager).
+            var hasManualBearer = false
+            if (instance.credentialType == com.openminis.app.data.model.ProviderCredential.oauth) {
+                val manualBearer = try {
+                    com.openminis.app.auth.OAuthManager.forInstance(context, instance)
+                        ?.loadManualBearerToken()
+                        ?.trim()
+                        ?.takeIf { it.isNotEmpty() }
+                } catch (_: Exception) {
                     null
                 }
-            }
-
-            // For OAuth providers, try to refresh the token before using it (mirrors iOS validAccessToken)
-            if (instance.credentialType == com.openminis.app.data.model.ProviderCredential.oauth &&
-                apiKey != null && instance.providerType != ProviderType.githubCopilot
-            ) {
-                try {
-                    val manager = com.openminis.app.auth.OAuthManager.forInstance(context, instance)
-                    val freshToken = manager?.validAccessToken()
-                    if (freshToken != null && freshToken != apiKey) {
-                        saveApiKey(instance.id, freshToken)
-                        apiKey = freshToken
-                        android.util.Log.i("ProviderRepo", "refreshModels: OAuth token refreshed")
+                if (manualBearer != null) {
+                    hasManualBearer = true
+                    apiKey = manualBearer
+                } else {
+                    try {
+                        val manager = repo.oauthManagerFor(instance)
+                        val freshToken = manager?.validAccessToken()?.trim()?.takeIf { it.isNotEmpty() }
+                        if (freshToken != null) {
+                            if (instance.providerType != ProviderType.githubCopilot && freshToken != apiKey) {
+                                saveApiKey(instance.id, freshToken)
+                                android.util.Log.i("ProviderRepo", "refreshModels: OAuth token refreshed")
+                            }
+                            apiKey = freshToken
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.w("ProviderRepo", "OAuth token resolution failed: ${e.message}")
                     }
-                } catch (e: Exception) {
-                    android.util.Log.w("ProviderRepo", "OAuth token refresh failed: ${e.message}")
                 }
             }
 
             android.util.Log.i("ProviderRepo", "refreshModels: id=${instance.id} type=${instance.providerType} credential=${instance.credentialType} hasKey=${apiKey != null} keyLen=${apiKey?.length ?: 0} baseURL=${instance.effectiveBaseURL}")
 
             // [T-codex-dynamic-discovery GH#319] [T-provider-dynamic-catalog-reconcile] OpenAI Codex OAuth:
-            // three-tier discovery, replacing what used to be an unconditional return of the compiled-in list.
+            // three-tier discovery (skipped when using a manual bearer or custom base URL, which routes through /v1/models).
             if (instance.providerType == ProviderType.openAI
                 && instance.credentialType == ProviderCredential.oauth
+                && !hasManualBearer
+                && instance.effectiveBaseURL == null
             ) {
                 val discovered = discoverCodexModels(instance, apiKey, forceRefresh)
                 if (discovered != null) {
                     replaceEntries(instance.id, discovered)
                     return
                 }
-                // Tier 3 before tier 2 on this path, deliberately: the built-in
-                // Codex list is hand-verified against a live ChatGPT-account token
-                // ([T-codex-oauth-model-prune] pruned the ids the backend refuses),
-                // whereas models.dev's "openai" provider entry describes the
-                // API-KEY catalog — it would hand a Codex user gpt-4o and friends,
-                // every one of which errors on this auth path. So models.dev is
-                // only reached if even the built-in list is somehow empty.
                 val builtIn = OpenAIModelsApi.fetchModelsOAuth()
                 if (builtIn.isNotEmpty()) {
                     android.util.Log.i("ProviderRepo", "Codex discovery unavailable — using built-in list (${builtIn.size})")
@@ -358,7 +356,7 @@ internal class ProviderCatalogRefresher(private val repo: ProviderRepository) {
             }
 
             // Step 1: Try provider API (requires API key)
-            val customBase = instance.customBaseURL
+            val customBase = instance.customBaseURL?.trim()?.takeIf { it.isNotEmpty() }
             val isThirdParty = customBase != null
                 && !customBase.lowercase().let {
                     it.contains("api.openai.com") ||
@@ -368,118 +366,84 @@ internal class ProviderCatalogRefresher(private val repo: ProviderRepository) {
                         it.contains("api.anthropic.com")
                 }
 
+            var vendorError: String? = null
             if (apiKey != null) {
                 val baseURL = instance.effectiveBaseURL
+                val captureError: (String) -> Unit = { msg -> if (vendorError == null) vendorError = msg }
                 val models = try {
                     when (instance.providerType) {
                         ProviderType.anthropic -> AnthropicModelsApi.fetchModels(
-                            apiKey, baseURL,
-                            isOAuth = instance.credentialType == com.openminis.app.data.model.ProviderCredential.oauth,
-                            // [T-provider-custom-user-agent] models-list UA override.
+                            apiKey = apiKey,
+                            baseURL = baseURL,
+                            isOAuth = instance.credentialType == com.openminis.app.data.model.ProviderCredential.oauth && !hasManualBearer,
                             customUserAgent = instance.customUserAgent,
+                            onError = captureError,
                         )
                         ProviderType.gemini -> GeminiModelsApi.fetchModels(
                             apiKey = apiKey,
-                            baseURL = instance.customBaseURL?.trim()?.takeIf { it.isNotEmpty() },
-                            isOAuth = instance.credentialType == com.openminis.app.data.model.ProviderCredential.oauth,
+                            baseURL = customBase,
+                            isOAuth = instance.credentialType == com.openminis.app.data.model.ProviderCredential.oauth && !hasManualBearer,
                             context = context,
                             forceRefresh = forceRefresh,
                             customUserAgent = instance.customUserAgent,
+                            onError = captureError,
                         )
-                        // [T-provider-custom-user-agent] models-list UA override.
-                        // [T-android-provider-type-parity] openAIResponses lists
-                        // models from the same /v1/models endpoint — only the
-                        // completion endpoint differs.
                         ProviderType.openAI, ProviderType.openAIResponses ->
-                            OpenAIModelsApi.fetchModels(apiKey, baseURL, customUserAgent = instance.customUserAgent)
-                        ProviderType.openRouter -> OpenRouterModelsApi.fetchModels(apiKey)
-                        // [T-provider-dynamic-catalog-reconcile] GH#265 xAI: fetch the live catalog, fall back to the
-                        // built-in list.
-                        ProviderType.xAI -> OpenAIModelsApi.fetchModels(
-                            apiKey,
-                            baseURL ?: "https://api.x.ai/v1",
-                            customUserAgent = instance.customUserAgent,
+                            OpenAIModelsApi.fetchModels(
+                                apiKey = apiKey,
+                                baseURL = baseURL,
+                                customUserAgent = instance.customUserAgent,
+                                azureMode = instance.azureMode,
+                                rawBaseURL = customBase,
+                                onError = captureError,
+                            )
+                        ProviderType.openRouter -> OpenRouterModelsApi.fetchModels(
+                            apiKey = apiKey,
+                            onError = captureError,
                         )
-                            // [T-provider-default-modality-key] The OpenAI-compatible
-                            // fetcher labels every non-OpenAI base "Custom", the tag
-                            // for a relay of unknown capability, which has no
-                            // modality default. These are xAI's own models: label
-                            // them "xAI" like the built-in catalog does, so a Grok
-                            // too new for models.dev still gets the provider's vision
-                            // default. models.dev enrichment is unchanged: neither
-                            // label is in its provider map.
+                        ProviderType.xAI -> OpenAIModelsApi.fetchModels(
+                            apiKey = apiKey,
+                            baseURL = baseURL ?: "https://api.x.ai/v1",
+                            customUserAgent = instance.customUserAgent,
+                            onError = captureError,
+                        )
                             .map { it.copy(provider = "xAI") }
                             .ifEmpty { com.openminis.app.provider.xai.XAIModelsApi.fetchModelsOAuth() }
-                        // [T-kimi-oauth] Kimi Code: unlike Codex OAuth, the Kimi
-                        // OAuth token CAN call the models endpoint — real fetch
-                        // from GET /coding/v1/models (OpenAI-compatible shape).
-                        // The upstream lineup shifts across generations, so the
-                        // live list replaces the minimal built-in fallback.
                         ProviderType.kimiCode -> OpenAIModelsApi.fetchModels(
-                            apiKey,
-                            baseURL ?: "${com.openminis.app.auth.KimiDeviceFlow.CODING_API_BASE}/v1",
+                            apiKey = apiKey,
+                            baseURL = baseURL ?: "${com.openminis.app.auth.KimiDeviceFlow.CODING_API_BASE}/v1",
                             customUserAgent = instance.customUserAgent,
+                            onError = captureError,
                         )
-                            // [T-provider-default-modality-key] Kimi's own models,
-                            // not a relay's: same relabel as xAI above.
                             .map { it.copy(provider = "Kimi") }
-                        // [T-copilot-provider] Copilot's own /models, not the
-                        // OpenAI-compatible helper: the call needs the short-lived
-                        // session token plus the editor-identity headers, and the
-                        // response is filtered to `model_picker_enabled` so the
-                        // picker never offers an embedding or internal model that
-                        // would fail on first send.
                         ProviderType.githubCopilot -> {
-                            if (context == null) emptyList() else {
-                                // [T-android-copilot-model-capabilities] Carry the
-                                // window/output/vision/reasoning fields Copilot
-                                // already reports. Dropping them left every Copilot
-                                // model with a null context window, which silently
-                                // disables everything that reasons about context
-                                // size (compaction threshold, fallback guard).
-                                com.openminis.app.auth.CopilotOAuthManager(context, instance.id)
-                                    .fetchModelsDetailed()
-                                    .map { m ->
-                                        LLMModel(
-                                            id = m.id,
-                                            displayName = m.displayName,
-                                            provider = "GitHub Copilot",
-                                            contextWindow = m.contextWindow,
-                                            maxOutputTokens = m.maxOutputTokens,
-                                            supportsReasoning = m.supportsReasoning,
-                                            // [T-android-copilot-reasoning-fields]
-                                            // Copilot states the tiers it accepts
-                                            // (low/medium/high/xhigh/max); passing
-                                            // them through lets the request builder
-                                            // clamp onto a real set instead of
-                                            // guessing.
-                                            reasoningEffortValues = m.reasoningEffortValues,
-                                            // [T-android-copilot-textonly-explicit] Vision is a modality list here, not a flag; iOS expresses
-                                            // the same thing as modalityOverride = .vision.
-                                            inputModalities = if (m.supportsVision) {
-                                                listOf("text", "image")
-                                            } else listOf("text"),
-                                        )
-                                    }
-                            }
+                            com.openminis.app.auth.CopilotOAuthManager(context, instance.id)
+                                .fetchModelsDetailed()
+                                .map { m ->
+                                    LLMModel(
+                                        id = m.id,
+                                        displayName = m.displayName,
+                                        provider = "GitHub Copilot",
+                                        contextWindow = m.contextWindow,
+                                        maxOutputTokens = m.maxOutputTokens,
+                                        supportsReasoning = m.supportsReasoning,
+                                        reasoningEffortValues = m.reasoningEffortValues,
+                                        inputModalities = if (m.supportsVision) {
+                                            listOf("text", "image")
+                                        } else listOf("text"),
+                                    )
+                                }
                         }
-                        // [T-android-provider-type-parity] No models endpoint to
-                        // query for a type this build cannot drive; the instance
-                        // keeps whatever entries the restore brought with it.
                         ProviderType.antigravity, ProviderType.unsupported -> emptyList()
                     }
                 } catch (e: Exception) {
-                    // Rethrow only if THIS coroutine was cancelled (the onboarding
-                    // page's budget ran out); an inner timeout is an ordinary
-                    // failure and still falls through to models.dev as before.
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     android.util.Log.e("ProviderRepo", "refreshModels fetch error: ${e.message}", e)
-                    onVendorError?.invoke(e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName)
+                    vendorError = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
                     emptyList()
                 }
+                vendorError?.let { onVendorError?.invoke(it) }
                 android.util.Log.i("ProviderRepo", "refreshModels: got ${models.size} models")
-                // [DIAG-restore] Step1 (vendor API) raw model list — id + displayName —
-                // exactly as returned before it reaches replaceEntries.
                 android.util.Log.i(
                     "ProviderRepo",
                     "[Restore][DIAG] refreshModels STEP1(vendor-api) id=${instance.id} models=" +
@@ -491,6 +455,8 @@ internal class ProviderCatalogRefresher(private val repo: ProviderRepository) {
                     replaceEntries(instance.id, models)
                     return
                 }
+            } else {
+                onVendorError?.invoke("Missing API key or OAuth sign-in")
             }
 
             // Step 3: Fallback to models.dev by base URL.
