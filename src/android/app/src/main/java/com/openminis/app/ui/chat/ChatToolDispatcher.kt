@@ -26,6 +26,7 @@ import com.openminis.app.tools.FileWriteTool
 import com.openminis.app.tools.MemoryTools
 import com.openminis.app.tools.ReadImageTool
 import com.openminis.app.tools.ToolExecutionResult
+import com.openminis.app.tools.UpdateStepsTool
 import com.openminis.app.tools.VisionGroupResolver
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -53,6 +54,7 @@ internal class ChatToolDispatcher(
     private val publishQuestionnaire: (PendingQuestionnaire) -> Unit,
     private val clearQuestionnaire: (PendingQuestionnaire) -> Unit,
     private val recordMemory: (MemoryToolRecord) -> Unit,
+    private val publishStepChecklist: (UpdateStepsTool.StepChecklist) -> Unit = {},
 ) {
     companion object {
         const val SHELL_TIMEOUT_MAX_SEC = 3600
@@ -128,6 +130,16 @@ internal class ChatToolDispatcher(
                     executeAskUserTool(argsJson, toolId, toolBlocks, assistantId, publishBlocks)
                 } else {
                     toolDisabledResult(AskUserTool.NAME)
+                }
+            UpdateStepsTool.NAME ->
+                if (!isHelper() && AgentToolSwitch.TASK_STEPS.isEnabled(context)) {
+                    val (checklist, result) = UpdateStepsTool.execute(argsJson)
+                    if (checklist != null) {
+                        publishStepChecklist(checklist)
+                    }
+                    result
+                } else {
+                    toolDisabledResult(UpdateStepsTool.NAME)
                 }
             "memory_write" -> executeMemoryWriteTool(argsJson)
             // [T-sub-agents-v1] One tool, five actions. The legacy names are

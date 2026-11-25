@@ -44,6 +44,7 @@ import com.openminis.app.scheduled.PrefilledToolCall
 import com.openminis.app.tools.AgentToolSwitch
 import com.openminis.app.tools.AgentTools
 import com.openminis.app.tools.AskUserTool
+import com.openminis.app.tools.UpdateStepsTool
 import com.openminis.app.tools.MemoryTools
 import com.openminis.app.tools.VisionGroupResolver
 import com.openminis.app.ui.chat.CompactionSummary.MAX_COMPACT_LLM_CALLS
@@ -320,6 +321,7 @@ class ChatViewModel(
             publishQuestionnaire = { runState.publishQuestionnaire(it) },
             clearQuestionnaire = { runState.clearQuestionnaireIfMatches(it) },
             recordMemory = { runState.appendMemoryToolRecord(it) },
+            publishStepChecklist = { runState.publishStepChecklist(it) },
         )
     }
 
@@ -471,6 +473,7 @@ class ChatViewModel(
             isHelper = isHelper,
             delegateEnabled = AgentToolSwitch.AGENTS.isEnabled(context),
             browserEnabled = AgentToolSwitch.BROWSER.isEnabled(context),
+            updateStepsEnabled = AgentToolSwitch.TASK_STEPS.isEnabled(context),
             askUserEnabled = AgentToolSwitch.ASK_USER.isEnabled(context),
             rosterNames = providerRepository.subAgents.map { it.name },
         )
@@ -599,6 +602,10 @@ class ChatViewModel(
     fun setSteeringModeEnabled(enabled: Boolean) = runState.setSteeringModeEnabled(enabled)
     fun toggleSteeringMode(): Boolean = runState.toggleSteeringMode()
     fun removePendingToolSteer(id: String) = runState.removeToolSteer(id)
+
+    val activeStepChecklist: StateFlow<UpdateStepsTool.StepChecklist?> get() = runState.activeStepChecklist
+    val stepChecklistDismissed: StateFlow<Boolean> get() = runState.stepChecklistDismissed
+    fun dismissStepChecklist() = runState.dismissStepChecklist()
 
     fun toggleBrowserSheet() = overlaysStore.toggleBrowserSheet { browserTabPool.ensureTabForUI() }
     fun dismissBrowserSheet() = overlaysStore.dismissBrowserSheet()

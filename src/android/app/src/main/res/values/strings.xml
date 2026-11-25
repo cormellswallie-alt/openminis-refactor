@@ -2355,4 +2355,13 @@
     <string name="chat_steer_remove_note_cd">Remove steering note</string>
     <string name="slash_steer_on">Live tool-result steering: ON</string>
     <string name="slash_steer_off">Live tool-result steering: OFF</string>
+
+    <!-- Live Task Checklist (update_steps) -->
+    <string name="agent_tools_update_steps">Live Task Checklist (update_steps)</string>
+    <string name="agent_tools_update_steps_footer">Allow the model to maintain a pinned, collapsible multi-step checklist in chat while working on complex tasks.</string>
+    <string name="steps_banner_title">Task checklist</string>
+    <string name="steps_banner_all_done">All %1$d steps completed</string>
+    <string name="steps_expand_cd">Expand checklist</string>
+    <string name="steps_collapse_cd">Collapse checklist</string>
+    <string name="steps_dismiss_cd">Hide checklist</string>
 </resources>

@@ -4,6 +4,7 @@ import com.openminis.app.agent.jobs.HelperConfig
 import com.openminis.app.data.model.ThinkingLevel
 import com.openminis.app.provider.ImageBudget
 import com.openminis.app.tools.AskUserTool
+import com.openminis.app.tools.UpdateStepsTool
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -64,6 +65,13 @@ internal class ChatRunStateStore(initialMemoryEnabled: Boolean) {
 
     private val _pendingQuestionnaire = MutableStateFlow<PendingQuestionnaire?>(null)
     val pendingQuestionnaire: StateFlow<PendingQuestionnaire?> = _pendingQuestionnaire.asStateFlow()
+
+    /** Live task checklist published by `update_steps` (rehydrated on session load). */
+    private val _activeStepChecklist = MutableStateFlow<UpdateStepsTool.StepChecklist?>(null)
+    val activeStepChecklist: StateFlow<UpdateStepsTool.StepChecklist?> = _activeStepChecklist.asStateFlow()
+
+    private val _stepChecklistDismissed = MutableStateFlow(false)
+    val stepChecklistDismissed: StateFlow<Boolean> = _stepChecklistDismissed.asStateFlow()
 
     // ── Helper / sub-agent child state ────────────────────────────────────
 
@@ -232,6 +240,25 @@ internal class ChatRunStateStore(initialMemoryEnabled: Boolean) {
 
     fun clearToolSteers() {
         _pendingToolSteers.value = emptyList()
+    }
+
+    fun publishStepChecklist(checklist: UpdateStepsTool.StepChecklist) {
+        _activeStepChecklist.value = checklist
+        _stepChecklistDismissed.value = false
+    }
+
+    fun hydrateStepChecklist(checklist: UpdateStepsTool.StepChecklist?) {
+        _activeStepChecklist.value = checklist
+        _stepChecklistDismissed.value = false
+    }
+
+    fun dismissStepChecklist() {
+        _stepChecklistDismissed.value = true
+    }
+
+    fun clearStepChecklist() {
+        _activeStepChecklist.value = null
+        _stepChecklistDismissed.value = false
     }
 
     fun setSessionTitle(title: String) {

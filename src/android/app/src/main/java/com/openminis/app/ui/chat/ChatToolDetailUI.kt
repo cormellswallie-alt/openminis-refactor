@@ -92,6 +92,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.sp
 import com.openminis.app.tools.AskUserTool
+import com.openminis.app.tools.UpdateStepsTool
 import com.openminis.app.ui.theme.ChatColors
 import com.openminis.app.ui.theme.ExpressiveTokens
 import com.openminis.app.ui.DisplayBitmapLimits
@@ -314,6 +315,8 @@ internal fun ToolDetailSheet(
                     com.openminis.app.agent.jobs.HelperRunner.TOOL_NAME -> HelperDetailContent(block)
 
                     AskUserTool.NAME -> QuestionnaireDetailContent(block)
+
+                    UpdateStepsTool.NAME -> StepChecklistDetailContent(block)
 
                     // ── Shell: rounded obsidian terminal card ──
                     "shell_execute" -> {

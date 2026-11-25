@@ -128,6 +128,8 @@ fun ChatScreen(
     val showMemorySheet by viewModel.showMemorySheet.collectAsStateWithLifecycle()
     val memoryToolRecords by viewModel.memoryToolRecords.collectAsStateWithLifecycle()
     val pendingQuestionnaire by viewModel.pendingQuestionnaire.collectAsStateWithLifecycle()
+    val activeStepChecklist by viewModel.activeStepChecklist.collectAsStateWithLifecycle()
+    val stepChecklistDismissed by viewModel.stepChecklistDismissed.collectAsStateWithLifecycle()
     val inputText by viewModel.inputText.collectAsStateWithLifecycle()
 
     // ─── Local UI & overlay state ───────────────────────────────────────
@@ -364,6 +366,13 @@ fun ChatScreen(
                             focusManager.clearFocus()
                         }
                     }
+
+                    LiveStepChecklistBanner(
+                        checklist = activeStepChecklist,
+                        dismissed = stepChecklistDismissed,
+                        isStreaming = isStreaming,
+                        onDismiss = { viewModel.dismissStepChecklist() },
+                    )
 
                     ChatTranscriptRegion(
                         modifier = Modifier.weight(1f),

@@ -58,6 +58,7 @@ internal fun toolAccentColor(toolName: String): Color = when (toolName) {
     "memory_write", "memory_get" -> Color(0xFFEC4899)
     "web_search" -> Color(0xFF06B6D4)
     "ask_user" -> Color(0xFF6366F1)
+    "update_steps" -> Color(0xFF0D9488)
     "subagent_task", "delegate_task", "agent_status" -> HelperAccentStatic
     else -> Color(0xFF64748B)
 }
@@ -73,6 +74,7 @@ internal fun toolIconFor(toolName: String) = when (toolName) {
     "memory_write", "memory_get" -> Icons.Default.Psychology
     "web_search" -> Icons.Default.Search
     "ask_user" -> Icons.Outlined.ChecklistRtl
+    "update_steps" -> Icons.Outlined.ChecklistRtl
     "subagent_task", "delegate_task", "agent_status" -> Icons.Default.Groups
     else -> Icons.Default.Build
 }
@@ -89,6 +91,7 @@ internal fun toolIconResFor(toolName: String?): Int = when (toolName) {
     "memory_write", "memory_get" -> R.drawable.ic_tool_psychology
     "web_search" -> R.drawable.ic_tool_search
     "ask_user" -> R.drawable.ic_tool_questionnaire
+    "update_steps" -> R.drawable.ic_tool_questionnaire
     "subagent_task", "delegate_task", "agent_status" -> R.drawable.ic_tool_groups
     else -> R.drawable.ic_tool_build
 }
@@ -114,6 +117,7 @@ internal fun toolDisplayName(toolName: String): String = when (toolName) {
     "memory_get" -> "memory"
     "web_search" -> "search"
     "ask_user" -> "questionnaire"
+    "update_steps" -> "task checklist"
     "subagent_task", "delegate_task", "agent_status" -> "agent"
     else -> toolName
 }
@@ -129,6 +133,7 @@ internal fun toolTitleLabel(toolName: String): String = when (toolName) {
     "memory_write", "memory_get" -> "Minis is using Memory"
     "web_search" -> "Minis is using Search"
     "ask_user" -> "Minis is asking Questions"
+    "update_steps" -> "Minis is updating Steps"
     "subagent_task", "delegate_task", "agent_status" -> "Minis is using an Agent"
     else -> "Minis is using ${toolDisplayName(toolName)}"
 }

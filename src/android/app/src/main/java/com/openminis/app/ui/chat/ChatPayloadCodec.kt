@@ -198,6 +198,7 @@ object ChatPayloadCodec {
         "memory_get" -> "Read Memory"
         "web_search" -> "Search Web"
         "ask_user" -> "Ask User"
+        "update_steps" -> "Task Checklist"
         else -> toolName
             .split('_')
             .filter { it.isNotEmpty() }

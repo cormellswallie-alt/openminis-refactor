@@ -572,6 +572,7 @@ private suspend fun ChatViewModel.restoreCompactMarkerAndMessages(loaded: Loaded
         }
         applyCompactMarkerGraying(loaded.ordered, marker, loaded.messages, historyDbIds)
     }
+    runState.hydrateStepChecklist(com.openminis.app.tools.UpdateStepsTool.latestFromMessages(_messages.value))
 }
 
 /**
@@ -866,6 +867,7 @@ internal fun ChatViewModel.clearChatImpl() {
         overlaysStore.clearAttachments()
         runState.clearPromptQueue()
         runState.clearToolSteers()
+        runState.clearStepChecklist()
         draftStore.clearShareInjectedFlag()
         // T261: tool-detail sheet is per-session UI state — clear it so a
         // newly cleared chat doesn't briefly flash a stale tool's sheet

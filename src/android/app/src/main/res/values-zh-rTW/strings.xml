@@ -2151,4 +2151,13 @@
     <string name="chat_steer_remove_note_cd">移除此則糾偏</string>
     <string name="slash_steer_on">過程工具結果糾偏：已開啟</string>
     <string name="slash_steer_off">過程工具結果糾偏：已關閉</string>
+
+    <!-- Live Task Checklist (update_steps) -->
+    <string name="agent_tools_update_steps">即時任務清單 (update_steps)</string>
+    <string name="agent_tools_update_steps_footer">允許模型在執行複雜多步驟任務時，於聊天頂部顯示可展開的即時進度清單。</string>
+    <string name="steps_banner_title">任務清單</string>
+    <string name="steps_banner_all_done">全部 %1$d 個步驟已完成</string>
+    <string name="steps_expand_cd">展開任務清單</string>
+    <string name="steps_collapse_cd">收合任務清單</string>
+    <string name="steps_dismiss_cd">隱藏任務清單</string>
 </resources>

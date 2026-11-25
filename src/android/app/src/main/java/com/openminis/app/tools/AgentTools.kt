@@ -42,6 +42,9 @@ object AgentTools {
         // Interactive mid-turn questionnaire (`ask_user`); omitted for helpers
         // because sub-agents have no direct UI channel to prompt the user.
         askUserEnabled: Boolean = true,
+        // Live task checklist (`update_steps`); omitted for helpers because
+        // sub-agents do not render onto the primary chat's pinned checklist bar.
+        updateStepsEnabled: Boolean = true,
         // [T-sub-agents-v1] The names of the enabled sub agents, in roster
         // order. These become `subagent_task.agent`'s enum, and the caller
         // rebuilds them every turn: the schema is not cached, so a rename takes
@@ -61,6 +64,9 @@ object AgentTools {
         if (browserEnabled) add(browserUseDefinition())
         if (!isHelper && askUserEnabled) {
             add(AskUserTool.definition)
+        }
+        if (!isHelper && updateStepsEnabled) {
+            add(UpdateStepsTool.definition)
         }
         if (memoryEnabled) {
             if (!isHelper) add(memoryWriteDefinition())

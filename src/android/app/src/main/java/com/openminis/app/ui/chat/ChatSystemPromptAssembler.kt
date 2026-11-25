@@ -149,8 +149,12 @@ Memory system (currently DISABLED):
         } else ""
 
         val askUserToolEnabled = !isHelper && AgentToolSwitch.ASK_USER.isEnabled(context)
+        val updateStepsToolEnabled = !isHelper && AgentToolSwitch.TASK_STEPS.isEnabled(context)
         val askUserPromptBullet = if (askUserToolEnabled) {
             "\n- ask_user: Present an interactive questionnaire card (single_select, multi_select, or text) to clarify ambiguous requirements, preferences, or design choices WITH the user mid-turn WITHOUT ending your turn. Execution pauses until the user submits or skips, then returns structured JSON answers so you can immediately continue iterating."
+        } else ""
+        val updateStepsPromptBullet = if (updateStepsToolEnabled) {
+            "\n- update_steps: Show the user a live progress checklist (3-12 steps, statuses: pending/in_progress/done/skipped/failed). Send the full ordered list in parallel with your first real tool call of each step so it adds zero extra turns."
         } else ""
         val askUserGuidanceSection = if (askUserToolEnabled) {
             """
@@ -161,12 +165,20 @@ Model questionnaire (ask_user):
 - Prefer `single_select` or `multi_select` with 2–5 concrete, self-explanatory options over open-ended `text` questions whenever possible, and place your recommended option first (e.g. `"Material 3 Expressive (Recommended) — Dynamic color & morphing shapes"`). Set `allow_other: true` so the user can always provide custom input.
 - Do NOT call `ask_user` for trivial confirmations, routine low-risk actions, or details you can infer from context or inspect with `file_read` / `shell_execute`. If the user skips the questionnaire (`status: "skipped"`), proceed immediately using your recommended defaults."""
         } else ""
+        val updateStepsGuidanceSection = if (updateStepsToolEnabled) {
+            """
+
+Live task checklist (update_steps):
+- Call `update_steps` once you have committed to 3–12 distinct steps for a multi-step task; skip it for 1–2 step tasks, pure questions, or open-ended exploration where steps are not yet known.
+- Always send the full ordered list (each call replaces the previous checklist). Call it in parallel with the first real tool call of a step so it costs zero extra turns: start with step 1 `in_progress`, advance by marking the finished step `done` and the next step(s) `in_progress` in the same call, and mark all steps done right before your final reply.
+- Keep step titles short and imperative (2–6 words) in the user's language, with no numbering prefixes or internal IDs."""
+        } else ""
 
         val browserPromptBullet = if (browserToolEnabled) {
             """- browser_use: Web browsing (navigate, screenshot, click, type, get_text, scroll, scroll_and_collect, get_readable, get_backbone, fetch, etc.). Starts with a desktop Chrome user agent. Use screenshot to see the page.
-  当 browser_use 触达 Google 登录 / OAuth 页（accounts.google.com、signin.google.com、myaccount.google.com、oauth2.googleapis.com 等）或网页返回 "disallowed_useragent" / 403 包含 "browser is not secure" 字样时，**不要重试或尝试登录** — Google 永久禁止 in-app WebView 完成登录，重试只会浪费 turn。改为告诉用户："此页面需要在系统 Chrome 完成登录" 并给出可点击的 Markdown link [在 Chrome 中打开](https://accounts.google.com/...)。点该 link 时 app 会跳出 Custom Tab；用户在 Chrome 完成操作后，请他**把所需结果（邮件正文 / 文档摘要 / 表格数据）粘贴回 chat**，你再继续帮他处理。这是 Android 平台限制，不是 bug。${askUserPromptBullet}${toolListMemoryBullets}"""
+  当 browser_use 触达 Google 登录 / OAuth 页（accounts.google.com、signin.google.com、myaccount.google.com、oauth2.googleapis.com 等）或网页返回 "disallowed_useragent" / 403 包含 "browser is not secure" 字样时，**不要重试或尝试登录** — Google 永久禁止 in-app WebView 完成登录，重试只会浪费 turn。改为告诉用户："此页面需要在系统 Chrome 完成登录" 并给出可点击的 Markdown link [在 Chrome 中打开](https://accounts.google.com/...)。点该 link 时 app 会跳出 Custom Tab；用户在 Chrome 完成操作后，请他**把所需结果（邮件正文 / 文档摘要 / 表格数据）粘贴回 chat**，你再继续帮他处理。这是 Android 平台限制，不是 bug。${askUserPromptBullet}${updateStepsPromptBullet}${toolListMemoryBullets}"""
         } else {
-            "${askUserPromptBullet.removePrefix("\n")}${toolListMemoryBullets}"
+            "${(askUserPromptBullet + updateStepsPromptBullet).removePrefix("\n")}${toolListMemoryBullets}"
         }
 
         val minisUrlNote = if (browserToolEnabled) {
@@ -228,7 +240,7 @@ Tool call style:
 - Narrate only when it helps: multi-step work, complex problems, sensitive actions, or when the user explicitly asks.
 - Keep narration brief and value-dense; avoid repeating obvious steps.
 - When a tool exists for an action, use it directly instead of explaining what you plan to do or asking the user to confirm.
-- Use reasonable defaults and contextual inference to fill in missing details (e.g. 'tonight' means today, 'remind me' implies creating a reminder immediately). Only ask for clarification when genuinely ambiguous.${askUserGuidanceSection}
+- Use reasonable defaults and contextual inference to fill in missing details (e.g. 'tonight' means today, 'remind me' implies creating a reminder immediately). Only ask for clarification when genuinely ambiguous.${askUserGuidanceSection}${updateStepsGuidanceSection}
 
 ${ToolResultSteering.SYSTEM_PROMPT_PROTOCOL}
 
