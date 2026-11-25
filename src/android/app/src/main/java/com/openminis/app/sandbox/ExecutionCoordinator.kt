@@ -156,7 +156,15 @@ object ExecutionCoordinator {
                 freshUseNoSeccomp = true
             }
         }
-        val durationMs = System.currentTimeMillis() - startTime
+        return finalizeCommandResult(rawOutput, exitCode, startTime)
+    }
+
+    private fun finalizeCommandResult(
+        rawOutput: String,
+        exitCode: Int,
+        startTimeMs: Long,
+    ): CommandResult {
+        val durationMs = System.currentTimeMillis() - startTimeMs
         val sanitized = TerminalSanitizer.sanitize(rawOutput)
         val truncated = TerminalSanitizer.truncateIfNeeded(sanitized)
         val output = if (exitCode != 0 && exitCode != 124) {
@@ -418,15 +426,7 @@ object ExecutionCoordinator {
             return executeFresh(sessionId, command, timeout, lineCallback, fsSessionId)
         }
 
-        val durationMs = System.currentTimeMillis() - startTime
-        val sanitized = TerminalSanitizer.sanitize(rawOutput)
-        val truncated = TerminalSanitizer.truncateIfNeeded(sanitized)
-        val output = if (exitCode != 0 && exitCode != 124) {
-            ShellExitCode.ensureSuffix(truncated, exitCode)
-        } else {
-            truncated
-        }
-        return CommandResult(output = output, exitCode = exitCode, durationMs = durationMs)
+        return finalizeCommandResult(rawOutput, exitCode, startTime)
     }
 
     private suspend fun getOrCreateWorker(
@@ -555,16 +555,7 @@ object ExecutionCoordinator {
                 lineCallback = lineCallback,
             )
 
-            val durationMs = System.currentTimeMillis() - startTime
-            val sanitized = TerminalSanitizer.sanitize(rawOutput)
-            val truncated = TerminalSanitizer.truncateIfNeeded(sanitized)
-            val output = if (exitCode != 0 && exitCode != 124) {
-                ShellExitCode.ensureSuffix(truncated, exitCode)
-            } else {
-                truncated
-            }
-
-            CommandResult(output = output, exitCode = exitCode, durationMs = durationMs)
+            finalizeCommandResult(rawOutput, exitCode, startTime)
         } finally {
             lease.mutex.unlock()
         }

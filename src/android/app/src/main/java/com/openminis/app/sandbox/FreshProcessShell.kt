@@ -252,63 +252,19 @@ internal class FreshProcessShell(
         Pair(output.toString(), exitCode)
     }
 
-    /** Build the argv and environment, mirroring PersistentShell.startProcess. */
+    /** Build the argv and environment via [PRootLaunchSpec]. */
     private fun spawn(command: String, envVars: Map<String, String>, statusGuestPath: String): Process {
-        val rootfsManager = RootfsManager.getInstance(context)
-        val cmd = mutableListOf<String>()
-        cmd.add(rootfsManager.prootBinary.absolutePath)
-        cmd.add("-0")
-        cmd.add("--link2symlink")
-        cmd.add("-r"); cmd.add(rootfsManager.rootfsDir.absolutePath)
-        cmd.add("-b"); cmd.add("/dev")
-        cmd.add("-b"); cmd.add("/proc")
-        cmd.add("-b"); cmd.add("/sys")
-        cmd.add("-w"); cmd.add("/root")
-        for ((linuxPath, hostPath) in sessionBindMounts) {
-            cmd.add("-b"); cmd.add("$hostPath:$linuxPath")
-        }
-        val handlers = NativeOffloadServer.registeredHandlers
-        if (handlers.isNotEmpty()) {
-            cmd.add("--native-offload=${NativeOffloadServer.socketName}:${handlers.joinToString(",")}")
-        }
-        // [T-android-fake-netlink] Same rtnetlink emulation the pooled shell
-        // gets; the two paths must not disagree about whether the sandbox has
-        // network interfaces.
-        cmd.add("--fake-netlink")
-        // [T-android-shell-fresh-process] Step 4: run the command as its own
-        // process-group leader. No marker, no pgid reporting — the host does
-        // not need to LEARN the group, because on the fresh path the guest
-        // group leader is the direct child of the proot process we already
-        // hold. It only needs the group to EXIST, so that killing reaches the
-        // descendants that would otherwise keep the pipe open.
-        cmd.addAll(ForegroundCommandGroup.wrapForFreshProcess(command, statusGuestPath))
-
-        val debugOffload = com.openminis.app.BuildConfig.DEV_TOOLS
-        val pb = ProcessBuilder(cmd)
+        val pb = PRootLaunchSpec.buildProcessBuilder(
+            context = context,
+            sessionId = sessionId,
+            sessionBindMounts = sessionBindMounts,
+            guestArgs = ForegroundCommandGroup.wrapForFreshProcess(command, statusGuestPath),
+            extraEnv = envVars,
+            useNoSeccomp = useNoSeccomp,
+            redirectErrorStream = !SEPARATE_STDERR,
+            includeFakeNetlink = true,
+        )
         configureStdin(pb)
-        // Separate in debug so proot's [native_offload] lines reach logcat
-        // instead of the output — which is why execute() starts a StderrDrain
-        // whenever SEPARATE_STDERR is set.
-        pb.redirectErrorStream(!SEPARATE_STDERR)
-
-        val env = pb.environment()
-        env["PROOT_TMP_DIR"] = PRootKernel.getProotTmpDir(context).absolutePath
-        if (PRootKernel.nativeLibDir.isNotEmpty()) env["LD_LIBRARY_PATH"] = PRootKernel.nativeLibDir
-        if (PRootKernel.prootLoaderPath.isNotEmpty()) env["PROOT_LOADER"] = PRootKernel.prootLoaderPath
-        if (PRootKernel.prootLoader32Path.isNotEmpty()) env["PROOT_LOADER_32"] = PRootKernel.prootLoader32Path
-        env["TERM"] = "dumb"
-        env["PS1"] = ""
-        env["TZ"] = PRootKernel.posixTz()
-        if (debugOffload) env["MINIS_NOFF_DEBUG"] = "1"
-        env["MINIS_CHAT_SESSION_ID"] = sessionId
-        for ((k, v) in PRootKernel.customEnvironment) env[k] = v
-        // User-configured variables go in as real environment entries rather
-        // than `export` lines written to a shared stdin — one more thing the
-        // warm path had to do that this one does not.
-        for ((k, v) in envVars) env[k] = v
-        if (useNoSeccomp) {
-            env[SeccompFallbackPolicy.NO_SECCOMP_ENV] = SeccompFallbackPolicy.NO_SECCOMP_VALUE
-        }
         return pb.start()
     }
 

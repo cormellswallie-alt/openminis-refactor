@@ -30,14 +30,12 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicBoolean
 
 internal class ChatToolDispatcher(
     private val context: Context,
@@ -446,66 +444,12 @@ internal class ChatToolDispatcher(
                 }
             }
 
-            // Bounded ring buffer + coalesced UI publish so high-throughput stdout
-            // (thousands of lines/sec) stays O(1) per line instead of splitting/joining
-            // strings and launching a Main coroutine on every single line.
-            val liveRingLock = Any()
-            val liveLineRing = ArrayDeque<String>(SHELL_LIVE_MAX_LINES)
-            var lastLivePublishMs = 0L
-            var hasPendingLivePublish = false
-            val livePublishScheduled = AtomicBoolean(false)
-            val commandCompleted = AtomicBoolean(false)
-
-            fun flushLiveLines(force: Boolean, scheduleUiPublish: Boolean = true) {
-                val snapshot = synchronized(liveRingLock) {
-                    if (!hasPendingLivePublish) return
-                    val now = System.currentTimeMillis()
-                    if (!force && now - lastLivePublishMs < SHELL_LIVE_PUBLISH_INTERVAL_MS) return
-                    lastLivePublishMs = now
-                    hasPendingLivePublish = false
-                    liveLineRing.joinToString("\n")
-                }
-                val updated = synchronized(toolBlocks) {
-                    val idx = toolBlocks.indexOfFirst { it.id == toolId }
-                    if (idx >= 0) {
-                        toolBlocks[idx] = toolBlocks[idx].copy(content = snapshot)
-                        true
-                    } else {
-                        false
-                    }
-                }
-                if (scheduleUiPublish && updated && !commandCompleted.get() && livePublishScheduled.compareAndSet(false, true)) {
-                    scope.launch(Dispatchers.Main) {
-                        livePublishScheduled.set(false)
-                        if (!commandCompleted.get()) {
-                            publishBlocks()
-                        }
-                    }
-                }
-            }
-
-            val streamLineCallback: (String) -> Unit = lc@{ rawLine ->
-                // Strip any OSC MinisOpenURL markers emitted by
-                // /usr/local/bin/minis-open and forward the captured
-                // URLs to the broker so the chat screen can present the
-                // in-app preview. Lines that were *entirely* a marker
-                // (nothing visible afterwards) are dropped so the tool
-                // output doesn't grow blank rows.
-                val (cleanedLine, capturedUrls) = MinisUrlMarker.extract(rawLine)
-                for (raw in capturedUrls) MinisOpenUrlBroker.offer(raw)
-                if (cleanedLine.isEmpty() && rawLine.isNotEmpty()) return@lc
-
-                val shouldFlushNow = synchronized(liveRingLock) {
-                    if (liveLineRing.size >= SHELL_LIVE_MAX_LINES) liveLineRing.removeFirst()
-                    liveLineRing.addLast(cleanedLine)
-                    hasPendingLivePublish = true
-                    val now = System.currentTimeMillis()
-                    lastLivePublishMs == 0L || now - lastLivePublishMs >= SHELL_LIVE_PUBLISH_INTERVAL_MS
-                }
-                if (shouldFlushNow) {
-                    flushLiveLines(force = false)
-                }
-            }
+            val liveStream = ShellLiveOutputStream(
+                toolId = toolId,
+                toolBlocks = toolBlocks,
+                scope = scope,
+                publishBlocks = publishBlocks,
+            )
 
             val result = try {
                 val initialResult = ExecutionCoordinator.execute(
@@ -513,15 +457,11 @@ internal class ChatToolDispatcher(
                     fsSessionId = fsSessionId(),
                     command = command,
                     timeout = timeoutSec * 1000L,
-                    lineCallback = streamLineCallback,
+                    lineCallback = liveStream::onLine,
                 )
 
-                // [T-bash-on-demand] M5 self-heal: our bash wrapper returns sentinel
-                // 119 when bash vanished (user apk del'd) after we cached it
-                // available. Re-probe + reinstall once and rerun THIS command under
-                // bash inline, so it still succeeds instead of failing.
-                // Accept both the raw sentinel (119) and the wait(2)-encoded status
-                // (119 << 8 = 30464) the coordinator may surface.
+                // [T-bash-on-demand] M5 self-heal: sentinel 119 (or wait(2)-encoded 119<<8)
+                // signals bash vanished after being cached available — reinstall once and retry.
                 if ((initialResult.exitCode == BASH_MISSING_SENTINEL ||
                         initialResult.exitCode == (BASH_MISSING_SENTINEL shl 8)) && bashScript != null) {
                     OnDemandBash.markDisappeared()
@@ -534,26 +474,19 @@ internal class ChatToolDispatcher(
                     } else {
                         bashScript!!
                     }
-                    synchronized(liveRingLock) {
-                        liveLineRing.clear()
-                        lastLivePublishMs = 0L
-                        hasPendingLivePublish = false
-                    }
+                    liveStream.resetForRetry()
                     ExecutionCoordinator.execute(
                         sessionId = dispatchSessionId,
                         command = command,
                         timeout = timeoutSec * 1000L,
-                        lineCallback = streamLineCallback,
+                        lineCallback = liveStream::onLine,
                         fsSessionId = fsSessionId(),
                     )
                 } else {
                     initialResult
                 }
             } finally {
-                // Prevent any already-queued live publish from firing after completion
-                // and overwriting isAwaitingModelResponse/final block state.
-                commandCompleted.set(true)
-                flushLiveLines(force = true, scheduleUiPublish = false)
+                liveStream.finish()
                 runCatching { stagedBashFile?.delete() }
             }
 

@@ -120,6 +120,21 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
     private fun snapshotToolBlocks(state: RunState): List<AssistantBlock> =
         synchronized(state.allToolBlocks) { ArrayList(state.allToolBlocks) }
 
+    private fun toolBlockMeta(blocks: List<AssistantBlock>): Map<String, AssistantBlock> =
+        blocks.filter { it.kind == "tool_use" }.associateBy { it.id }
+
+    private suspend fun publishUi(
+        state: RunState,
+        content: String = state.accumulatedText,
+        isStreaming: Boolean = true,
+        blocks: List<AssistantBlock> = snapshotToolBlocks(state),
+        isAwaitingModelResponse: Boolean? = null,
+    ) {
+        withContext(host.uiDispatcher) {
+            host.updateAssistantMessage(state.assistantId, content, isStreaming, blocks, isAwaitingModelResponse)
+        }
+    }
+
     private enum class PreTurnOutcome { PROCEED, CONTINUE_NEXT_TURN, STOP_LOOP }
     private enum class NoToolCallsOutcome { BREAK_LOOP, CONTINUE_NEXT_TURN }
 
@@ -623,15 +638,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         acc.lastThinkingUiUpdateMs = nowMs
         acc.hasUnflushedThinking = false
         if (publishUi) {
-            val snapshot = snapshotToolBlocks(state)
-            withContext(host.uiDispatcher) {
-                host.updateAssistantMessage(
-                    state.assistantId,
-                    state.accumulatedText + acc.turnTextSb.toString(),
-                    true,
-                    snapshot,
-                )
-            }
+            publishUi(state, content = state.accumulatedText + acc.turnTextSb.toString())
         }
     }
 
@@ -752,14 +759,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             }
         }
         if (addedSnapshot != null) {
-            withContext(host.uiDispatcher) {
-                host.updateAssistantMessage(
-                    state.assistantId,
-                    state.accumulatedText + acc.turnTextSb.toString(),
-                    true,
-                    addedSnapshot,
-                )
-            }
+            publishUi(state, content = state.accumulatedText + acc.turnTextSb.toString(), blocks = addedSnapshot)
         }
     }
 
@@ -799,15 +799,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         val lastTs = if (isHeavyFile) acc.lastFileToolInputMs else acc.lastOtherToolInputMs
         if (nowMs - lastTs >= gateMs) {
             if (isHeavyFile) acc.lastFileToolInputMs = nowMs else acc.lastOtherToolInputMs = nowMs
-            val snapshot = snapshotToolBlocks(state)
-            withContext(host.uiDispatcher) {
-                host.updateAssistantMessage(
-                    state.assistantId,
-                    state.accumulatedText + acc.turnTextSb.toString(),
-                    true,
-                    snapshot,
-                )
-            }
+            publishUi(state, content = state.accumulatedText + acc.turnTextSb.toString())
         }
     }
 
@@ -832,15 +824,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             )
         }
         if (updated) {
-            val snapshot = snapshotToolBlocks(state)
-            withContext(host.uiDispatcher) {
-                host.updateAssistantMessage(
-                    state.assistantId,
-                    state.accumulatedText + acc.turnTextSb.toString(),
-                    true,
-                    snapshot,
-                )
-            }
+            publishUi(state, content = state.accumulatedText + acc.turnTextSb.toString())
         }
 
         maybeStartEarlyReadOnlyTool(state, acc, toolCompleteId, chunk.name, chunk.args, argsText)
@@ -987,14 +971,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             }
         }
         if (rolledBackSnapshot != null) {
-            withContext(host.uiDispatcher) {
-                host.updateAssistantMessage(
-                    state.assistantId,
-                    state.accumulatedText + acc.turnTextSb.toString(),
-                    true,
-                    rolledBackSnapshot,
-                )
-            }
+            publishUi(state, content = state.accumulatedText + acc.turnTextSb.toString(), blocks = rolledBackSnapshot)
         }
         acc.resetForRetry(resetThrottle = true)
     }
@@ -1043,14 +1020,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             )
             ArrayList(state.allToolBlocks)
         }
-        withContext(host.uiDispatcher) {
-            host.updateAssistantMessage(
-                state.assistantId,
-                state.accumulatedText + acc.turnTextSb.toString(),
-                true,
-                fallbackSnapshot,
-            )
-        }
+        publishUi(state, content = state.accumulatedText + acc.turnTextSb.toString(), blocks = fallbackSnapshot)
         acc.resetForRetry(resetThrottle = false)
         return true
     }
@@ -1080,11 +1050,9 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
     ): NoToolCallsOutcome {
         AppLogger.info(TAG_STREAM, "runAgentLoop turn=${acc.turn} no tool calls → break (finishReason=${acc.turnFinishReason})")
         val blocksSnapshot = snapshotToolBlocks(state)
-        withContext(host.uiDispatcher) {
-            host.updateAssistantMessage(state.assistantId, state.accumulatedText, false, blocksSnapshot)
-        }
+        publishUi(state, isStreaming = false, blocks = blocksSnapshot)
         val turnParts = ChatPayloadCodec.buildTurnParts(blocksSnapshot, acc.turnStartBlockIndex, state.allToolInputs)
-        val blockMeta = blocksSnapshot.filter { it.kind == "tool_use" }.associateBy { it.id }
+        val blockMeta = toolBlockMeta(blocksSnapshot)
         host.persistAssistantTurn(
             turnParts = turnParts,
             usage = acc.lastUsage,
@@ -1205,7 +1173,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
 
         val preDispatchSnapshot = snapshotToolBlocks(state)
         val livePreviewParts = ChatPayloadCodec.buildTurnParts(preDispatchSnapshot, acc.turnStartBlockIndex, state.allToolInputs)
-        val liveMeta = preDispatchSnapshot.filter { it.kind == "tool_use" }.associateBy { it.id }
+        val liveMeta = toolBlockMeta(preDispatchSnapshot)
 
         val slots = acc.earlyToolSemaphore ?: Semaphore(host.maxConcurrentTools)
         val slotResults = arrayOfNulls<List<AgentContentPart>>(acc.toolCalls.size)
@@ -1235,18 +1203,10 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         for (parts in slotResults) parts?.let { resultParts.addAll(it) }
 
         val postBatchSnapshot = snapshotToolBlocks(state)
-        withContext(host.uiDispatcher) {
-            host.updateAssistantMessage(
-                state.assistantId,
-                state.accumulatedText,
-                true,
-                postBatchSnapshot,
-                isAwaitingModelResponse = true,
-            )
-        }
+        publishUi(state, isStreaming = true, blocks = postBatchSnapshot, isAwaitingModelResponse = true)
 
         val turnParts = ChatPayloadCodec.buildTurnParts(postBatchSnapshot, acc.turnStartBlockIndex, state.allToolInputs)
-        val blockMeta = postBatchSnapshot.filter { it.kind == "tool_use" }.associateBy { it.id }
+        val blockMeta = toolBlockMeta(postBatchSnapshot)
         // Prune completed turn's raw tool args so long multi-turn sessions don't retain dead JSON payloads.
         for ((id, _, _) in acc.toolCalls) {
             state.allToolInputs.remove(id)
@@ -1320,10 +1280,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
                 }
             }
             if (transitionedToRunning) {
-                val snapshot = snapshotToolBlocks(state)
-                withContext(host.uiDispatcher) {
-                    host.updateAssistantMessage(state.assistantId, state.accumulatedText, true, snapshot)
-                }
+                publishUi(state)
             }
 
             val precheck = if (ScriptedToolTurn.isScriptedId(id)) {
@@ -1441,10 +1398,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             )
         }
         if (updated && publish) {
-            val snapshot = snapshotToolBlocks(state)
-            withContext(host.uiDispatcher) {
-                host.updateAssistantMessage(state.assistantId, state.accumulatedText, true, snapshot)
-            }
+            publishUi(state)
         }
     }
 

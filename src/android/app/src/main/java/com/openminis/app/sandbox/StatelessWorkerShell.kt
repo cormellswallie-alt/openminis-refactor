@@ -608,46 +608,14 @@ internal class StatelessWorkerShell private constructor(
             sessionId: String,
             bindMounts: Map<String, String>,
             useNoSeccomp: Boolean,
-        ): Process {
-            val rootfsManager = RootfsManager.getInstance(context)
-            val cmd = mutableListOf<String>()
-            cmd.add(rootfsManager.prootBinary.absolutePath)
-            cmd.add("-0")
-            cmd.add("--link2symlink")
-            cmd.add("-r"); cmd.add(rootfsManager.rootfsDir.absolutePath)
-            cmd.add("-b"); cmd.add("/dev")
-            cmd.add("-b"); cmd.add("/proc")
-            cmd.add("-b"); cmd.add("/sys")
-            cmd.add("-w"); cmd.add("/root")
-            for ((linuxPath, hostPath) in bindMounts) {
-                cmd.add("-b"); cmd.add("$hostPath:$linuxPath")
-            }
-            val handlers = NativeOffloadServer.registeredHandlers
-            if (handlers.isNotEmpty()) {
-                cmd.add("--native-offload=${NativeOffloadServer.socketName}:${handlers.joinToString(",")}")
-            }
-            cmd.add("--fake-netlink")
-            cmd.add("/bin/sh")
-            cmd.add("-c")
-            cmd.add(WORKER_LOOP_SCRIPT)
-
-            val debugOffload = com.openminis.app.BuildConfig.DEV_TOOLS
-            val pb = ProcessBuilder(cmd)
-            val env = pb.environment()
-            env["PROOT_TMP_DIR"] = PRootKernel.getProotTmpDir(context).absolutePath
-            if (PRootKernel.nativeLibDir.isNotEmpty()) env["LD_LIBRARY_PATH"] = PRootKernel.nativeLibDir
-            if (PRootKernel.prootLoaderPath.isNotEmpty()) env["PROOT_LOADER"] = PRootKernel.prootLoaderPath
-            if (PRootKernel.prootLoader32Path.isNotEmpty()) env["PROOT_LOADER_32"] = PRootKernel.prootLoader32Path
-            env["TERM"] = "dumb"
-            env["PS1"] = ""
-            env["TZ"] = PRootKernel.posixTz()
-            if (debugOffload) env["MINIS_NOFF_DEBUG"] = "1"
-            env["MINIS_CHAT_SESSION_ID"] = sessionId
-            for ((k, v) in PRootKernel.customEnvironment) env[k] = v
-            if (useNoSeccomp) {
-                env[SeccompFallbackPolicy.NO_SECCOMP_ENV] = SeccompFallbackPolicy.NO_SECCOMP_VALUE
-            }
-            return pb.start()
-        }
+        ): Process = PRootLaunchSpec.buildProcessBuilder(
+            context = context,
+            sessionId = sessionId,
+            sessionBindMounts = bindMounts,
+            guestArgs = listOf("/bin/sh", "-c", WORKER_LOOP_SCRIPT),
+            useNoSeccomp = useNoSeccomp,
+            redirectErrorStream = false,
+            includeFakeNetlink = true,
+        ).start()
     }
 }

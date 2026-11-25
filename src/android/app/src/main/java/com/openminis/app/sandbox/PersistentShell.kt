@@ -234,74 +234,18 @@ class PersistentShell(
         }
         lastExitCode = null
 
-        val cmd = mutableListOf<String>()
-        cmd.add(rootfsManager.prootBinary.absolutePath)
-        cmd.add("-0")
-        // T141: see PRootKernel.buildProotCommand for rationale — translates
-        // hardlinks to symlinks so apk install of binutils/gcc works.
-        cmd.add("--link2symlink")
-        cmd.add("-r")
-        cmd.add(rootfsManager.rootfsDir.absolutePath)
-        cmd.add("-b"); cmd.add("/dev")
-        cmd.add("-b"); cmd.add("/proc")
-        cmd.add("-b"); cmd.add("/sys")
-        cmd.add("-w"); cmd.add("/root")
-
-        // Apply this session's bind mounts (session-specific, not global)
-        for ((linuxPath, hostPath) in sessionBindMounts) {
-            cmd.add("-b")
-            cmd.add("$hostPath:$linuxPath")
-        }
-
-        val handlers = NativeOffloadServer.registeredHandlers
-        if (handlers.isNotEmpty()) {
-            cmd.add("--native-offload=${NativeOffloadServer.socketName}:${handlers.joinToString(",")}")
-        }
-
-        cmd.add("/bin/sh")
-
         val debugOffload = com.openminis.app.BuildConfig.DEV_TOOLS
-
-        val processBuilder = ProcessBuilder(cmd)
-        // In debug builds we want proot's native_offload stderr logs in
-        // logcat, not merged into shell stdout (which would break the
-        // __MINIS_DONE__ marker detection). Release keeps the original
-        // merged behavior so no stderr output is lost silently.
-        processBuilder.redirectErrorStream(!debugOffload)
-
-        val env = processBuilder.environment()
-        env["PROOT_TMP_DIR"] = PRootKernel.getProotTmpDir(context).absolutePath
-        if (PRootKernel.nativeLibDir.isNotEmpty()) {
-            env["LD_LIBRARY_PATH"] = PRootKernel.nativeLibDir
-        }
-        if (PRootKernel.prootLoaderPath.isNotEmpty()) {
-            env["PROOT_LOADER"] = PRootKernel.prootLoaderPath
-        }
-        if (PRootKernel.prootLoader32Path.isNotEmpty()) {
-            env["PROOT_LOADER_32"] = PRootKernel.prootLoader32Path
-        }
-        env["TERM"] = "dumb"
-        env["PS1"] = ""  // Suppress prompt to avoid polluting output
-        // Timezone: customEnvironment["TZ"] is seeded at PRootKernel.boot(),
-        // but refresh it here in case the system timezone changed between boot
-        // and now.
-        env["TZ"] = PRootKernel.posixTz()
-        if (debugOffload) env["MINIS_NOFF_DEBUG"] = "1"
-        // T340: forward the chat session id to native_offload handlers via
-        // proot env. NativeOffloadServer reads this off `request.env` and
-        // hands it to OffloadPermissionManager so ASK_ONCE grants/denials
-        // are scoped per chat session, not globally.
-        env["MINIS_CHAT_SESSION_ID"] = sessionId
-
-        for ((key, value) in PRootKernel.customEnvironment) {
-            env[key] = value
-        }
-
-        // [T-android-seccomp-selfheal / GH#186] Applied last so nothing above
-        // can clobber it once this device is known to need it.
-        if (useNoSeccomp) {
-            env[SeccompFallbackPolicy.NO_SECCOMP_ENV] = SeccompFallbackPolicy.NO_SECCOMP_VALUE
-        }
+        // In debug builds keep proot's native_offload stderr out of stdout so
+        // __MINIS_DONE__ markers stay intact; release merges stderr.
+        val processBuilder = PRootLaunchSpec.buildProcessBuilder(
+            context = context,
+            sessionId = sessionId,
+            sessionBindMounts = sessionBindMounts,
+            guestArgs = listOf("/bin/sh"),
+            useNoSeccomp = useNoSeccomp,
+            redirectErrorStream = !debugOffload,
+            includeFakeNetlink = false,
+        )
 
         val p = processBuilder.start()
         process = p
