@@ -37,6 +37,14 @@ object EnvVarRedactor {
     @Volatile
     var envVarRepository: EnvVarRepository? = null
 
+    private class CachedRedactPlan(
+        val sourceDict: Map<String, String>,
+        val pairs: List<Pair<String, String>>,
+    )
+
+    @Volatile
+    private var cachedPlan: CachedRedactPlan? = null
+
     fun mask(value: String): String {
         val n = value.length
         if (n < 8) return "*".repeat(n)
@@ -79,10 +87,28 @@ object EnvVarRedactor {
     fun redactIfEnabled(output: String): Pair<String, Int> {
         if (!EnvVarPrivacyStore.isEnabled) return output to 0
         val repo = envVarRepository ?: return output to 0
-        val values = repo.allAsDict().values.filter { it.isNotEmpty() }
-        if (values.isEmpty()) return output to 0
-        val (masked, hits) = redact(output, values)
-        if (hits == 0) return masked to 0
-        return (masked + "\n\n" + SYSTEM_REMINDER) to hits
+        val dict = repo.allAsDict()
+        if (dict.isEmpty()) return output to 0
+        val plan = cachedPlan?.takeIf { it.sourceDict === dict } ?: run {
+            val pairs = dict.values
+                .asSequence()
+                .filter { it.length >= MIN_MATCH_LEN }
+                .distinct()
+                .sortedByDescending { it.length }
+                .map { it to mask(it) }
+                .toList()
+            CachedRedactPlan(dict, pairs).also { cachedPlan = it }
+        }
+        if (plan.pairs.isEmpty()) return output to 0
+        var current = output
+        var hits = 0
+        for ((secret, maskedSecret) in plan.pairs) {
+            if (current.contains(secret)) {
+                current = current.replace(secret, maskedSecret)
+                hits++
+            }
+        }
+        if (hits == 0) return current to 0
+        return (current + "\n\n" + SYSTEM_REMINDER) to hits
     }
 }

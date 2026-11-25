@@ -247,18 +247,20 @@ internal class StatelessWorkerShell private constructor(
         val startMs = System.currentTimeMillis()
         val deadlineMs = startMs + timeout
         var pollMs = INITIAL_POLL_MS
+        val outRaf = runCatching { RandomAccessFile(outFile, "r") }.getOrNull()
 
         fun drainOutputFile(endOfInput: Boolean): Boolean {
             val len = outFile.length()
             var readAny = false
             if (len > fileOffset) {
                 runCatching {
-                    RandomAccessFile(outFile, "r").use { raf ->
-                        raf.seek(fileOffset)
+                    val reader = outRaf ?: RandomAccessFile(outFile, "r")
+                    try {
+                        reader.seek(fileOffset)
                         var remaining = len - fileOffset
                         while (remaining > 0) {
                             val toRead = minOf(remaining, rawBuf.size.toLong()).toInt()
-                            val n = raf.read(rawBuf, 0, toRead)
+                            val n = reader.read(rawBuf, 0, toRead)
                             if (n <= 0) break
                             fileOffset += n
                             remaining -= n
@@ -278,6 +280,8 @@ internal class StatelessWorkerShell private constructor(
                             }
                             carryBuf.compact()
                         }
+                    } finally {
+                        if (outRaf == null) runCatching { reader.close() }
                     }
                 }
             }
@@ -348,6 +352,7 @@ internal class StatelessWorkerShell private constructor(
             killJob(pidFile)
             throw ce
         } finally {
+            runCatching { outRaf?.close() }
             activeJobs.remove(token)
             lastActivityMs.set(System.currentTimeMillis())
             runCatching { jobHostDir.deleteRecursively() }

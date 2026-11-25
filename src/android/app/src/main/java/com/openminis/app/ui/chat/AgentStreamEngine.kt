@@ -68,7 +68,29 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         val toolInputChunkRings: MutableMap<String, MutableList<String>> = ConcurrentHashMap()
         val allToolInputs = mutableMapOf<String, String>()
         val fallbackReasons = mutableListOf<String>()
-        var accumulatedText: String = ""
+        private val accumulatedTextSb = StringBuilder()
+        @Volatile
+        private var cachedAccumulatedText: String? = ""
+        val accumulatedText: String
+            get() = cachedAccumulatedText ?: synchronized(accumulatedTextSb) {
+                cachedAccumulatedText ?: accumulatedTextSb.toString().also { cachedAccumulatedText = it }
+            }
+
+        fun appendAccumulatedText(delta: String) {
+            if (delta.isEmpty()) return
+            synchronized(accumulatedTextSb) {
+                accumulatedTextSb.append(delta)
+                cachedAccumulatedText = null
+            }
+        }
+
+        fun clearAccumulatedText() {
+            synchronized(accumulatedTextSb) {
+                accumulatedTextSb.setLength(0)
+                cachedAccumulatedText = ""
+            }
+        }
+
         var lastContextTokens: Int = 0
         var hasAttemptedOverflowSelfHeal: Boolean = false
         var loopExitedNormally: Boolean = false
@@ -155,7 +177,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
                 executeTurnStreamWithRecovery(state, acc)
 
                 val turnText = acc.turnTextSb.toString()
-                state.accumulatedText += turnText
+                state.appendAccumulatedText(turnText)
 
                 val assistantParts = mutableListOf<AgentContentPart>()
                 if (turnText.isNotEmpty()) assistantParts.add(AgentContentPart.Text(turnText))
@@ -342,7 +364,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
                 }
                 host.clearStreamOverlay(sealedId)
                 state.assistantId = freshAssistantId
-                state.accumulatedText = ""
+                state.clearAccumulatedText()
                 synchronized(state.allToolBlocks) { state.allToolBlocks.clear() }
                 state.allToolInputs.clear()
                 state.toolInputChunkRings.clear()
@@ -1207,6 +1229,10 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
 
         val turnParts = ChatPayloadCodec.buildTurnParts(postBatchSnapshot, acc.turnStartBlockIndex, state.allToolInputs)
         val blockMeta = postBatchSnapshot.filter { it.kind == "tool_use" }.associateBy { it.id }
+        // Prune completed turn's raw tool args so long multi-turn sessions don't retain dead JSON payloads.
+        for ((id, _, _) in acc.toolCalls) {
+            state.allToolInputs.remove(id)
+        }
         val assistantDbId = host.persistAssistantTurn(
             turnParts = turnParts,
             usage = acc.lastUsage,
@@ -1378,6 +1404,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             )
             return resultParts
         } finally {
+            state.toolInputChunkRings.remove(id)
             host.onToolFinished()
         }
     }
@@ -1449,7 +1476,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         state.scheduledResumeNudgeOwed = scheduledFire != null
         state.assistantId = handled.newAssistantId
         host.scriptedTurnFor(handled.prefill)?.let { state.pendingScriptedTurn = it }
-        state.accumulatedText = ""
+        state.clearAccumulatedText()
         synchronized(state.allToolBlocks) { state.allToolBlocks.clear() }
         state.allToolInputs.clear()
         state.toolInputChunkRings.clear()

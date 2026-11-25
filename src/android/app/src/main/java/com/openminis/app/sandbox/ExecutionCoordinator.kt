@@ -444,7 +444,10 @@ object ExecutionCoordinator {
             }
             if (recheck != null) {
                 recheck.shutdown()
+                workerShells.remove(sessionId, recheck)
             }
+            pruneIdleWorkers()
+            evictLruIdleWorkerIfAtCap(excludeSessionId = sessionId)
             val created = StatelessWorkerShell.forPRoot(
                 context = appContext,
                 sessionId = sessionId,
@@ -455,6 +458,42 @@ object ExecutionCoordinator {
             created
         }
     }
+
+    /**
+     * Shut down idle resident workers that have been inactive longer than [idleTtlMs],
+     * preventing multi-session switches from accumulating Android phantom processes.
+     */
+    internal fun pruneIdleWorkers(
+        nowMs: Long = System.currentTimeMillis(),
+        idleTtlMs: Long = WORKER_IDLE_TTL_MS,
+    ): Int {
+        var evicted = 0
+        for ((sid, worker) in workerShells.entries.toList()) {
+            if (worker.activeJobCount == 0 && (!worker.isAlive || worker.idleDurationMs(nowMs) >= idleTtlMs)) {
+                if (workerShells.remove(sid, worker)) {
+                    worker.shutdown()
+                    evicted++
+                }
+            }
+        }
+        return evicted
+    }
+
+    private fun evictLruIdleWorkerIfAtCap(excludeSessionId: String) {
+        while (workerShells.size >= MAX_RESIDENT_WORKERS) {
+            val oldestIdle = workerShells.entries
+                .filter { (sid, w) -> sid != excludeSessionId && w.activeJobCount == 0 }
+                .maxByOrNull { (_, w) -> w.idleDurationMs() }
+                ?: break
+            if (workerShells.remove(oldestIdle.key, oldestIdle.value)) {
+                oldestIdle.value.shutdown()
+                Log.i(TAG, "[${oldestIdle.key}] Evicted LRU idle stateless worker (cap=$MAX_RESIDENT_WORKERS)")
+            }
+        }
+    }
+
+    private const val MAX_RESIDENT_WORKERS = 3
+    private const val WORKER_IDLE_TTL_MS = 120_000L
 
     private fun retireWorker(sessionId: String, expected: StatelessWorkerShell) {
         if (workerShells.remove(sessionId, expected)) {

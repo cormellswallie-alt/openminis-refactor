@@ -106,6 +106,9 @@ internal class StreamProjectionStore(
             toolStatus = status ?: prev?.toolStatus,
             toolName = HelperRunner.TOOL_NAME,
         )
+        if (delegateBlockOverrides.size > MAX_DELEGATE_OVERRIDES) {
+            pruneTerminalDelegateOverrides(keepId = toolId)
+        }
         fun patch(blocks: List<AssistantBlock>): List<AssistantBlock>? {
             if (blocks.none { it.id == toolId }) return null
             return blocks.map {
@@ -129,6 +132,18 @@ internal class StreamProjectionStore(
 
     fun clearDelegateOverride(toolId: String) {
         delegateBlockOverrides.remove(toolId)
+    }
+
+    private fun pruneTerminalDelegateOverrides(keepId: String) {
+        val it = delegateBlockOverrides.entries.iterator()
+        while (it.hasNext() && delegateBlockOverrides.size > MAX_DELEGATE_OVERRIDES) {
+            val entry = it.next()
+            if (entry.key == keepId) continue
+            val st = entry.value.toolStatus
+            if (st == ToolBlockStatus.SUCCESS || st == ToolBlockStatus.FAILED || st == ToolBlockStatus.TIMEOUT) {
+                it.remove()
+            }
+        }
     }
 
     fun updateAssistantMessage(
@@ -157,13 +172,10 @@ internal class StreamProjectionStore(
             val now = nowMs()
             val elapsed = now - st.lastFlushMs
             val throttle = streamFlushThrottleMs(content.length)
-            val newChunk = if (content.length > st.lastFlushedLen) {
-                content.substring(st.lastFlushedLen.coerceAtMost(content.length))
-            } else ""
             val unflushed = content.length - st.lastFlushedLen
             val newlineFlush = content.length < ChatViewModel.NEWLINE_FLUSH_MAX_LEN &&
-                newChunk.contains('\n') &&
-                unflushed >= ChatViewModel.NEWLINE_FLUSH_MIN_CHARS
+                unflushed >= ChatViewModel.NEWLINE_FLUSH_MIN_CHARS &&
+                content.indexOf('\n', st.lastFlushedLen.coerceIn(0, content.length)) >= 0
 
             fun publish(text: String, blocks: List<AssistantBlock>, awaiting: Boolean) {
                 _streamingById.update { map ->
@@ -264,6 +276,8 @@ internal class StreamProjectionStore(
     }
 
     companion object {
+        private const val MAX_DELEGATE_OVERRIDES = 128
+
         fun streamFlushThrottleMs(len: Int): Long = when {
             len < 500 -> 200L
             len < 2_000 -> 300L

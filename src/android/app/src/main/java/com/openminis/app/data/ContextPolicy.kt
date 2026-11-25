@@ -217,15 +217,22 @@ object ContextSizeMeter {
         var asciiOther = 0
         var nonAscii = 0
         var i = 0
-        while (i < text.length) {
-            val cp = text.codePointAt(i)
-            when {
-                cp >= 128 -> nonAscii++
-                cp in 65..90 || cp in 97..122 -> letters++
-                cp in 48..57 -> digits++
-                else -> asciiOther++
+        val len = text.length
+        while (i < len) {
+            val ch = text[i]
+            val code = ch.code
+            if (code < 128) {
+                when {
+                    code in 65..90 || code in 97..122 -> letters++
+                    code in 48..57 -> digits++
+                    else -> asciiOther++
+                }
+                i++
+            } else {
+                val cp = text.codePointAt(i)
+                nonAscii++
+                i += Character.charCount(cp)
             }
-            i += Character.charCount(cp)
         }
         val tokens = letters / 4.5 + digits / 2.0 + asciiOther * 0.35 + nonAscii
         return kotlin.math.ceil(tokens).toInt()
@@ -284,8 +291,8 @@ object ContextSizeMeter {
         return tokens
     }
 
-    private val messageEstimateCache = object : LinkedHashMap<String, Int>(1024, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Int>?) = size > 20_000
+    private val messageEstimateCache = object : LinkedHashMap<String, Int>(512, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Int>?) = size > 4_096
     }
 
     /** System prompt plus tool schemas — the part the history-only estimate omitted. */
@@ -366,9 +373,16 @@ object ContextSizeMeter {
      * states one: the larger of the numbers (the request overflowed the limit).
      * Numbers under 1000 are status codes and the like.
      */
+    private val COMMA_IN_NUMBERS_REGEX = Regex("(?<=\\d),(?=\\d{3})")
+    private val FOUR_PLUS_DIGITS_REGEX = Regex("\\d{4,}")
+
     fun requestedTokens(overflowMessage: String): Int? {
-        val cleaned = overflowMessage.replace(Regex("(?<=\\d),(?=\\d{3})"), "")
-        return Regex("\\d{4,}").findAll(cleaned).mapNotNull { it.value.toIntOrNull() }.filter { it >= 1000 }.maxOrNull()
+        val cleaned = if (',' in overflowMessage) {
+            COMMA_IN_NUMBERS_REGEX.replace(overflowMessage, "")
+        } else {
+            overflowMessage
+        }
+        return FOUR_PLUS_DIGITS_REGEX.findAll(cleaned).mapNotNull { it.value.toIntOrNull() }.filter { it >= 1000 }.maxOrNull()
     }
 
     /**
@@ -467,12 +481,20 @@ object ContextSizeMeter {
     }
 
     fun imageTokens(data: ByteArray): Int {
-        val head = data.copyOfRange(0, minOf(64, data.size)).contentHashCode()
-        val tail = data.copyOfRange(maxOf(0, data.size - 64), data.size).contentHashCode()
+        val head = hashByteSlice(data, 0, minOf(64, data.size))
+        val tail = hashByteSlice(data, maxOf(0, data.size - 64), data.size)
         val key = "${data.size}-$head-$tail"
         synchronized(imageTokenCache) { imageTokenCache[key]?.let { return it } }
         val tokens = BPETokenizer.countImageTokens(data)
         synchronized(imageTokenCache) { imageTokenCache[key] = tokens }
         return tokens
+    }
+
+    private fun hashByteSlice(data: ByteArray, start: Int, end: Int): Int {
+        var result = 1
+        for (i in start until end) {
+            result = 31 * result + data[i].toInt()
+        }
+        return result
     }
 }
