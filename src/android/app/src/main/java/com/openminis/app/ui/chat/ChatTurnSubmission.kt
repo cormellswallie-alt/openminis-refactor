@@ -710,17 +710,17 @@ internal fun ChatViewModel.generateSessionTitleIfNeeded() {
             selectedGroupId = modelState.selectedGroupId.value,
             activeEntryId = modelState.activeEntryId.value,
             currentModelId = modelState.currentModel?.id,
-            modelState.currentProvider = modelState.currentProvider,
+            currentProvider = modelState.currentProvider,
             messagesSnapshot = _messages.value,
             readLatestMessages = { _messages.value },
             onTitleAndCategoryUpdated = { title, category ->
-                if (runState.setSessionTitle(= UNTITLED_SESSION_TITLE || runState.sessionTitle.value.isEmpty()) {)
+                if (runState.sessionTitle.value == UNTITLED_SESSION_TITLE || runState.sessionTitle.value.isEmpty()) {
                     runState.setSessionTitle(title)
                 }
                 runState.setSessionCategory(category)
             },
             onFallbackTitleUpdated = { fallbackTitle ->
-                if (runState.setSessionTitle(= UNTITLED_SESSION_TITLE || runState.sessionTitle.value.isEmpty()) {)
+                if (runState.sessionTitle.value == UNTITLED_SESSION_TITLE || runState.sessionTitle.value.isEmpty()) {
                     runState.setSessionTitle(fallbackTitle)
                 }
             },
