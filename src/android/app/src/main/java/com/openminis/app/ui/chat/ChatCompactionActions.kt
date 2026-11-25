@@ -38,7 +38,7 @@ internal fun ChatViewModel.contextMeasurement(override: Double? = null): Context
     internal fun ChatViewModel.logContextDecision(site: String, m: ContextMeterCoordinator.Measurement, threshold: Int, window: Int, result: String) {
         AppLogger.info(
             TAG,
-            "[CtxMeter] decide site=$site model=${currentModel?.id ?: "?"} history=${m.history} fixed=${m.fixed} " +
+            "[CtxMeter] decide site=$site model=${modelState.currentModel?.id ?: "?"} history=${m.history} fixed=${m.fixed} " +
                 "ratio=${"%.3f".format(m.ratio)}(${m.source}) measured=${m.measured} threshold=$threshold " +
                 "window=$window → $result",
         )
