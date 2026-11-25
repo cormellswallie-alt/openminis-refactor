@@ -78,7 +78,7 @@ class ProviderModelRouterAndTransferTest {
         )
         val cfg = ProviderConfig(
             instances = mutableListOf(oldProv, newProv, disabledProv),
-            modelEntries = mutableListOf(eOld, eNewImageOnly, eNewText, eAbsent, eHidden, eDisabled),
+            modelEntries = mutableListOf(eOld, eAbsent, eNewText, eNewImageOnly, eHidden, eDisabled),
             modelGroups = mutableListOf(group),
             defaultSubGroupId = "g1",
         )
