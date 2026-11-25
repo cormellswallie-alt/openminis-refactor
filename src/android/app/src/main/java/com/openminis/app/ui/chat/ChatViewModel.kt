@@ -541,6 +541,10 @@ class ChatViewModel(
             clearSubtitle = context.getString(R.string.slash_clear_subtitle),
             skillRows = skillRows,
             mcpRows = mcpRows,
+            steerSubtitle = context.getString(
+                if (runState.steeringModeEnabled.value) R.string.slash_steer_on
+                else R.string.slash_steer_off,
+            ),
         )
     }
 
@@ -589,6 +593,12 @@ class ChatViewModel(
     fun submitQuestionnaire(toolId: String, result: AskUserTool.QuestionnaireResult) =
         runState.submitQuestionnaire(toolId, result)
     fun skipQuestionnaire(toolId: String) = runState.skipQuestionnaire(toolId)
+
+    val steeringModeEnabled: StateFlow<Boolean> get() = runState.steeringModeEnabled
+    val pendingToolSteers: StateFlow<List<PendingSteeringNote>> get() = runState.pendingToolSteers
+    fun setSteeringModeEnabled(enabled: Boolean) = runState.setSteeringModeEnabled(enabled)
+    fun toggleSteeringMode(): Boolean = runState.toggleSteeringMode()
+    fun removePendingToolSteer(id: String) = runState.removeToolSteer(id)
 
     fun toggleBrowserSheet() = overlaysStore.toggleBrowserSheet { browserTabPool.ensureTabForUI() }
     fun dismissBrowserSheet() = overlaysStore.dismissBrowserSheet()
@@ -720,6 +730,7 @@ class ChatViewModel(
             skillRepository = skillRepository,
             mcpRepository = mcpRepository,
             memoryRepository = memoryRepository,
+            fsSessionId = fsSessionId,
         )
 
     // ── Legacy tool compatibility methods ─────────────────────────────────

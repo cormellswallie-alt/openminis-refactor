@@ -2151,4 +2151,14 @@
     <string name="questionnaire_expand_sheet">展开填写</string>
     <string name="thinking_header_streaming">深度思考中</string>
     <string name="thinking_header_done">思维链</string>
+
+    <!-- Mid-loop ToolResult Steering -->
+    <string name="chat_steer_toggle_label">纠偏</string>
+    <string name="chat_steer_banner_active_streaming">过程纠偏已开启 · 发送文本将随下次工具结果无中断注入</string>
+    <string name="chat_steer_banner_active_idle">过程纠偏已开启 · 运行期间发送文本将随工具结果注入</string>
+    <string name="chat_steer_banner_staged">已暂存 %1$d 条纠偏 · 将随下次工具结果自动注入</string>
+    <string name="chat_steer_disable_cd">关闭过程纠偏</string>
+    <string name="chat_steer_remove_note_cd">移除此条纠偏</string>
+    <string name="slash_steer_on">过程工具结果纠偏：已开启</string>
+    <string name="slash_steer_off">过程工具结果纠偏：已关闭</string>
 </resources>

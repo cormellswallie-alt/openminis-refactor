@@ -137,7 +137,8 @@ internal fun ChatScreenComposer(
         val slashFilter by viewModel.slashFilter.collectAsStateWithLifecycle()
         val memoryEnabled by viewModel.memoryEnabled.collectAsStateWithLifecycle()
         val thinkingLevel by viewModel.thinkingLevel.collectAsStateWithLifecycle()
-        val filteredSlashCommands = remember(showSlashMenu, slashFilter, memoryEnabled, thinkingLevel) {
+        val steeringModeEnabled by viewModel.steeringModeEnabled.collectAsStateWithLifecycle()
+        val filteredSlashCommands = remember(showSlashMenu, slashFilter, memoryEnabled, thinkingLevel, steeringModeEnabled) {
             viewModel.filteredSlashCommands()
         }
 
@@ -178,6 +179,7 @@ internal fun ChatScreenComposer(
             }
         }
         val showMoveCapsule by viewModel.hasInjectedShareContent.collectAsStateWithLifecycle()
+        val pendingToolSteers by viewModel.pendingToolSteers.collectAsStateWithLifecycle()
 
         Box(
             modifier = Modifier
@@ -214,6 +216,14 @@ internal fun ChatScreenComposer(
                 MoveToSessionOverlayCapsule(
                     visible = showMoveCapsule,
                     onClick = { showMoveSheet = true },
+                )
+
+                ComposerSteeringTray(
+                    enabled = steeringModeEnabled,
+                    isStreaming = isStreaming,
+                    pendingSteers = pendingToolSteers,
+                    onRemoveNote = { viewModel.removePendingToolSteer(it) },
+                    onDisableMode = { viewModel.setSteeringModeEnabled(false) },
                 )
 
                 PastedTextChipsRow(

@@ -87,6 +87,8 @@ internal interface AgentStreamHost {
     fun sanitizeAgentHistory()
     val pendingSteerCount: Int
     fun drainPendingSteers(): List<String>
+    fun drainPendingToolSteers(): List<PendingSteeringNote> = emptyList()
+    fun hasPendingToolSteers(): Boolean = false
     suspend fun persistSteerUserMessage(note: String): String?
     fun insertMessageBeforeAssistant(assistantId: String, message: ChatMessage)
     fun appendAssistantPlaceholder(assistantId: String, thinkingLevel: ThinkingLevel)
@@ -266,6 +268,8 @@ internal class ChatViewModelStreamHost(private val vm: ChatViewModel) : AgentStr
     override val pendingSteerCount: Int get() = vm.runState.pendingSteerMessages.size
 
     override fun drainPendingSteers(): List<String> = vm.runState.drainPendingSteers()
+    override fun drainPendingToolSteers(): List<PendingSteeringNote> = vm.runState.drainToolSteers()
+    override fun hasPendingToolSteers(): Boolean = vm.runState.pendingToolSteers.value.isNotEmpty()
 
     override suspend fun persistSteerUserMessage(note: String): String? = runCatching {
         vm.chatRepository.appendMessage(

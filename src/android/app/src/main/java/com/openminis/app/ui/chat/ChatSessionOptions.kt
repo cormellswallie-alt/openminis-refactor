@@ -142,11 +142,23 @@ internal fun ChatViewModel.executeSlashCommandImpl(cmd: SlashCommand, currentInp
         "memory" -> toggleMemoryEnabled()
         "thinking" -> toggleThinking()
         "clear" -> overlaysStore.requestClearChatConfirm()
+        "steer" -> toggleSteeringModeFromSlash()
         "stats" -> showSessionStats()
         else -> AppLogger.info(TAG, "[Slash] unrecognized id=${cmd.id} — no dispatch")
     }
     exec.pendingCaret?.let { draftStore.setPendingCaret(it) }
     return exec.nextInput
+}
+
+internal fun ChatViewModel.toggleSteeringModeFromSlash() {
+    val enabled = runState.toggleSteeringMode()
+    appendSystemInfo(
+        text = context.getString(
+            if (enabled) com.openminis.app.R.string.slash_steer_on
+            else com.openminis.app.R.string.slash_steer_off,
+        ),
+        iconKind = "steer",
+    )
 }
 
 internal fun ChatViewModel.showSessionStats() {

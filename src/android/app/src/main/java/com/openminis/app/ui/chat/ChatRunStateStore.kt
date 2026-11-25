@@ -55,6 +55,13 @@ internal class ChatRunStateStore(initialMemoryEnabled: Boolean) {
     private val _promptQueue = MutableStateFlow<List<QueuedPrompt>>(emptyList())
     val promptQueue: StateFlow<List<QueuedPrompt>> = _promptQueue.asStateFlow()
 
+    /** Opt-in live mid-loop steering mode (user manually toggles on/off; default OFF). */
+    private val _steeringModeEnabled = MutableStateFlow(false)
+    val steeringModeEnabled: StateFlow<Boolean> = _steeringModeEnabled.asStateFlow()
+
+    private val _pendingToolSteers = MutableStateFlow<List<PendingSteeringNote>>(emptyList())
+    val pendingToolSteers: StateFlow<List<PendingSteeringNote>> = _pendingToolSteers.asStateFlow()
+
     private val _pendingQuestionnaire = MutableStateFlow<PendingQuestionnaire?>(null)
     val pendingQuestionnaire: StateFlow<PendingQuestionnaire?> = _pendingQuestionnaire.asStateFlow()
 
@@ -193,6 +200,38 @@ internal class ChatRunStateStore(initialMemoryEnabled: Boolean) {
         val out = pendingSteerMessages.toList()
         pendingSteerMessages.clear()
         out
+    }
+
+    fun setSteeringModeEnabled(enabled: Boolean) {
+        _steeringModeEnabled.value = enabled
+    }
+
+    fun toggleSteeringMode(): Boolean {
+        val next = !_steeringModeEnabled.value
+        _steeringModeEnabled.value = next
+        return next
+    }
+
+    fun enqueueToolSteer(text: String): PendingSteeringNote? {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return null
+        val note = PendingSteeringNote(
+            id = "steer_${System.currentTimeMillis()}_${(Math.random() * 1_000_000).toInt()}",
+            text = trimmed,
+        )
+        _pendingToolSteers.update { it + note }
+        return note
+    }
+
+    fun removeToolSteer(id: String) {
+        _pendingToolSteers.update { list -> list.filterNot { it.id == id } }
+    }
+
+    fun drainToolSteers(): List<PendingSteeringNote> =
+        _pendingToolSteers.getAndUpdate { emptyList() }
+
+    fun clearToolSteers() {
+        _pendingToolSteers.value = emptyList()
     }
 
     fun setSessionTitle(title: String) {

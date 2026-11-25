@@ -2345,4 +2345,14 @@
     <string name="questionnaire_expand_sheet">Expand</string>
     <string name="thinking_header_streaming">Thinking</string>
     <string name="thinking_header_done">Thought Process</string>
+
+    <!-- Mid-loop ToolResult Steering -->
+    <string name="chat_steer_toggle_label">Steer</string>
+    <string name="chat_steer_banner_active_streaming">Live steering ON · text attaches to next tool result</string>
+    <string name="chat_steer_banner_active_idle">Live steering ON · sends while running inject into tool results</string>
+    <string name="chat_steer_banner_staged">%1$d steering note(s) queued for next tool result</string>
+    <string name="chat_steer_disable_cd">Turn off live steering</string>
+    <string name="chat_steer_remove_note_cd">Remove steering note</string>
+    <string name="slash_steer_on">Live tool-result steering: ON</string>
+    <string name="slash_steer_off">Live tool-result steering: OFF</string>
 </resources>

@@ -1,6 +1,7 @@
 package com.openminis.app.ui.chat
 
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
@@ -85,6 +86,7 @@ internal class ChatComposerMenuStore(
         skillRows: List<SlashCommand>,
         mcpRows: List<SlashCommand>,
         statsSubtitle: String = DEFAULT_STATS_SUBTITLE,
+        steerSubtitle: String = DEFAULT_STEER_SUBTITLE,
     ): List<SlashCommand> {
         val filter = _slashFilter.value.lowercase()
         val base = availableSlashCommands.map { cmd ->
@@ -94,6 +96,7 @@ internal class ChatComposerMenuStore(
                 "thinking" -> cmd.copy(subtitle = thinkingSubtitle)
                 "clear" -> cmd.copy(subtitle = clearSubtitle)
                 "stats" -> cmd.copy(subtitle = statsSubtitle)
+                "steer" -> cmd.copy(subtitle = steerSubtitle)
                 else -> cmd
             }
         }
@@ -296,6 +299,7 @@ internal class ChatComposerMenuStore(
         private const val MAX_TYPED_SLASH_LEN = 30
         private const val MENTION_MATCH_LIMIT = 50
         const val DEFAULT_STATS_SUBTITLE = "Session tokens, cache hit rate & speed"
+        const val DEFAULT_STEER_SUBTITLE = "Live tool-result steering"
 
         internal fun startsWithSlash(text: String): Boolean =
             text.startsWith("/") || text.startsWith("／")
@@ -305,6 +309,7 @@ internal class ChatComposerMenuStore(
             SlashCommand(id = "compact", icon = Icons.Default.Compress, title = "Compact", subtitle = ""),
             SlashCommand(id = "memory", icon = Icons.Default.Psychology, title = "Memory", subtitle = ""),
             SlashCommand(id = "thinking", icon = Icons.Default.Lightbulb, title = "Thinking", subtitle = ""),
+            SlashCommand(id = "steer", icon = Icons.AutoMirrored.Filled.AltRoute, title = "Steer", subtitle = DEFAULT_STEER_SUBTITLE),
             SlashCommand(id = "stats", icon = Icons.Default.Info, title = "Stats", subtitle = DEFAULT_STATS_SUBTITLE),
         )
     }

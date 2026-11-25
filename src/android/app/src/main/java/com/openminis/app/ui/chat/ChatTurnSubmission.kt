@@ -59,8 +59,17 @@ internal fun ChatViewModel.submitPromptImpl(
         com.openminis.app.agent.jobs.AgentJobRegistry.clearDelegationMute(activeSessionId)
         // [T-android-paste-mediaref] `[Pasted#N]` markers are NOT expanded here any more.
         val trimmed = text.trim()
-        // While streaming, enqueue instead of silently dropping (iOS: send vs enqueuePrompt).
+        // While streaming, route to live ToolResult steering when the user manually
+        // enabled Steering Mode (pure-text messages), otherwise enqueue as a follow-up turn.
         if (runState.isStreaming.value) {
+            if (!headless &&
+                runState.steeringModeEnabled.value &&
+                overlaysStore.attachments.value.isEmpty() &&
+                trimmed.isNotEmpty()
+            ) {
+                return if (runState.enqueueToolSteer(trimmed) != null) SubmitOutcome.Queued
+                else SubmitOutcome.Rejected("steer_declined")
+            }
             val origin = if (headless) QueuedPromptOrigin.PROGRAMMATIC else QueuedPromptOrigin.USER
             return if (enqueuePromptImpl(text, origin, prefill)) SubmitOutcome.Queued
             else SubmitOutcome.Rejected("enqueue_declined")
@@ -80,6 +89,15 @@ internal fun ChatViewModel.submitPromptImpl(
                 iconKind = "compact",
             )
             return SubmitOutcome.Rejected("session_compacting")
+        }
+        // Inline `!command` shell passthrough: executes directly in the session
+        // sandbox with zero LLM round-trip (works offline / without a provider).
+        if (!headless && overlaysStore.attachments.value.isEmpty()) {
+            val inlineShellCmd = InlineShellShortcut.parseCommand(trimmed)
+            if (inlineShellCmd != null) {
+                val editingId = draftStore.takeEditingMessageId()
+                return executeInlineShellShortcut(trimmed, inlineShellCmd, editingId)
+            }
         }
         // Context pressure check. Unlike before, needsCompact now HOLDS the
         // send: either compact silently (auto-compact on) or ask first. The
@@ -356,6 +374,14 @@ internal fun ChatViewModel.launchManagedStreamJob(
                     AppLogger.info(TAG_STREAM, "$label runAgentLoop RETURN normal")
                 }
                 if (drainOnly || drainQueueAfterLoop) {
+                    // Safety net: if the user staged steering notes during the final
+                    // text-only turn (when no tool call returned to carry them),
+                    // promote them into a normal follow-up turn so nothing is dropped.
+                    val leftoverSteers = runState.drainToolSteers()
+                    if (leftoverSteers.isNotEmpty()) {
+                        val merged = leftoverSteers.joinToString("\n") { it.text }
+                        enqueuePromptImpl(merged, QueuedPromptOrigin.USER, includeComposerAttachments = false)
+                    }
                     drainQueuedPrompts(provider, systemPrompt, fallbackProviders, activeFallbackStrategy)
                     AppLogger.info(TAG_STREAM, "$label drainQueuedPrompts RETURN")
                 }

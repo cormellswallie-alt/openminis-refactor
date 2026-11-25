@@ -865,6 +865,7 @@ internal fun ChatViewModel.clearChatImpl() {
         runState.setCanResume(false)
         overlaysStore.clearAttachments()
         runState.clearPromptQueue()
+        runState.clearToolSteers()
         draftStore.clearShareInjectedFlag()
         // T261: tool-detail sheet is per-session UI state — clear it so a
         // newly cleared chat doesn't briefly flash a stale tool's sheet

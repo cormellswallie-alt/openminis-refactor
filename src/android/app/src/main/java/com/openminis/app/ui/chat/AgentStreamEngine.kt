@@ -1199,8 +1199,27 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         }
         acc.cancelEarlyToolJobs()
 
-        val resultParts = mutableListOf<AgentContentPart>()
-        for (parts in slotResults) parts?.let { resultParts.addAll(it) }
+        val rawResultParts = mutableListOf<AgentContentPart>()
+        for (parts in slotResults) parts?.let { rawResultParts.addAll(it) }
+
+        val pendingToolSteers = host.drainPendingToolSteers()
+        val steerTexts = pendingToolSteers.map { it.text }
+        val resultParts = ToolResultSteering.attachToResults(rawResultParts, steerTexts)
+        if (steerTexts.isNotEmpty()) {
+            val steerBlock = AssistantBlock(
+                id = "steer_${host.nowMs()}",
+                kind = "info",
+                toolName = "steer",
+                toolTitle = "Steering",
+                content = ToolResultSteering.formatInfoLabel(steerTexts),
+                toolArgs = steerTexts.joinToString("\n\n"),
+            )
+            synchronized(state.allToolBlocks) { state.allToolBlocks.add(steerBlock) }
+            AppLogger.info(
+                TAG_STREAM,
+                "[ToolSteer] attached ${steerTexts.size} user steering note(s) to tool_result turn=${acc.turn}",
+            )
+        }
 
         val postBatchSnapshot = snapshotToolBlocks(state)
         publishUi(state, isStreaming = true, blocks = postBatchSnapshot, isAwaitingModelResponse = true)

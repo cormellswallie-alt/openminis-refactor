@@ -23,9 +23,14 @@ internal fun ChatViewModel.enqueuePromptImpl(
     text: String,
     origin: QueuedPromptOrigin = QueuedPromptOrigin.USER,
     prefill: List<PrefilledToolCall> = emptyList(),
+    includeComposerAttachments: Boolean = true,
 ): Boolean {
     val trimmed = text.trim()
-    val pendingAttachments = if (origin == QueuedPromptOrigin.USER) overlaysStore.attachments.value else emptyList()
+    val pendingAttachments = if (origin == QueuedPromptOrigin.USER && includeComposerAttachments) {
+        overlaysStore.attachments.value
+    } else {
+        emptyList()
+    }
     if (!runState.isStreaming.value || (trimmed.isEmpty() && pendingAttachments.isEmpty())) return false
 
     val prompt = QueuedPrompt(
@@ -55,7 +60,7 @@ internal fun ChatViewModel.enqueuePromptImpl(
     _messages.update { messages ->
         messages.filterNot { it.queuedPromptId in superseded } + chatMsg
     }
-    if (origin == QueuedPromptOrigin.USER) clearAttachments()
+    if (origin == QueuedPromptOrigin.USER && includeComposerAttachments) clearAttachments()
     Log.i(TAG, "Enqueued prompt (${trimmed.length}ch, ${pendingAttachments.size} attachments, origin=$origin), queue=${runState.promptQueue.value.size}")
     return true
 }

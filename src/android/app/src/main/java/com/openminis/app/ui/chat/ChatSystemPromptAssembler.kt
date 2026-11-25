@@ -1,6 +1,7 @@
 package com.openminis.app.ui.chat
 
 import android.content.Context
+import com.openminis.app.agent.ProjectInstructionsLoader
 import com.openminis.app.agent.SystemPromptBuilder
 import com.openminis.app.agent.jobs.AgentSettings
 import com.openminis.app.agent.jobs.HelperConfig
@@ -89,6 +90,7 @@ object ChatSystemPromptAssembler {
         skillRepository: SkillRepository?,
         mcpRepository: MCPRepository?,
         memoryRepository: MemoryRepository?,
+        fsSessionId: String = activeSessionId,
     ): String {
         val isHelper = helperConfig != null
         val today = LocalDate.now()
@@ -228,6 +230,8 @@ Tool call style:
 - When a tool exists for an action, use it directly instead of explaining what you plan to do or asking the user to confirm.
 - Use reasonable defaults and contextual inference to fill in missing details (e.g. 'tonight' means today, 'remind me' implies creating a reminder immediately). Only ask for clarification when genuinely ambiguous.${askUserGuidanceSection}
 
+${ToolResultSteering.SYSTEM_PROMPT_PROTOCOL}
+
 Tone and style:
 - Reply in the language that best matches the user's input. Only switch languages when the user explicitly asks.
 - Be concise. Prefer action over explanation — when the user asks for something that can be done via shell, do it directly.
@@ -264,6 +268,7 @@ Environment variables:
 
 Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended, so in-app scheduled scripts may not run as expected. For follow-ups and recurring prompts, run `minis-scheduled create …` via shell_execute: it fires through a system alarm, so it runs a new turn even when Minis is in the background or closed (a force-stop cancels pending tasks until the app is next opened). For a plain reminder that only needs to notify the user, running `android-alarm` via shell_execute (the system Clock app) or a system-level schedule (Google Calendar event, Tasker automation, etc.) also works. (Waiting or polling WITHIN the current turn is different — that is what shell_execute `delay` chains are for, per the shell_execute notes above.)"""
 
+        val projectInstructions = ProjectInstructionsLoader.loadForSession(context, fsSessionId)
         val skillFragment = skillRepository?.skillPromptFragment(activeSessionId)
         mcpRepository?.reloadFromDisk()
         val mcpFragment = mcpRepository?.mcpPromptFragment(activeSessionId)
@@ -274,12 +279,18 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             "XSessionDiag",
             "[XSessionDiag] prompt/memory: session=${activeSessionId.take(8)} " +
                 "memoryEnabled=$memoryEnabled " +
+                "projectInstrFiles=${projectInstructions?.files?.size ?: 0} " +
+                "projectInstrChars=${projectInstructions?.promptFragment?.length ?: 0} " +
                 "globalChars=${globalMemoryFragment?.length ?: 0} " +
                 "dailyChars=${dailyMemoryFragment?.length ?: 0}",
         )
 
         return buildString {
             append(base)
+            if (projectInstructions != null) {
+                append("\n\n")
+                append(projectInstructions.promptFragment)
+            }
             if (skillFragment != null) {
                 append("\n\n")
                 append(skillFragment)
