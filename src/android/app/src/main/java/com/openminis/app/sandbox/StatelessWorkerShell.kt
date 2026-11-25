@@ -63,6 +63,9 @@ internal class StatelessWorkerShell private constructor(
     private var workerProcess: Process? = null
 
     @Volatile
+    private var workerStartedAtMs: Long = 0L
+
+    @Volatile
     private var workerStdin: BufferedWriter? = null
 
     @Volatile
@@ -85,6 +88,10 @@ internal class StatelessWorkerShell private constructor(
 
     fun idleDurationMs(nowMs: Long = System.currentTimeMillis()): Long =
         (nowMs - lastActivityMs.get()).coerceAtLeast(0L)
+
+    fun touchActivity(nowMs: Long = System.currentTimeMillis()) {
+        lastActivityMs.set(nowMs)
+    }
 
     /**
      * Ensure the resident worker process is started and ready to accept job paths.
@@ -131,6 +138,7 @@ internal class StatelessWorkerShell private constructor(
             return false
         }
         workerProcess = process
+        workerStartedAtMs = System.currentTimeMillis()
         workerStdin = BufferedWriter(OutputStreamWriter(process.outputStream, StandardCharsets.UTF_8))
         stdoutDrain = StderrDrain(process.inputStream) { line ->
             Log.d(TAG, "[$sessionId][stdout] $line")
@@ -231,7 +239,7 @@ internal class StatelessWorkerShell private constructor(
             return@withContext Pair("", WORKER_UNAVAILABLE_EXIT)
         }
 
-        val output = StringBuilder()
+        val output = BoundedHeadTailBuffer()
         val lineBuffer = StringBuilder()
         val decoder = StandardCharsets.UTF_8.newDecoder()
             .onMalformedInput(CodingErrorAction.REPLACE)
@@ -330,7 +338,22 @@ internal class StatelessWorkerShell private constructor(
                 if (!pidFile.exists() && !isAlive && !exitFile.exists()) {
                     delay(20L)
                     if (!pidFile.exists() && !exitFile.exists()) {
-                        // Worker crashed before the runner even started executing.
+                        // Inspect whether the worker died from an early GH#186 seccomp crash
+                        // (after pb.start() returned alive) and latch sticky NO_SECCOMP.
+                        val deadProc = workerProcess
+                        val deadExit = deadProc?.let { runCatching { it.exitValue() }.getOrNull() }
+                        val workerAgeMs = (System.currentTimeMillis() - workerStartedAtMs).coerceAtLeast(0L)
+                        if (!useNoSeccomp && SeccompFallbackPolicy.shouldRetryWithoutSeccomp(
+                                exitCode = deadExit,
+                                durationMs = workerAgeMs,
+                                producedOutput = false,
+                                alreadyRetried = false,
+                            )
+                        ) {
+                            Log.w(TAG, "[$sessionId] worker died on early signal (exit=$deadExit, ${workerAgeMs}ms); latching PROOT_NO_SECCOMP=1")
+                            useNoSeccomp = true
+                            ExecutionCoordinator.freshUseNoSeccomp = true
+                        }
                         workerDiedBeforeStart = true
                         break
                     }
@@ -412,8 +435,17 @@ internal class StatelessWorkerShell private constructor(
     }
 
     private fun killJob(pidFile: File) {
-        val pgid = readPgid(pidFile) ?: return
-        runCatching { killProcessGroup(pgid) }
+        var pgid = readPgid(pidFile)
+        if (pgid == null) {
+            // Stop/timeout may race runner.sh writing its atomic pid file; retry briefly.
+            repeat(3) {
+                runCatching { Thread.sleep(25L) }
+                pgid = readPgid(pidFile)
+                if (pgid != null) return@repeat
+            }
+        }
+        val target = pgid ?: return
+        runCatching { killProcessGroup(target) }
     }
 
     private fun readPgid(pidFile: File): Int? {
@@ -472,7 +504,8 @@ internal class StatelessWorkerShell private constructor(
             cwd: String?,
         ): String = buildString {
             val qDir = posixSingleQuote(guestJobDir)
-            append("printf '%s' \"\$\$\" > ").append(qDir).append("/pid\n")
+            append("printf '%s' \"\$\$\" > ").append(qDir).append("/pid.tmp && mv ")
+                .append(qDir).append("/pid.tmp ").append(qDir).append("/pid\n")
             if (!cwd.isNullOrEmpty()) {
                 append("cd ").append(posixSingleQuote(cwd)).append(" 2>/dev/null || true\n")
             }

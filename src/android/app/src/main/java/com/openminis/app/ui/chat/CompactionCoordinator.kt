@@ -41,6 +41,11 @@ internal class CompactionCoordinator(private val dao: ChatDao, private val scope
         showInfo: (String) -> Unit,
         finish: (Boolean) -> Unit,
     ) {
+        if (job?.isActive == true) {
+            AppLogger.warning(TAG, "[Compact] ignoring overlapping start() while compaction is already active")
+            finish(false)
+            return
+        }
         job = scope.launch(Dispatchers.IO, start = CoroutineStart.ATOMIC) {
             var succeeded = false
             var timedOut = false

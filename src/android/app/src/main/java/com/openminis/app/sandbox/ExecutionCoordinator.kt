@@ -435,11 +435,13 @@ object ExecutionCoordinator {
     ): StatelessWorkerShell {
         val existing = workerShells[sessionId]
         if (existing != null && existing.isAlive && existing.bindMounts == bindMounts) {
+            existing.touchActivity()
             return existing
         }
         return workerLock.withLock {
             val recheck = workerShells[sessionId]
             if (recheck != null && recheck.isAlive && recheck.bindMounts == bindMounts) {
+                recheck.touchActivity()
                 return@withLock recheck
             }
             if (recheck != null) {
@@ -480,10 +482,13 @@ object ExecutionCoordinator {
     }
 
     private fun evictLruIdleWorkerIfAtCap(excludeSessionId: String) {
+        val now = System.currentTimeMillis()
         while (workerShells.size >= MAX_RESIDENT_WORKERS) {
             val oldestIdle = workerShells.entries
-                .filter { (sid, w) -> sid != excludeSessionId && w.activeJobCount == 0 }
-                .maxByOrNull { (_, w) -> w.idleDurationMs() }
+                .filter { (sid, w) ->
+                    sid != excludeSessionId && w.activeJobCount == 0 && w.idleDurationMs(now) >= WORKER_EVICT_GRACE_MS
+                }
+                .maxByOrNull { (_, w) -> w.idleDurationMs(now) }
                 ?: break
             if (workerShells.remove(oldestIdle.key, oldestIdle.value)) {
                 oldestIdle.value.shutdown()
@@ -494,6 +499,7 @@ object ExecutionCoordinator {
 
     private const val MAX_RESIDENT_WORKERS = 3
     private const val WORKER_IDLE_TTL_MS = 120_000L
+    private const val WORKER_EVICT_GRACE_MS = 1_000L
 
     private fun retireWorker(sessionId: String, expected: StatelessWorkerShell) {
         if (workerShells.remove(sessionId, expected)) {

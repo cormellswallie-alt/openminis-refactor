@@ -826,11 +826,18 @@ internal class SubAgentSessionCoordinator(
                 queuedBehind = registry.runningChildJobCount + registry.queuedCount(parentSid) - 1,
                 detail = detail,
             )
-            withContext(Dispatchers.Main) {
+            val queuedSnapshot = synchronized(toolBlocks) {
                 val i = toolBlocks.indexOfFirst { it.id == toolId }
                 if (i >= 0) {
                     toolBlocks[i] = toolBlocks[i].copy(content = json, toolStatus = ToolBlockStatus.RUNNING)
-                    publishBlocks(assistantId, currentText, toolBlocks)
+                    ArrayList(toolBlocks)
+                } else {
+                    null
+                }
+            }
+            if (queuedSnapshot != null) {
+                withContext(Dispatchers.Main) {
+                    publishBlocks(assistantId, currentText, queuedSnapshot)
                 }
             }
             AppLogger.info(TAG, "[subagent_task] QUEUED tool=${toolId.take(12)} behind ${registry.runningChildJobCount} running")
@@ -957,11 +964,18 @@ internal class SubAgentSessionCoordinator(
                 writeDelegateBlock(toolId, content, status)
                 return
             }
-            val i = toolBlocks.indexOfFirst { it.id == toolId }
-            if (i >= 0) toolBlocks[i] = toolBlocks[i].copy(content = content, toolTitle = toolBlocks[i].toolTitle.ifEmpty { title })
+            val updatedSnapshot = synchronized(toolBlocks) {
+                val i = toolBlocks.indexOfFirst { it.id == toolId }
+                if (i >= 0) {
+                    toolBlocks[i] = toolBlocks[i].copy(content = content, toolTitle = toolBlocks[i].toolTitle.ifEmpty { title })
+                    ArrayList(toolBlocks)
+                } else {
+                    null
+                }
+            }
             withContext(Dispatchers.Main) {
                 writeDelegateBlock(toolId, content, status)
-                if (i >= 0) publishBlocks(assistantId, currentText, toolBlocks)
+                if (updatedSnapshot != null) publishBlocks(assistantId, currentText, updatedSnapshot)
             }
         }
         fun childCurrentTool(): Pair<String, String> {

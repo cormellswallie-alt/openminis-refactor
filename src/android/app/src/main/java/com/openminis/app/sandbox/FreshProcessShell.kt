@@ -90,7 +90,7 @@ internal class FreshProcessShell(
             return@withContext Pair("[Cancelled]", CANCELLED_EXIT)
         }
 
-        val output = StringBuilder()
+        val output = BoundedHeadTailBuffer()
 
         // [T-android-fresh-stderr-drain] Debug builds keep stderr on its own
         // pipe (see spawn); it MUST be read, or a command that writes 64 KB to
@@ -219,7 +219,7 @@ internal class FreshProcessShell(
         val stderrWait = if (closedOnStatus.get()) STDERR_SETTLE_MS else STDERR_DRAIN_WAIT_MS
         if (closedOnStatus.get()) runCatching { process.outputStream.close() }
         stderrDrain?.finish(stderrWait)?.takeIf { it.isNotEmpty() }?.let { err ->
-            if (output.isNotEmpty() && output.last() != '\n') output.append('\n')
+            if (output.isNotEmpty && output.lastCharOrNull() != '\n') output.append('\n')
             output.append(err)
         }
 

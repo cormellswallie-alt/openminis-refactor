@@ -548,7 +548,10 @@ internal class ChatViewModelStreamHost(private val vm: ChatViewModel) : AgentStr
         toolId = toolId,
         toolBlocks = toolBlocks,
         assistantId = assistantId,
-        publishBlocks = { vm.updateAssistantMessage(assistantId, currentText, true, toolBlocks) },
+        publishBlocks = {
+            val snapshot = synchronized(toolBlocks) { ArrayList(toolBlocks) }
+            vm.updateAssistantMessage(assistantId, currentText, true, snapshot)
+        },
         dispatchAgent = { executeSubAgentTool(name, argsJson, toolId, toolBlocks, assistantId, currentText) },
     )
 

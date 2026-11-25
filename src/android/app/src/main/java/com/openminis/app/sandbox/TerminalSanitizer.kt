@@ -205,3 +205,80 @@ object TerminalSanitizer {
         }
     }
 }
+
+/**
+ * Memory-bounded output accumulator for shell executors.
+ *
+ * Keeps exact output verbatim up to [maxChars] (default 500k, safely above
+ * [TerminalSanitizer]'s 400k pre-sanitize ceiling). Beyond [maxChars], retains
+ * the head half plus a rolling tail half so a runaway multi-hundred-MB command
+ * dump cannot OOM the Android process.
+ */
+internal class BoundedHeadTailBuffer(
+    private val maxChars: Int = DEFAULT_MAX_CHARS,
+) {
+    private val headCap: Int = maxChars / 2
+    private val tailCap: Int = maxChars - headCap
+    private val head = StringBuilder()
+    private val tail = StringBuilder()
+    private var overflowing = false
+    private var totalChars = 0L
+
+    val isNotEmpty: Boolean get() = totalChars > 0L
+
+    fun lastCharOrNull(): Char? = when {
+        overflowing && tail.isNotEmpty() -> tail[tail.length - 1]
+        head.isNotEmpty() -> head[head.length - 1]
+        else -> null
+    }
+
+    fun append(chunk: String) {
+        if (chunk.isEmpty()) return
+        totalChars += chunk.length
+        if (!overflowing) {
+            if (head.length + chunk.length <= maxChars) {
+                head.append(chunk)
+                return
+            }
+            // Transition to bounded head+tail mode once total exceeds maxChars.
+            val combined = StringBuilder(head.length + chunk.length).append(head).append(chunk)
+            head.setLength(0)
+            head.append(combined, 0, minOf(headCap, combined.length))
+            val tailStart = (combined.length - tailCap).coerceAtLeast(head.length)
+            tail.setLength(0)
+            tail.append(combined, tailStart, combined.length)
+            overflowing = true
+            return
+        }
+        if (chunk.length >= tailCap) {
+            tail.setLength(0)
+            tail.append(chunk, chunk.length - tailCap, chunk.length)
+        } else {
+            tail.append(chunk)
+            val excess = tail.length - tailCap
+            if (excess > 0) {
+                tail.delete(0, excess)
+            }
+        }
+    }
+
+    fun append(ch: Char) {
+        append(ch.toString())
+    }
+
+    override fun toString(): String {
+        if (!overflowing) return head.toString()
+        val omitted = (totalChars - head.length - tail.length).coerceAtLeast(0L)
+        return buildString(head.length + tail.length + 48) {
+            append(head)
+            append("\n\n[... ")
+            append(omitted)
+            append(" characters omitted ...]\n\n")
+            append(tail)
+        }
+    }
+
+    companion object {
+        const val DEFAULT_MAX_CHARS = 500_000
+    }
+}

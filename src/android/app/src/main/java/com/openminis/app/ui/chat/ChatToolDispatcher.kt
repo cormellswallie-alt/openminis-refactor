@@ -454,8 +454,9 @@ internal class ChatToolDispatcher(
             var lastLivePublishMs = 0L
             var hasPendingLivePublish = false
             val livePublishScheduled = AtomicBoolean(false)
+            val commandCompleted = AtomicBoolean(false)
 
-            fun flushLiveLines(force: Boolean) {
+            fun flushLiveLines(force: Boolean, scheduleUiPublish: Boolean = true) {
                 val snapshot = synchronized(liveRingLock) {
                     if (!hasPendingLivePublish) return
                     val now = System.currentTimeMillis()
@@ -473,47 +474,47 @@ internal class ChatToolDispatcher(
                         false
                     }
                 }
-                if (updated && livePublishScheduled.compareAndSet(false, true)) {
+                if (scheduleUiPublish && updated && !commandCompleted.get() && livePublishScheduled.compareAndSet(false, true)) {
                     scope.launch(Dispatchers.Main) {
                         livePublishScheduled.set(false)
-                        publishBlocks()
+                        if (!commandCompleted.get()) {
+                            publishBlocks()
+                        }
                     }
                 }
             }
 
-            val result = try {
-                val initialResult = try {
-                    ExecutionCoordinator.execute(
-                        sessionId = dispatchSessionId,
-                        fsSessionId = fsSessionId(),
-                        command = command,
-                        timeout = timeoutSec * 1000L,
-                        lineCallback = lc@{ rawLine ->
-                            // Strip any OSC MinisOpenURL markers emitted by
-                            // /usr/local/bin/minis-open and forward the captured
-                            // URLs to the broker so the chat screen can present the
-                            // in-app preview. Lines that were *entirely* a marker
-                            // (nothing visible afterwards) are dropped so the tool
-                            // output doesn't grow blank rows.
-                            val (cleanedLine, capturedUrls) = MinisUrlMarker.extract(rawLine)
-                            for (raw in capturedUrls) MinisOpenUrlBroker.offer(raw)
-                            if (cleanedLine.isEmpty() && rawLine.isNotEmpty()) return@lc
+            val streamLineCallback: (String) -> Unit = lc@{ rawLine ->
+                // Strip any OSC MinisOpenURL markers emitted by
+                // /usr/local/bin/minis-open and forward the captured
+                // URLs to the broker so the chat screen can present the
+                // in-app preview. Lines that were *entirely* a marker
+                // (nothing visible afterwards) are dropped so the tool
+                // output doesn't grow blank rows.
+                val (cleanedLine, capturedUrls) = MinisUrlMarker.extract(rawLine)
+                for (raw in capturedUrls) MinisOpenUrlBroker.offer(raw)
+                if (cleanedLine.isEmpty() && rawLine.isNotEmpty()) return@lc
 
-                            val shouldFlushNow = synchronized(liveRingLock) {
-                                if (liveLineRing.size >= SHELL_LIVE_MAX_LINES) liveLineRing.removeFirst()
-                                liveLineRing.addLast(cleanedLine)
-                                hasPendingLivePublish = true
-                                val now = System.currentTimeMillis()
-                                lastLivePublishMs == 0L || now - lastLivePublishMs >= SHELL_LIVE_PUBLISH_INTERVAL_MS
-                            }
-                            if (shouldFlushNow) {
-                                flushLiveLines(force = false)
-                            }
-                        },
-                    )
-                } finally {
-                    flushLiveLines(force = true)
+                val shouldFlushNow = synchronized(liveRingLock) {
+                    if (liveLineRing.size >= SHELL_LIVE_MAX_LINES) liveLineRing.removeFirst()
+                    liveLineRing.addLast(cleanedLine)
+                    hasPendingLivePublish = true
+                    val now = System.currentTimeMillis()
+                    lastLivePublishMs == 0L || now - lastLivePublishMs >= SHELL_LIVE_PUBLISH_INTERVAL_MS
                 }
+                if (shouldFlushNow) {
+                    flushLiveLines(force = false)
+                }
+            }
+
+            val result = try {
+                val initialResult = ExecutionCoordinator.execute(
+                    sessionId = dispatchSessionId,
+                    fsSessionId = fsSessionId(),
+                    command = command,
+                    timeout = timeoutSec * 1000L,
+                    lineCallback = streamLineCallback,
+                )
 
                 // [T-bash-on-demand] M5 self-heal: our bash wrapper returns sentinel
                 // 119 when bash vanished (user apk del'd) after we cached it
@@ -533,12 +534,26 @@ internal class ChatToolDispatcher(
                     } else {
                         bashScript!!
                     }
+                    synchronized(liveRingLock) {
+                        liveLineRing.clear()
+                        lastLivePublishMs = 0L
+                        hasPendingLivePublish = false
+                    }
                     ExecutionCoordinator.execute(
-                        sessionId = dispatchSessionId, command = command, timeout = timeoutSec * 1000L, fsSessionId = fsSessionId())
+                        sessionId = dispatchSessionId,
+                        command = command,
+                        timeout = timeoutSec * 1000L,
+                        lineCallback = streamLineCallback,
+                        fsSessionId = fsSessionId(),
+                    )
                 } else {
                     initialResult
                 }
             } finally {
+                // Prevent any already-queued live publish from firing after completion
+                // and overwriting isAwaitingModelResponse/final block state.
+                commandCompleted.set(true)
+                flushLiveLines(force = true, scheduleUiPublish = false)
                 runCatching { stagedBashFile?.delete() }
             }
 

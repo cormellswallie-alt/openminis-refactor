@@ -519,7 +519,9 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             }
 
             if (acc.hasUnflushedThinking) {
-                flushThinkingBlock(state, acc, publishUi = acc.pendingChunkSb.isEmpty())
+                flushThinkingBlock(state, acc, publishUi = acc.pendingChunkSb.isEmpty(), markDone = true)
+            } else if (acc.turnThinking.isNotEmpty()) {
+                markThinkingBlockDone(state, acc)
             }
             if (acc.pendingChunkSb.isNotEmpty()) {
                 acc.pendingChunkSb.setLength(0)
@@ -584,6 +586,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         acc: TurnStreamAccumulator,
         nowMs: Long = host.nowMs(),
         publishUi: Boolean,
+        markDone: Boolean = false,
     ) {
         if (acc.turnThinking.isEmpty()) return
         val content = acc.turnThinking.toString()
@@ -592,15 +595,29 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             val thinkIdx = state.allToolBlocks.indexOfFirst { it.kind == "thinking" && it.id == thinkId }
             if (thinkIdx < 0) {
                 state.allToolBlocks.add(
-                    AssistantBlock(
-                        id = thinkId,
-                        kind = "thinking",
-                        content = content,
-                        toolTitle = "Thinking",
-                    ),
+                    if (markDone) {
+                        AssistantBlock(
+                            id = thinkId,
+                            kind = "thinking",
+                            content = content,
+                            toolTitle = "Thinking",
+                            toolStatus = ToolBlockStatus.SUCCESS,
+                        )
+                    } else {
+                        AssistantBlock(
+                            id = thinkId,
+                            kind = "thinking",
+                            content = content,
+                            toolTitle = "Thinking",
+                        )
+                    },
                 )
             } else {
-                state.allToolBlocks[thinkIdx] = state.allToolBlocks[thinkIdx].copy(content = content)
+                val prev = state.allToolBlocks[thinkIdx]
+                state.allToolBlocks[thinkIdx] = prev.copy(
+                    content = content,
+                    toolStatus = if (markDone) ToolBlockStatus.SUCCESS else prev.toolStatus,
+                )
             }
         }
         acc.lastThinkingUiUpdateMs = nowMs
@@ -857,6 +874,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         ) {
             return
         }
+        val liveTextSnapshot = state.accumulatedText + acc.turnTextSb.toString()
         acc.earlyToolJobs[toolId] = earlyScope.async {
             earlySem.withPermit {
                 try {
@@ -867,7 +885,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
                             toolId = toolId,
                             toolBlocks = state.allToolBlocks,
                             assistantId = state.assistantId,
-                            currentText = state.accumulatedText,
+                            currentText = liveTextSnapshot,
                         ),
                     )
                 } catch (ce: CancellationException) {
