@@ -63,7 +63,10 @@ internal class FreshProcessShell(
         // The rootfs is the guest's "/", so the same file is visible on both
         // sides without a bind mount.
         val exitDir = File(RootfsManager.getInstance(context).rootfsDir, EXIT_DIR_NAME)
-        runCatching { exitDir.mkdirs(); pruneStaleExitFiles(exitDir) }
+        runCatching {
+            if (!exitDir.isDirectory) exitDir.mkdirs()
+            pruneStaleExitFiles(exitDir)
+        }
         val token = java.util.UUID.randomUUID().toString()
         val statusFile = File(exitDir, token)
         statusHandle = statusFile
@@ -421,9 +424,12 @@ internal class FreshProcessShell(
         return if (v > 1) v else null
     }
 
-    /** Drop status files a killed app left behind; they are tiny but unbounded. */
+    /** Drop status files a killed app left behind; throttled to avoid scanning every command. */
     private fun pruneStaleExitFiles(dir: File) {
-        val cutoff = System.currentTimeMillis() - STALE_EXIT_FILE_MS
+        val now = System.currentTimeMillis()
+        if (now - lastExitPruneMs < EXIT_PRUNE_INTERVAL_MS) return
+        lastExitPruneMs = now
+        val cutoff = now - STALE_EXIT_FILE_MS
         dir.listFiles()?.forEach { if (it.lastModified() < cutoff) it.delete() }
     }
 
@@ -500,18 +506,36 @@ internal class FreshProcessShell(
 
     private var lineBuffer = StringBuilder()
 
-    /** Emit whole lines to [callback], holding a partial trailing line. */
-    private fun feedLines(text: String, callback: (String) -> Unit) {
-        lineBuffer.append(text)
-        var idx = lineBuffer.indexOf("\n")
-        while (idx >= 0) {
-            callback(lineBuffer.substring(0, idx))
-            lineBuffer.delete(0, idx + 1)
-            idx = lineBuffer.indexOf("\n")
-        }
+    /** Emit whole lines to [callback], holding a partial trailing line in O(n) time. */
+    internal fun feedLines(text: String, callback: (String) -> Unit) {
+        feedLinesInto(lineBuffer, text, callback)
     }
 
     companion object {
+        internal fun feedLinesInto(buffer: StringBuilder, text: String, callback: (String) -> Unit) {
+            var start = 0
+            val len = text.length
+            var nl = text.indexOf('\n', start)
+            if (nl < 0) {
+                buffer.append(text)
+                return
+            }
+            if (buffer.isNotEmpty()) {
+                buffer.append(text, 0, nl)
+                callback(buffer.toString())
+                buffer.setLength(0)
+                start = nl + 1
+                nl = text.indexOf('\n', start)
+            }
+            while (nl >= 0) {
+                callback(text.substring(start, nl))
+                start = nl + 1
+                nl = text.indexOf('\n', start)
+            }
+            if (start < len) {
+                buffer.append(text, start, len)
+            }
+        }
         /**
          * [T-android-shell-process-budget] Leads the output when the process
          * could not be spawned at all - nothing ran, so GlobalShellThrottle
@@ -585,6 +609,12 @@ internal class FreshProcessShell(
 
         /** Status files older than this belong to a process that died mid-command. */
         private const val STALE_EXIT_FILE_MS = 60 * 60_000L
+
+        /** Minimum interval between stale exit-file directory sweeps. */
+        private const val EXIT_PRUNE_INTERVAL_MS = 5 * 60_000L
+
+        @Volatile
+        internal var lastExitPruneMs: Long = 0L
 
         /**
          * [T-android-fresh-exit-status-file] Whether the stream may be closed

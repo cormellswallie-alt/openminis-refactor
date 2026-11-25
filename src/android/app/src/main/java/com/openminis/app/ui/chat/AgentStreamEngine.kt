@@ -6,6 +6,7 @@ import com.openminis.app.agent.LoopCheckResult
 import com.openminis.app.agent.jobs.HelperRunner
 import com.openminis.app.agent.jobs.HelperWrapUpReason
 import com.openminis.app.data.model.AgentContentPart
+import com.openminis.app.data.model.AgentToolDefinition
 import com.openminis.app.data.model.FallbackStrategy
 import com.openminis.app.data.model.LLMError
 import com.openminis.app.data.model.LLMMessage
@@ -72,7 +73,25 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         var didStopStaleReadAloud: Boolean = false
         var helperWrapUpInjected: Boolean = false
         var helperTurnWarningInjected: Boolean = false
+        var hasCachedFixedTokens: Boolean = false
+        var lastFixedTokensSystemPrompt: String? = null
+        var lastFixedTokensTools: List<AgentToolDefinition>? = null
     }
+
+    private inline fun updateToolBlock(
+        state: RunState,
+        toolId: String,
+        transform: (AssistantBlock) -> AssistantBlock?,
+    ): Boolean = synchronized(state.allToolBlocks) {
+        val idx = state.allToolBlocks.indexOfFirst { it.id == toolId }
+        if (idx < 0) return false
+        val updated = transform(state.allToolBlocks[idx]) ?: return false
+        state.allToolBlocks[idx] = updated
+        true
+    }
+
+    private fun snapshotToolBlocks(state: RunState): List<AssistantBlock> =
+        synchronized(state.allToolBlocks) { ArrayList(state.allToolBlocks) }
 
     private enum class PreTurnOutcome { PROCEED, CONTINUE_NEXT_TURN, STOP_LOOP }
     private enum class NoToolCallsOutcome { BREAK_LOOP, CONTINUE_NEXT_TURN }
@@ -188,8 +207,9 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
                 TAG_STREAM,
                 "runAgentLoop EXIT — hit turn cap=${state.turnCap}${if (host.isHelper) " (helper)" else ""}, finalizing as resumable",
             )
+            val snapshot = snapshotToolBlocks(state)
             withContext(host.uiDispatcher) {
-                host.finalizeAtTurnLimit(state.assistantId, state.accumulatedText, state.allToolBlocks)
+                host.finalizeAtTurnLimit(state.assistantId, state.accumulatedText, snapshot)
             }
         } else {
             AppLogger.info(TAG_STREAM, "runAgentLoop EXIT (loop body ended naturally)")
@@ -281,10 +301,16 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
     }
 
     private suspend fun runPreTurnContextGuards(state: RunState): PreTurnOutcome {
-        host.updateFixedContextTokens(
-            state.loopSystemPrompt,
-            if (state.helperWrapUpInjected) emptyList() else host.agentTools,
-        )
+        val activeTools = if (state.helperWrapUpInjected) emptyList() else host.agentTools
+        if (!state.hasCachedFixedTokens ||
+            state.lastFixedTokensSystemPrompt != state.loopSystemPrompt ||
+            (state.lastFixedTokensTools !== activeTools && state.lastFixedTokensTools != activeTools)
+        ) {
+            host.updateFixedContextTokens(state.loopSystemPrompt, activeTools)
+            state.hasCachedFixedTokens = true
+            state.lastFixedTokensSystemPrompt = state.loopSystemPrompt
+            state.lastFixedTokensTools = activeTools
+        }
         host.effectiveContextWindowTokens()?.takeIf { it > 0 }?.let { window ->
             host.offloadContextIfNeeded(window)
         }
@@ -295,19 +321,20 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
                 state.inLoopCompactions++
                 val sealedId = state.assistantId
                 val freshAssistantId = "assistant_${host.nowMs()}"
+                val snapshot = snapshotToolBlocks(state)
                 withContext(host.uiDispatcher) {
                     host.sealAndSwapInLoopCompactBubble(
                         sealedId = sealedId,
                         freshAssistantId = freshAssistantId,
                         accumulatedText = state.accumulatedText,
-                        allToolBlocks = state.allToolBlocks,
+                        allToolBlocks = snapshot,
                         thinkingLevel = state.turnThinkingLevel,
                     )
                 }
                 host.clearStreamOverlay(sealedId)
                 state.assistantId = freshAssistantId
                 state.accumulatedText = ""
-                state.allToolBlocks.clear()
+                synchronized(state.allToolBlocks) { state.allToolBlocks.clear() }
                 state.allToolInputs.clear()
                 state.toolInputChunkRings.clear()
                 AppLogger.info(TAG, "[Compact] in-loop: sealed $sealedId, continuing in $freshAssistantId below the divider")
@@ -315,9 +342,10 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             }
             InLoopContextAction.STOP -> {
                 AppLogger.warning(TAG, "[AutoCompact] stopping turn: context exhausted and compaction cannot recover")
+                val snapshot = snapshotToolBlocks(state)
                 withContext(host.uiDispatcher) {
                     host.updateAssistantMessage(
-                        state.assistantId, state.accumulatedText, false, state.allToolBlocks,
+                        state.assistantId, state.accumulatedText, false, snapshot,
                         isAwaitingModelResponse = false,
                     )
                     host.clearStreamOverlay(state.assistantId)
@@ -451,13 +479,17 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
                 handleStreamChunk(state, acc, chunk)
             }
 
+            if (acc.hasUnflushedThinking) {
+                flushThinkingBlock(state, acc, publishUi = acc.pendingChunkSb.isEmpty())
+            }
             if (acc.pendingChunkSb.isNotEmpty()) {
                 acc.pendingChunkSb.setLength(0)
                 acc.materializeActiveTextBlock(state.allToolBlocks, state.loopProvider.streamTextIsMonolithic)
                 val turnSnap = acc.turnTextSb.toString()
+                val snapshot = snapshotToolBlocks(state)
                 withContext(host.uiDispatcher) {
                     host.publishJitterProbe("final-flush", state.accumulatedText.length + turnSnap.length)
-                    host.updateAssistantMessage(state.assistantId, state.accumulatedText + turnSnap, true, state.allToolBlocks)
+                    host.updateAssistantMessage(state.assistantId, state.accumulatedText + turnSnap, true, snapshot)
                 }
             }
             acc.resetThrottleState()
@@ -491,29 +523,59 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         acc: TurnStreamAccumulator,
         chunk: LLMStreamChunk.ThinkingDelta,
     ) {
+        val isFirstChunk = acc.turnThinking.isEmpty()
         acc.turnThinking.append(chunk.text)
-        host.onThinkingPhaseChanged(true)
-        val thinkId = "thinking_${acc.turn}"
-        val thinkIdx = state.allToolBlocks.indexOfFirst { it.kind == "thinking" && it.id == thinkId }
-        if (thinkIdx < 0) {
-            state.allToolBlocks.add(
-                AssistantBlock(
-                    id = thinkId,
-                    kind = "thinking",
-                    content = acc.turnThinking.toString(),
-                    toolTitle = "Thinking",
-                ),
-            )
-        } else {
-            state.allToolBlocks[thinkIdx] = state.allToolBlocks[thinkIdx].copy(content = acc.turnThinking.toString())
+        acc.hasUnflushedThinking = true
+        if (isFirstChunk) {
+            host.onThinkingPhaseChanged(true)
         }
-        withContext(host.uiDispatcher) {
-            host.updateAssistantMessage(
-                state.assistantId,
-                state.accumulatedText + acc.turnTextSb.toString(),
-                true,
-                state.allToolBlocks,
+        val nowMs = host.nowMs()
+        if (StreamThrottlePolicy.shouldFlushThinking(
+                totalLen = acc.turnThinking.length,
+                elapsedSinceLastMs = nowMs - acc.lastThinkingUiUpdateMs,
+                isFirstChunk = isFirstChunk,
             )
+        ) {
+            flushThinkingBlock(state, acc, nowMs = nowMs, publishUi = true)
+        }
+    }
+
+    private suspend fun flushThinkingBlock(
+        state: RunState,
+        acc: TurnStreamAccumulator,
+        nowMs: Long = host.nowMs(),
+        publishUi: Boolean,
+    ) {
+        if (acc.turnThinking.isEmpty()) return
+        val content = acc.turnThinking.toString()
+        val thinkId = "thinking_${acc.turn}"
+        synchronized(state.allToolBlocks) {
+            val thinkIdx = state.allToolBlocks.indexOfFirst { it.kind == "thinking" && it.id == thinkId }
+            if (thinkIdx < 0) {
+                state.allToolBlocks.add(
+                    AssistantBlock(
+                        id = thinkId,
+                        kind = "thinking",
+                        content = content,
+                        toolTitle = "Thinking",
+                    ),
+                )
+            } else {
+                state.allToolBlocks[thinkIdx] = state.allToolBlocks[thinkIdx].copy(content = content)
+            }
+        }
+        acc.lastThinkingUiUpdateMs = nowMs
+        acc.hasUnflushedThinking = false
+        if (publishUi) {
+            val snapshot = snapshotToolBlocks(state)
+            withContext(host.uiDispatcher) {
+                host.updateAssistantMessage(
+                    state.assistantId,
+                    state.accumulatedText + acc.turnTextSb.toString(),
+                    true,
+                    snapshot,
+                )
+            }
         }
     }
 
@@ -527,43 +589,45 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             state.didStopStaleReadAloud = true
             host.emitStopStaleReadAloud()
         }
-        markThinkingBlockDone(state.allToolBlocks, acc.turn)
+        markThinkingBlockDone(state, acc)
 
         acc.turnTextSb.append(chunk.text)
-        val lastIdx = state.allToolBlocks.lastIndex
         val monolithic = state.loopProvider.streamTextIsMonolithic
-        if (monolithic && acc.turnTextBlockIdx >= 0 && acc.currentTextBlockSb != null) {
-            if (!acc.loggedPostToolTextMerge &&
-                state.allToolBlocks.subList(acc.turnTextBlockIdx + 1, state.allToolBlocks.size).any { it.kind == "tool_use" }
-            ) {
-                acc.loggedPostToolTextMerge = true
-                AppLogger.info(
-                    TAG_STREAM,
-                    "[T-android-tool-splits-reply-fix] post-tool_calls content delta merged into pre-tool text block (model=${state.loopProvider.model.id})",
+        synchronized(state.allToolBlocks) {
+            val lastIdx = state.allToolBlocks.lastIndex
+            if (monolithic && acc.turnTextBlockIdx >= 0 && acc.currentTextBlockSb != null) {
+                if (!acc.loggedPostToolTextMerge &&
+                    state.allToolBlocks.subList(acc.turnTextBlockIdx + 1, state.allToolBlocks.size).any { it.kind == "tool_use" }
+                ) {
+                    acc.loggedPostToolTextMerge = true
+                    AppLogger.info(
+                        TAG_STREAM,
+                        "[T-android-tool-splits-reply-fix] post-tool_calls content delta merged into pre-tool text block (model=${state.loopProvider.model.id})",
+                    )
+                }
+                acc.currentTextBlockSb?.append(chunk.text)
+            } else if (!monolithic && lastIdx >= 0 && state.allToolBlocks[lastIdx].kind == "text" && acc.currentTextBlockSb != null) {
+                acc.currentTextBlockSb?.append(chunk.text)
+            } else {
+                acc.currentTextBlockSb = StringBuilder(chunk.text)
+                val block = AssistantBlock(
+                    id = "text_${acc.turn}_${state.allToolBlocks.size}",
+                    kind = "text",
+                    content = chunk.text,
                 )
-            }
-            acc.currentTextBlockSb?.append(chunk.text)
-        } else if (!monolithic && lastIdx >= 0 && state.allToolBlocks[lastIdx].kind == "text" && acc.currentTextBlockSb != null) {
-            acc.currentTextBlockSb?.append(chunk.text)
-        } else {
-            acc.currentTextBlockSb = StringBuilder(chunk.text)
-            val block = AssistantBlock(
-                id = "text_${acc.turn}_${state.allToolBlocks.size}",
-                kind = "text",
-                content = chunk.text,
-            )
-            if (monolithic) {
-                val firstToolIdx = (acc.turnStartBlockIndex until state.allToolBlocks.size)
-                    .firstOrNull { state.allToolBlocks[it].kind == "tool_use" }
-                if (firstToolIdx != null) {
-                    state.allToolBlocks.add(firstToolIdx, block)
-                    acc.turnTextBlockIdx = firstToolIdx
+                if (monolithic) {
+                    val firstToolIdx = (acc.turnStartBlockIndex until state.allToolBlocks.size)
+                        .firstOrNull { state.allToolBlocks[it].kind == "tool_use" }
+                    if (firstToolIdx != null) {
+                        state.allToolBlocks.add(firstToolIdx, block)
+                        acc.turnTextBlockIdx = firstToolIdx
+                    } else {
+                        state.allToolBlocks.add(block)
+                        acc.turnTextBlockIdx = state.allToolBlocks.lastIndex
+                    }
                 } else {
                     state.allToolBlocks.add(block)
-                    acc.turnTextBlockIdx = state.allToolBlocks.lastIndex
                 }
-            } else {
-                state.allToolBlocks.add(block)
             }
         }
 
@@ -576,9 +640,10 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             acc.pendingChunkSb.setLength(0)
             acc.materializeActiveTextBlock(state.allToolBlocks, monolithic)
             val turnSnap = acc.turnTextSb.toString()
+            val snapshot = snapshotToolBlocks(state)
             withContext(host.uiDispatcher) {
                 host.publishJitterProbe("publish", state.accumulatedText.length + turnSnap.length)
-                host.updateAssistantMessage(state.assistantId, state.accumulatedText + turnSnap, true, state.allToolBlocks)
+                host.updateAssistantMessage(state.assistantId, state.accumulatedText + turnSnap, true, snapshot)
             }
         }
     }
@@ -591,7 +656,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         val toolUseId = acc.deduplicator.dedupeStart(chunk.id) { raw, count, renamed ->
             AppLogger.warning(TAG_STREAM, "[ToolDedupe] duplicate tool_call id on stream start: '$raw' #$count -> renamed '$renamed'")
         }
-        markThinkingBlockDone(state.allToolBlocks, acc.turn)
+        markThinkingBlockDone(state, acc)
 
         if (acc.turnTextSb.isNotEmpty() && acc.pendingChunkSb.isNotEmpty()) {
             acc.pendingChunkSb.setLength(0)
@@ -602,9 +667,10 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
                 acc.currentTextBlockSb = null
             }
             val turnSnap = acc.turnTextSb.toString()
+            val snapshot = snapshotToolBlocks(state)
             withContext(host.uiDispatcher) {
                 host.publishJitterProbe("pretool-flush", state.accumulatedText.length + turnSnap.length)
-                host.updateAssistantMessage(state.assistantId, state.accumulatedText + turnSnap, true, state.allToolBlocks)
+                host.updateAssistantMessage(state.assistantId, state.accumulatedText + turnSnap, true, snapshot)
             }
             yield()
         }
@@ -612,23 +678,30 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         acc.lastFileToolInputMs = 0L
         acc.lastOtherToolInputMs = 0L
 
-        if (state.allToolBlocks.none { it.id == toolUseId }) {
-            state.allToolBlocks.add(
-                AssistantBlock(
-                    id = toolUseId,
-                    kind = "tool_use",
-                    toolName = chunk.name,
-                    toolStatus = ToolBlockStatus.STREAMING,
-                    toolTitle = ChatPayloadCodec.friendlyToolTitle(chunk.name),
-                    startTimeMs = host.nowMs(),
-                ),
-            )
+        val addedSnapshot = synchronized(state.allToolBlocks) {
+            if (state.allToolBlocks.none { it.id == toolUseId }) {
+                state.allToolBlocks.add(
+                    AssistantBlock(
+                        id = toolUseId,
+                        kind = "tool_use",
+                        toolName = chunk.name,
+                        toolStatus = ToolBlockStatus.STREAMING,
+                        toolTitle = ChatPayloadCodec.friendlyToolTitle(chunk.name),
+                        startTimeMs = host.nowMs(),
+                    ),
+                )
+                ArrayList(state.allToolBlocks)
+            } else {
+                null
+            }
+        }
+        if (addedSnapshot != null) {
             withContext(host.uiDispatcher) {
                 host.updateAssistantMessage(
                     state.assistantId,
                     state.accumulatedText + acc.turnTextSb.toString(),
                     true,
-                    state.allToolBlocks,
+                    addedSnapshot,
                 )
             }
         }
@@ -646,34 +719,37 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             ring.subList(0, ring.size - host.toolInputChunkRingMax).clear()
         }
 
-        val idx = state.allToolBlocks.indexOfFirst { it.id == toolInputId }
-        if (idx < 0) return
-
-        val prev = state.allToolBlocks[idx]
-        val partialTitle = ChatPayloadCodec.extractPartialStringValue("tool_title", chunk.accumulated)
-        val liveTitle = when {
-            !partialTitle.isNullOrEmpty() -> partialTitle
-            prev.toolTitle.isNotEmpty() && prev.toolTitle != prev.toolName -> prev.toolTitle
-            else -> ChatPayloadCodec.friendlyToolTitle(prev.toolName)
+        var matchedToolName: String? = null
+        val updated = updateToolBlock(state, toolInputId) { prev ->
+            matchedToolName = prev.toolName
+            val partialTitle = ChatPayloadCodec.extractPartialStringValue("tool_title", chunk.accumulated)
+            val liveTitle = when {
+                !partialTitle.isNullOrEmpty() -> partialTitle
+                prev.toolTitle.isNotEmpty() && prev.toolTitle != prev.toolName -> prev.toolTitle
+                else -> ChatPayloadCodec.friendlyToolTitle(prev.toolName)
+            }
+            prev.copy(
+                toolArgs = chunk.accumulated,
+                toolTitle = liveTitle,
+                content = "",
+            )
         }
-        state.allToolBlocks[idx] = prev.copy(
-            toolArgs = chunk.accumulated,
-            toolTitle = liveTitle,
-            content = "",
-        )
+        if (!updated) return
+        val toolName = matchedToolName ?: return
 
-        val isHeavyFile = StreamThrottlePolicy.isHeavyFileTool(prev.toolName)
-        val gateMs = StreamThrottlePolicy.toolInputGateMs(prev.toolName)
+        val isHeavyFile = StreamThrottlePolicy.isHeavyFileTool(toolName)
+        val gateMs = StreamThrottlePolicy.toolInputGateMs(toolName)
         val nowMs = host.nowMs()
         val lastTs = if (isHeavyFile) acc.lastFileToolInputMs else acc.lastOtherToolInputMs
         if (nowMs - lastTs >= gateMs) {
             if (isHeavyFile) acc.lastFileToolInputMs = nowMs else acc.lastOtherToolInputMs = nowMs
+            val snapshot = snapshotToolBlocks(state)
             withContext(host.uiDispatcher) {
                 host.updateAssistantMessage(
                     state.assistantId,
                     state.accumulatedText + acc.turnTextSb.toString(),
                     true,
-                    state.allToolBlocks,
+                    snapshot,
                 )
             }
         }
@@ -688,22 +764,25 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         acc.toolCalls.add(Triple(toolCompleteId, chunk.name, chunk.args))
         chunk.thoughtSignature?.let { acc.toolCallSignatures[toolCompleteId] = it }
 
-        val idx = state.allToolBlocks.indexOfFirst { it.id == toolCompleteId }
-        if (idx >= 0) {
-            val providedTitle = chunk.args.optString("tool_title", "").takeIf { it.isNotEmpty() }
-            state.allToolBlocks[idx] = state.allToolBlocks[idx].copy(
+        val providedTitle = chunk.args.optString("tool_title", "").takeIf { it.isNotEmpty() }
+        val argsText = chunk.args.toString()
+        val updated = updateToolBlock(state, toolCompleteId) { prev ->
+            prev.copy(
                 toolStatus = ToolBlockStatus.PENDING,
                 toolTitle = providedTitle ?: ChatPayloadCodec.friendlyToolTitle(chunk.name),
-                toolArgs = chunk.args.toString(),
+                toolArgs = argsText,
                 content = "",
-                thoughtSignature = chunk.thoughtSignature ?: state.allToolBlocks[idx].thoughtSignature,
+                thoughtSignature = chunk.thoughtSignature ?: prev.thoughtSignature,
             )
+        }
+        if (updated) {
+            val snapshot = snapshotToolBlocks(state)
             withContext(host.uiDispatcher) {
                 host.updateAssistantMessage(
                     state.assistantId,
                     state.accumulatedText + acc.turnTextSb.toString(),
                     true,
-                    state.allToolBlocks,
+                    snapshot,
                 )
             }
         }
@@ -731,11 +810,35 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         }
     }
 
-    private fun markThinkingBlockDone(allToolBlocks: MutableList<AssistantBlock>, turn: Int) {
-        val thinkIdx = allToolBlocks.indexOfFirst { it.kind == "thinking" && it.id == "thinking_$turn" }
-        if (thinkIdx >= 0 && allToolBlocks[thinkIdx].toolStatus != ToolBlockStatus.SUCCESS) {
-            allToolBlocks[thinkIdx] = allToolBlocks[thinkIdx].copy(toolStatus = ToolBlockStatus.SUCCESS)
+    private fun markThinkingBlockDone(state: RunState, acc: TurnStreamAccumulator) {
+        if (acc.turnThinking.isEmpty()) return
+        val thinkId = "thinking_${acc.turn}"
+        val latestContent = if (acc.hasUnflushedThinking) acc.turnThinking.toString() else null
+        synchronized(state.allToolBlocks) {
+            val thinkIdx = state.allToolBlocks.indexOfFirst { it.kind == "thinking" && it.id == thinkId }
+            if (thinkIdx < 0) {
+                if (latestContent != null) {
+                    state.allToolBlocks.add(
+                        AssistantBlock(
+                            id = thinkId,
+                            kind = "thinking",
+                            content = latestContent,
+                            toolTitle = "Thinking",
+                            toolStatus = ToolBlockStatus.SUCCESS,
+                        ),
+                    )
+                }
+            } else {
+                val prev = state.allToolBlocks[thinkIdx]
+                if (latestContent != null || prev.toolStatus != ToolBlockStatus.SUCCESS) {
+                    state.allToolBlocks[thinkIdx] = prev.copy(
+                        content = latestContent ?: prev.content,
+                        toolStatus = ToolBlockStatus.SUCCESS,
+                    )
+                }
+            }
         }
+        acc.hasUnflushedThinking = false
     }
 
     private suspend fun runRetryCountdownAndRollback(
@@ -764,16 +867,23 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         }
         withContext(host.uiDispatcher) { host.clearInlineError() }
 
-        if (state.allToolBlocks.size > acc.turnStartBlockIndex) {
-            while (state.allToolBlocks.size > acc.turnStartBlockIndex) {
-                state.allToolBlocks.removeAt(state.allToolBlocks.size - 1)
+        val rolledBackSnapshot = synchronized(state.allToolBlocks) {
+            if (state.allToolBlocks.size > acc.turnStartBlockIndex) {
+                while (state.allToolBlocks.size > acc.turnStartBlockIndex) {
+                    state.allToolBlocks.removeAt(state.allToolBlocks.size - 1)
+                }
+                ArrayList(state.allToolBlocks)
+            } else {
+                null
             }
+        }
+        if (rolledBackSnapshot != null) {
             withContext(host.uiDispatcher) {
                 host.updateAssistantMessage(
                     state.assistantId,
                     state.accumulatedText + acc.turnTextSb.toString(),
                     true,
-                    state.allToolBlocks,
+                    rolledBackSnapshot,
                 )
             }
         }
@@ -810,23 +920,26 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         }
 
         val infoText = state.fallbackReasons.joinToString("\n") + "\n🔄 Switched to ${state.loopProvider.model.displayName}"
-        state.allToolBlocks.removeAll { it.kind == "info" }
-        state.allToolBlocks.add(
-            0,
-            AssistantBlock(
-                id = "fallback_info_${acc.turn}",
-                kind = "info",
-                content = infoText,
-                toolTitle = "Switched model",
-                toolStatus = ToolBlockStatus.SUCCESS,
-            ),
-        )
+        val fallbackSnapshot = synchronized(state.allToolBlocks) {
+            state.allToolBlocks.removeAll { it.kind == "info" }
+            state.allToolBlocks.add(
+                0,
+                AssistantBlock(
+                    id = "fallback_info_${acc.turn}",
+                    kind = "info",
+                    content = infoText,
+                    toolTitle = "Switched model",
+                    toolStatus = ToolBlockStatus.SUCCESS,
+                ),
+            )
+            ArrayList(state.allToolBlocks)
+        }
         withContext(host.uiDispatcher) {
             host.updateAssistantMessage(
                 state.assistantId,
                 state.accumulatedText + acc.turnTextSb.toString(),
                 true,
-                state.allToolBlocks,
+                fallbackSnapshot,
             )
         }
         acc.resetForRetry(resetThrottle = false)
@@ -857,11 +970,12 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         turnReasoningContent: String?,
     ): NoToolCallsOutcome {
         AppLogger.info(TAG_STREAM, "runAgentLoop turn=${acc.turn} no tool calls → break (finishReason=${acc.turnFinishReason})")
+        val blocksSnapshot = snapshotToolBlocks(state)
         withContext(host.uiDispatcher) {
-            host.updateAssistantMessage(state.assistantId, state.accumulatedText, false, state.allToolBlocks)
+            host.updateAssistantMessage(state.assistantId, state.accumulatedText, false, blocksSnapshot)
         }
-        val turnParts = ChatPayloadCodec.buildTurnParts(state.allToolBlocks, acc.turnStartBlockIndex, state.allToolInputs)
-        val blockMeta = state.allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
+        val turnParts = ChatPayloadCodec.buildTurnParts(blocksSnapshot, acc.turnStartBlockIndex, state.allToolInputs)
+        val blockMeta = blocksSnapshot.filter { it.kind == "tool_use" }.associateBy { it.id }
         host.persistAssistantTurn(
             turnParts = turnParts,
             usage = acc.lastUsage,
@@ -872,7 +986,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         )
 
         val hasVisibleContent = state.accumulatedText.isNotBlank() ||
-            state.allToolBlocks.any { it.kind == "tool_use" || (it.kind == "text" && it.content.isNotBlank()) }
+            blocksSnapshot.any { it.kind == "tool_use" || (it.kind == "text" && it.content.isNotBlank()) }
 
         if (acc.turnFinishReason == null && hasVisibleContent) {
             AppLogger.warning(
@@ -947,7 +1061,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             )
             host.persistHiddenUserNudgeAsync(nudge)
             withContext(host.uiDispatcher) {
-                host.updateAssistantMessage(state.assistantId, state.accumulatedText, true, state.allToolBlocks)
+                host.updateAssistantMessage(state.assistantId, state.accumulatedText, true, blocksSnapshot)
             }
             return NoToolCallsOutcome.CONTINUE_NEXT_TURN
         }
@@ -961,7 +1075,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             )
         ) {
             withContext(host.uiDispatcher) {
-                host.updateAssistantMessage(state.assistantId, state.accumulatedText, true, state.allToolBlocks)
+                host.updateAssistantMessage(state.assistantId, state.accumulatedText, true, blocksSnapshot)
             }
             host.setCanResume(false)
             return NoToolCallsOutcome.CONTINUE_NEXT_TURN
@@ -980,8 +1094,9 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
     ) {
         AppLogger.info(TAG_STREAM, "runAgentLoop turn=${acc.turn} dispatching ${acc.toolCalls.size} tool call(s), continuing")
 
-        val livePreviewParts = ChatPayloadCodec.buildTurnParts(state.allToolBlocks, acc.turnStartBlockIndex, state.allToolInputs)
-        val liveMeta = state.allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
+        val preDispatchSnapshot = snapshotToolBlocks(state)
+        val livePreviewParts = ChatPayloadCodec.buildTurnParts(preDispatchSnapshot, acc.turnStartBlockIndex, state.allToolInputs)
+        val liveMeta = preDispatchSnapshot.filter { it.kind == "tool_use" }.associateBy { it.id }
         host.updateLiveSessionPreview(livePreviewParts, liveMeta)
 
         val slots = Semaphore(host.maxConcurrentTools)
@@ -999,18 +1114,19 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         val resultParts = mutableListOf<AgentContentPart>()
         for (parts in slotResults) parts?.let { resultParts.addAll(it) }
 
+        val postBatchSnapshot = snapshotToolBlocks(state)
         withContext(host.uiDispatcher) {
             host.updateAssistantMessage(
                 state.assistantId,
                 state.accumulatedText,
                 true,
-                state.allToolBlocks,
+                postBatchSnapshot,
                 isAwaitingModelResponse = true,
             )
         }
 
-        val turnParts = ChatPayloadCodec.buildTurnParts(state.allToolBlocks, acc.turnStartBlockIndex, state.allToolInputs)
-        val blockMeta = state.allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
+        val turnParts = ChatPayloadCodec.buildTurnParts(postBatchSnapshot, acc.turnStartBlockIndex, state.allToolInputs)
+        val blockMeta = postBatchSnapshot.filter { it.kind == "tool_use" }.associateBy { it.id }
         val assistantDbId = host.persistAssistantTurn(
             turnParts = turnParts,
             usage = acc.lastUsage,
@@ -1069,11 +1185,17 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
 
             val argsStr = args.toString()
             val paramsMap = ChatPayloadCodec.parseToolParams(argsStr)
-            val preIdx = state.allToolBlocks.indexOfFirst { it.id == id }
-            if (preIdx >= 0 && state.allToolBlocks[preIdx].toolStatus == ToolBlockStatus.PENDING) {
-                state.allToolBlocks[preIdx] = state.allToolBlocks[preIdx].copy(toolStatus = ToolBlockStatus.RUNNING)
+            val transitionedToRunning = updateToolBlock(state, id) { prev ->
+                if (prev.toolStatus == ToolBlockStatus.PENDING) {
+                    prev.copy(toolStatus = ToolBlockStatus.RUNNING)
+                } else {
+                    null
+                }
+            }
+            if (transitionedToRunning) {
+                val snapshot = snapshotToolBlocks(state)
                 withContext(host.uiDispatcher) {
-                    host.updateAssistantMessage(state.assistantId, state.accumulatedText, true, state.allToolBlocks)
+                    host.updateAssistantMessage(state.assistantId, state.accumulatedText, true, snapshot)
                 }
             }
 
@@ -1114,32 +1236,32 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
                 result.output
             }
 
-            val blockIdx = state.allToolBlocks.indexOfFirst { it.id == id }
-            if (blockIdx >= 0) {
-                val elapsed = host.nowMs() - state.allToolBlocks[blockIdx].startTimeMs
-                val existingContent = state.allToolBlocks[blockIdx].content
-                val resultContent = if (name == "shell_execute") {
-                    result.output.lines().takeLast(80).joinToString("\n")
-                } else {
-                    result.output
-                }
-                val finalContent = if (existingContent.length > resultContent.length) existingContent else resultContent
-                val finalStatus = when {
-                    name == HelperRunner.TOOL_NAME && HelperRunner.isRunningPayload(result.output) -> ToolBlockStatus.RUNNING
-                    result.success && truncationRepairTag != null -> ToolBlockStatus.FAILED
-                    result.success -> ToolBlockStatus.SUCCESS
-                    result.timedOut -> ToolBlockStatus.TIMEOUT
-                    else -> ToolBlockStatus.FAILED
-                }
-                host.onToolCleared(finalStatus)
-                state.allToolBlocks[blockIdx] = state.allToolBlocks[blockIdx].copy(
+            val resultContent = if (name == "shell_execute") {
+                result.output.lines().takeLast(80).joinToString("\n")
+            } else {
+                result.output
+            }
+            val finalStatus = when {
+                name == HelperRunner.TOOL_NAME && HelperRunner.isRunningPayload(result.output) -> ToolBlockStatus.RUNNING
+                result.success && truncationRepairTag != null -> ToolBlockStatus.FAILED
+                result.success -> ToolBlockStatus.SUCCESS
+                result.timedOut -> ToolBlockStatus.TIMEOUT
+                else -> ToolBlockStatus.FAILED
+            }
+            val updatedBlock = updateToolBlock(state, id) { prev ->
+                val elapsed = host.nowMs() - prev.startTimeMs
+                val finalContent = if (prev.content.length > resultContent.length) prev.content else resultContent
+                prev.copy(
                     toolStatus = finalStatus,
                     content = finalContent,
-                    toolTitle = result.toolTitle.ifEmpty { state.allToolBlocks[blockIdx].toolTitle },
+                    toolTitle = result.toolTitle.ifEmpty { prev.toolTitle },
                     durationMs = elapsed,
-                    browserURL = result.pageURL ?: state.allToolBlocks[blockIdx].browserURL,
-                    imageFilePath = result.imageFilePath ?: state.allToolBlocks[blockIdx].imageFilePath,
+                    browserURL = result.pageURL ?: prev.browserURL,
+                    imageFilePath = result.imageFilePath ?: prev.imageFilePath,
                 )
+            }
+            if (updatedBlock) {
+                host.onToolCleared(finalStatus)
             }
 
             val outputForLLMWithNote = if (truncationRepairTag != null) {
@@ -1175,18 +1297,17 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         content: String,
         publish: Boolean,
     ) {
-        val idx = state.allToolBlocks.indexOfFirst { it.id == toolId }
-        if (idx >= 0) {
-            val elapsed = host.nowMs() - state.allToolBlocks[idx].startTimeMs
-            state.allToolBlocks[idx] = state.allToolBlocks[idx].copy(
+        val updated = updateToolBlock(state, toolId) { prev ->
+            prev.copy(
                 toolStatus = ToolBlockStatus.FAILED,
                 content = content,
-                durationMs = elapsed,
+                durationMs = host.nowMs() - prev.startTimeMs,
             )
-            if (publish) {
-                withContext(host.uiDispatcher) {
-                    host.updateAssistantMessage(state.assistantId, state.accumulatedText, true, state.allToolBlocks)
-                }
+        }
+        if (updated && publish) {
+            val snapshot = snapshotToolBlocks(state)
+            withContext(host.uiDispatcher) {
+                host.updateAssistantMessage(state.assistantId, state.accumulatedText, true, snapshot)
             }
         }
     }
@@ -1203,10 +1324,11 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             TAG_STREAM,
             "[delegate_task] turn=$turn parent stops here — its sub agents were stopped by the user (dropped ${stale.size} queued notice(s))",
         )
+        val snapshot = snapshotToolBlocks(state)
         withContext(host.uiDispatcher) {
             stale.forEach { host.removeQueuedPrompt(it.id) }
             host.updateAssistantMessage(
-                state.assistantId, state.accumulatedText, false, state.allToolBlocks,
+                state.assistantId, state.accumulatedText, false, snapshot,
                 isAwaitingModelResponse = false,
             )
         }
@@ -1218,11 +1340,12 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         if (insertBatch.isEmpty()) return
 
         val scheduledFire = insertBatch.singleOrNull()?.takeIf { it.isScheduledFire }
+        val snapshot = snapshotToolBlocks(state)
         val handled = try {
             host.injectQueuedPromptsAsNewTurn(
                 finishedAssistantId = state.assistantId,
                 finishedAccumulatedText = state.accumulatedText,
-                finishedAllToolBlocks = state.allToolBlocks,
+                finishedAllToolBlocks = snapshot,
                 batch = insertBatch,
             )
         } catch (e: CancellationException) {
@@ -1236,7 +1359,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         state.assistantId = handled.newAssistantId
         host.scriptedTurnFor(handled.prefill)?.let { state.pendingScriptedTurn = it }
         state.accumulatedText = ""
-        state.allToolBlocks.clear()
+        synchronized(state.allToolBlocks) { state.allToolBlocks.clear() }
         state.allToolInputs.clear()
         state.toolInputChunkRings.clear()
         host.setCanResume(false)

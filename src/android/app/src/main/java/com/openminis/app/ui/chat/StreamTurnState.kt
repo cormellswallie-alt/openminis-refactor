@@ -84,6 +84,19 @@ internal object StreamThrottlePolicy {
 
     fun toolInputGateMs(toolName: String): Long =
         if (isHeavyFileTool(toolName)) HEAVY_FILE_TOOL_GATE_MS else OTHER_TOOL_GATE_MS
+
+    fun thinkingDeltaThrottleMs(len: Int): Long = when {
+        len < 500 -> 200L
+        len < 4_000 -> 400L
+        len < 16_000 -> 750L
+        else -> 1_000L
+    }
+
+    fun shouldFlushThinking(
+        totalLen: Int,
+        elapsedSinceLastMs: Long,
+        isFirstChunk: Boolean,
+    ): Boolean = isFirstChunk || elapsedSinceLastMs >= thinkingDeltaThrottleMs(totalLen)
 }
 
 /**
@@ -317,6 +330,8 @@ internal class TurnStreamAccumulator(
     val pendingChunkSb = StringBuilder()
     var lastUiUpdateMs: Long = 0L
     var lastFlushedLen: Int = 0
+    var lastThinkingUiUpdateMs: Long = 0L
+    var hasUnflushedThinking: Boolean = false
     var lastFileToolInputMs: Long = 0L
     var lastOtherToolInputMs: Long = 0L
 
@@ -325,9 +340,12 @@ internal class TurnStreamAccumulator(
         streamTextIsMonolithic: Boolean,
     ) {
         val sb = currentTextBlockSb ?: return
-        val idx = if (streamTextIsMonolithic) turnTextBlockIdx else allToolBlocks.lastIndex
-        if (idx >= 0 && idx < allToolBlocks.size && allToolBlocks[idx].kind == "text") {
-            allToolBlocks[idx] = allToolBlocks[idx].copy(content = sb.toString())
+        val content = sb.toString()
+        synchronized(allToolBlocks) {
+            val idx = if (streamTextIsMonolithic) turnTextBlockIdx else allToolBlocks.lastIndex
+            if (idx >= 0 && idx < allToolBlocks.size && allToolBlocks[idx].kind == "text") {
+                allToolBlocks[idx] = allToolBlocks[idx].copy(content = content)
+            }
         }
     }
 
@@ -335,6 +353,8 @@ internal class TurnStreamAccumulator(
         pendingChunkSb.setLength(0)
         lastUiUpdateMs = 0L
         lastFlushedLen = 0
+        lastThinkingUiUpdateMs = 0L
+        hasUnflushedThinking = false
         lastFileToolInputMs = 0L
         lastOtherToolInputMs = 0L
     }

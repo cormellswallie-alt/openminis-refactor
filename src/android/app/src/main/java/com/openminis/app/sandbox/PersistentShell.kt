@@ -507,16 +507,25 @@ class PersistentShell(
         Log.i(TAG, "Persistent shell process exited")
     }
 
-    private fun feedLines(text: String, callback: (String) -> Unit) {
-        val lines = text.split('\n')
-        for (i in lines.indices) {
-            val line = lines[i].replace("\r", "")
-            if (line.isNotEmpty() && (i < lines.size - 1 || text.endsWith('\n'))) {
-                callback(line)
-            } else if (line.isNotEmpty() && i == lines.size - 1) {
-                // Partial line — still feed it for real-time updates
-                callback(line)
+    internal fun feedLines(text: String, callback: (String) -> Unit) {
+        var start = 0
+        val len = text.length
+        while (start < len) {
+            val nl = text.indexOf('\n', start)
+            val end = if (nl >= 0) nl else len
+            var sliceEnd = end
+            while (sliceEnd > start && text[sliceEnd - 1] == '\r') sliceEnd--
+            if (sliceEnd > start) {
+                val crIdx = text.indexOf('\r', start)
+                val line = if (crIdx in start until sliceEnd) {
+                    text.substring(start, sliceEnd).replace("\r", "")
+                } else {
+                    text.substring(start, sliceEnd)
+                }
+                if (line.isNotEmpty()) callback(line)
             }
+            if (nl < 0) break
+            start = nl + 1
         }
     }
 

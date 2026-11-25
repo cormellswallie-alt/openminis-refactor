@@ -63,6 +63,14 @@ class AgentStreamEngineTest {
         assertFalse(StreamThrottlePolicy.shouldFlushText(totalLen = 200, unflushedChars = 10, chunkText = "abc", elapsedSinceLastMs = 10L))
         assertEquals(1_000L, StreamThrottlePolicy.toolInputGateMs("file_write"))
         assertEquals(200L, StreamThrottlePolicy.toolInputGateMs("shell_execute"))
+
+        assertEquals(200L, StreamThrottlePolicy.thinkingDeltaThrottleMs(100))
+        assertEquals(400L, StreamThrottlePolicy.thinkingDeltaThrottleMs(1_000))
+        assertEquals(750L, StreamThrottlePolicy.thinkingDeltaThrottleMs(8_000))
+        assertEquals(1_000L, StreamThrottlePolicy.thinkingDeltaThrottleMs(20_000))
+        assertTrue(StreamThrottlePolicy.shouldFlushThinking(totalLen = 10, elapsedSinceLastMs = 0L, isFirstChunk = true))
+        assertFalse(StreamThrottlePolicy.shouldFlushThinking(totalLen = 100, elapsedSinceLastMs = 50L, isFirstChunk = false))
+        assertTrue(StreamThrottlePolicy.shouldFlushThinking(totalLen = 100, elapsedSinceLastMs = 200L, isFirstChunk = false))
     }
 
     @Test
@@ -255,6 +263,56 @@ class AgentStreamEngineTest {
         assertSame(backup, host.currentProvider)
     }
 
+    @Test
+    fun `engine throttles rapid thinking deltas and flushes full thinking on transition`() = runTest {
+        val host = FakeAgentStreamHost(this).apply { clockStepMs = 10L }
+        host.agentHistory.add(LLMMessage(role = LLMMessage.Role.USER, content = "Think"))
+        val provider = FakeProvider("primary") {
+            flow {
+                repeat(15) { i -> emit(LLMStreamChunk.ThinkingDelta("step$i ")) }
+                emit(LLMStreamChunk.Text("Answer"))
+                emit(LLMStreamChunk.Finished("stop"))
+            }
+        }
+        host.currentProvider = provider
+
+        AgentStreamEngine(host).run(provider = provider, systemPrompt = "sys")
+
+        // 15 deltas at 10ms each (<200ms throttle) should NOT trigger 15 UI publishes.
+        assertTrue("expected throttled thinking UI publishes, got ${host.publishCount}", host.publishCount <= 4)
+        val thinkBlock = host.lastPublishedBlocks.first { it.kind == "thinking" }
+        assertEquals((0 until 15).joinToString("") { "step$it " }, thinkBlock.content)
+        assertEquals(ToolBlockStatus.SUCCESS, thinkBlock.toolStatus)
+    }
+
+    @Test
+    fun `engine caches fixed context token estimation across unchanged multi-turn tool loops`() = runTest {
+        val host = FakeAgentStreamHost(this)
+        host.agentHistory.add(LLMMessage(role = LLMMessage.Role.USER, content = "Loop"))
+        var calls = 0
+        val provider = FakeProvider("primary") {
+            calls++
+            if (calls == 1) {
+                flow {
+                    emit(LLMStreamChunk.ToolUseStart("c1", "custom_tool"))
+                    emit(LLMStreamChunk.ToolCallComplete("c1", "custom_tool", JSONObject("{}")))
+                    emit(LLMStreamChunk.Finished("tool_use"))
+                }
+            } else {
+                flow {
+                    emit(LLMStreamChunk.Text("Done"))
+                    emit(LLMStreamChunk.Finished("stop"))
+                }
+            }
+        }
+        host.currentProvider = provider
+
+        AgentStreamEngine(host).run(provider = provider, systemPrompt = "constant-system-prompt")
+
+        assertEquals(2, calls)
+        assertEquals(1, host.fixedTokenUpdateCount)
+    }
+
     // ── Test Doubles ────────────────────────────────────────────────────
 
     private class FakeProvider(
@@ -320,6 +378,9 @@ class AgentStreamEngineTest {
 
         var lastPublishedContent: String = ""
         var lastPublishedStreaming: Boolean = true
+        var lastPublishedBlocks: List<AssistantBlock> = emptyList()
+        var publishCount: Int = 0
+        var fixedTokenUpdateCount: Int = 0
         var lastRecordedContextTokens: Int = 0
         var lastRetryAttempt: Int = 0
         var titleGenerationCount: Int = 0
@@ -329,7 +390,8 @@ class AgentStreamEngineTest {
         }
 
         private var clockMs = 1_000L
-        override fun nowMs(): Long = clockMs.also { clockMs += 500L }
+        var clockStepMs = 500L
+        override fun nowMs(): Long = clockMs.also { clockMs += clockStepMs }
         override fun elapsedRealtimeMs(): Long = clockMs
         override fun memorySnapshotLog(): String = ""
         override fun clearPendingModelSwitchIfSame(provider: LLMProvider) = Unit
@@ -363,6 +425,8 @@ class AgentStreamEngineTest {
         ) {
             lastPublishedContent = content
             lastPublishedStreaming = isStreaming
+            lastPublishedBlocks = toolBlocks.toList()
+            publishCount++
         }
 
         override fun sealAndSwapInLoopCompactBubble(
@@ -388,7 +452,9 @@ class AgentStreamEngineTest {
         override fun publishContextUsage(crossingOnly: Boolean) = Unit
         override fun updateLastTurnContextTokens(tokens: Int) { lastRecordedContextTokens = tokens }
         override fun resetInLoopCompactionNoProgress() = Unit
-        override fun updateFixedContextTokens(systemPrompt: String?, tools: List<AgentToolDefinition>) = Unit
+        override fun updateFixedContextTokens(systemPrompt: String?, tools: List<AgentToolDefinition>) {
+            fixedTokenUpdateCount++
+        }
         override fun effectiveContextWindowTokens(): Int? = 128_000
         override fun resolvedContextWindow(model: LLMModel): Pair<Int, Boolean>? = 128_000 to false
         override fun offloadContextIfNeeded(contextWindow: Int) = Unit

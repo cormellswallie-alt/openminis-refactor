@@ -51,6 +51,15 @@ object ExecutionCoordinator {
     internal var executionStrategy: ShellExecutionStrategy = ShellExecutionStrategy.DEFAULT
 
     /**
+     * [T-android-fresh-seccomp-selfheal / GH#186] Process-wide sticky flag: once
+     * a fresh-process command hits an early seccomp-induced fatal signal and the
+     * `PROOT_NO_SECCOMP=1` retry recovers, skip the doomed first attempt on
+     * subsequent commands for the rest of this process.
+     */
+    @Volatile
+    internal var freshUseNoSeccomp: Boolean = false
+
+    /**
      * [T-android-shell-fresh-process] One PRoot process per command.
      *
      * No lease, no pool slot, no mutex: a command that owns its own process
@@ -106,7 +115,8 @@ object ExecutionCoordinator {
             }
         }
 
-        var (rawOutput, exitCode) = attempt(noSeccomp = false)
+        val initialNoSeccomp = freshUseNoSeccomp
+        var (rawOutput, exitCode) = attempt(noSeccomp = initialNoSeccomp)
         // [T-android-fresh-seccomp-selfheal / GH#186] The warm path
         // (PersistentShell), ShellExecutor and TerminalSession all retry once
         // with PROOT_NO_SECCOMP=1 when the child dies on an early fatal signal
@@ -114,13 +124,15 @@ object ExecutionCoordinator {
         // self-heal, so on a GH#186 device every shell_execute died with
         // 135/139. Same narrow gate as the others (SeccompFallbackPolicy):
         // a normal failure, a timeout (124) or a user Stop (130) never
-        // qualifies, and it fires at most once per command.
+        // qualifies, and it fires at most once per command. Once a retry
+        // succeeds without repeating the early fatal-signal crash, latch
+        // [freshUseNoSeccomp] so later commands skip the wasted first attempt.
         val firstDurationMs = System.currentTimeMillis() - startTime
         if (SeccompFallbackPolicy.shouldRetryWithoutSeccomp(
                 exitCode = exitCode,
                 durationMs = firstDurationMs,
                 producedOutput = rawOutput.isNotEmpty(),
-                alreadyRetried = false,
+                alreadyRetried = initialNoSeccomp,
             )
         ) {
             com.openminis.app.logging.AppLogger.warning(
@@ -129,9 +141,20 @@ object ExecutionCoordinator {
             )
             // No output came out of the first attempt (a precondition of the
             // retry), so reusing lineCallback cannot duplicate anything.
+            val retryStartMs = System.currentTimeMillis()
             val retried = attempt(noSeccomp = true)
             rawOutput = retried.first
             exitCode = retried.second
+            val retryDurationMs = System.currentTimeMillis() - retryStartMs
+            if (!SeccompFallbackPolicy.shouldRetryWithoutSeccomp(
+                    exitCode = exitCode,
+                    durationMs = retryDurationMs,
+                    producedOutput = rawOutput.isNotEmpty(),
+                    alreadyRetried = false,
+                )
+            ) {
+                freshUseNoSeccomp = true
+            }
         }
         val durationMs = System.currentTimeMillis() - startTime
         val sanitized = TerminalSanitizer.sanitize(rawOutput)
@@ -597,6 +620,9 @@ object ExecutionCoordinator {
         // shouldn't try to `unset` keys that don't exist in the new shell.
         lastInjectedKeys.remove(sessionId)
         mountedSessionIds.remove(sessionId)
+        if (::appContext.isInitialized) {
+            SessionMounts.invalidateSession(appContext.filesDir, sessionId)
+        }
         shell?.stop()
         if (shell != null) Log.i(TAG, "[$sessionId] Shell terminated")
         // [T-android-fresh-session-terminate] Fresh-process commands are not in

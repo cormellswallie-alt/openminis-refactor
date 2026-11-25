@@ -62,102 +62,166 @@ object FileReadTool {
                 return ToolExecutionResult("Error: Path is a directory: $path", false, toolTitle = toolTitle)
             }
 
-            val size = file.length()
-
-            // Binary detection: check first 8192 bytes for null bytes
-            val isBinary = file.inputStream().use { input ->
-                val buf = ByteArray(minOf(8192, size.toInt()))
-                val read = input.read(buf)
-                if (read > 0) buf.take(read).any { it == 0.toByte() } else false
-            }
-
-            if (isBinary) {
-                return ToolExecutionResult(
-                    "[$path | $size bytes | binary file — cannot display contents]",
-                    true, toolTitle = toolTitle
-                )
-            }
-
-            val allLines = file.readLines()
-            val totalLines = allLines.size
-
             val requestedLines = if (args.has("lines")) args.optInt("lines") else null
-
-            val selectedLines = if (direction == "tail") {
-                val count = requestedLines ?: totalLines
-                val start = (totalLines - count).coerceAtLeast(0)
-                allLines.subList(start, totalLines)
-            } else {
-                val start = (offset - 1).coerceIn(0, totalLines)
-                val end = if (requestedLines != null) {
-                    (start + requestedLines).coerceAtMost(totalLines)
-                } else {
-                    totalLines
-                }
-                allLines.subList(start, end)
-            }
-
-            val showStart = if (direction == "tail") {
-                (totalLines - selectedLines.size) + 1
-            } else {
-                offset
-            }
-            val showEnd = showStart + selectedLines.size - 1
-
-            var content = selectedLines.joinToString("\n")
-
-            // [T-fileread-truncation-header] The header used to report the line
-            // range chosen BEFORE truncation, and said nothing about having
-            // truncated at all — only the body gained a trailing
-            // "... (truncated)". So a cut-off read still announced
-            // "showing 1-1324 of 1324", which the agent took as the whole file
-            // and never paged on.
-            //
-            // Recompute the range that actually survived and hand back the
-            // offset to resume from. Confined to the truncating branch; a read
-            // that fits is byte-identical to before.
-            var effectiveStart = showStart
-            var effectiveEnd = showEnd
-            var nextOffset: Int? = null
-            var wasTruncated = false
-            if (content.length > maxLength) {
-                wasTruncated = true
-                if (direction == "tail") {
-                    // tail asks for the END of the file; take() returned the
-                    // start of the tail window instead — the opposite.
-                    content = content.takeLast(maxLength)
-                    // Drop a leading partial line so the first line is whole.
-                    val firstNewline = content.indexOf('\n')
-                    if (firstNewline in 0 until content.length - 1) {
-                        content = content.substring(firstNewline + 1)
-                    }
-                    effectiveStart = effectiveEnd - content.count { it == '\n' }
-                    // No next_offset for tail: paging forward from the end of
-                    // the file is meaningless.
-                } else {
-                    content = content.take(maxLength)
-                    // Back off to the last complete line, so the next page does
-                    // not re-read or split a line.
-                    val lastNewline = content.lastIndexOf('\n')
-                    if (lastNewline > 0) content = content.substring(0, lastNewline)
-                    effectiveEnd = showStart + content.count { it == '\n' }
-                    if (effectiveEnd < totalLines) nextOffset = effectiveEnd + 1
-                }
-            }
-
-            var header = "[$path | $size bytes | $totalLines lines | " +
-                "showing $effectiveStart-$effectiveEnd of $totalLines"
-            if (wasTruncated) {
-                header += " | truncated at $maxLength chars"
-                // Named to match the tool's own `offset` parameter so the model
-                // can copy it straight into the next call.
-                header += if (nextOffset != null) ", next_offset=$nextOffset"
-                          else ", retry with a smaller lines value"
-            }
-            header += "]"
-            ToolExecutionResult("$header\n$content", true, toolTitle = toolTitle)
+            readFileSlice(
+                file = file,
+                displayPath = path,
+                offset = offset,
+                requestedLines = requestedLines,
+                maxLength = maxLength,
+                direction = direction,
+                toolTitle = toolTitle,
+            )
         } catch (e: Exception) {
             ToolExecutionResult("Error reading file: ${e.message}", false)
         }
+    }
+
+    /**
+     * Stream-read the requested slice of [file] in O([maxLength]) heap memory instead of
+     * loading every line into RAM. Produces byte-identical headers and truncation ranges.
+     */
+    internal fun readFileSlice(
+        file: File,
+        displayPath: String,
+        offset: Int = 1,
+        requestedLines: Int? = null,
+        maxLength: Int = 15_000,
+        direction: String = "head",
+        toolTitle: String = NAME,
+    ): ToolExecutionResult {
+        val size = file.length()
+
+        // Binary detection: check first 8192 bytes for null bytes without boxing.
+        val isBinary = file.inputStream().use { input ->
+            val probeLen = minOf(8192L, size).toInt()
+            if (probeLen <= 0) {
+                false
+            } else {
+                val buf = ByteArray(probeLen)
+                val read = input.read(buf)
+                var foundNull = false
+                for (i in 0 until read) {
+                    if (buf[i] == 0.toByte()) {
+                        foundNull = true
+                        break
+                    }
+                }
+                foundNull
+            }
+        }
+
+        if (isBinary) {
+            return ToolExecutionResult(
+                "[$displayPath | $size bytes | binary file — cannot display contents]",
+                true,
+                toolTitle = toolTitle,
+            )
+        }
+
+        val safeMax = maxLength.coerceAtLeast(0)
+        var totalLines = 0
+        var selectedCount = 0
+        val rawContent: String
+
+        if (direction == "tail") {
+            val tailDeque = ArrayDeque<String>()
+            var bufferedChars = 0L
+            file.bufferedReader().use { reader ->
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    totalLines++
+                    if (requestedLines != null && requestedLines <= 0) continue
+                    val storedLine = if (line.length > safeMax + 1) {
+                        line.substring(line.length - (safeMax + 1))
+                    } else {
+                        line
+                    }
+                    if (tailDeque.isNotEmpty()) bufferedChars += 1L
+                    tailDeque.addLast(storedLine)
+                    bufferedChars += storedLine.length
+                    while (requestedLines != null && tailDeque.size > requestedLines) {
+                        val dropped = tailDeque.removeFirst()
+                        bufferedChars -= dropped.length + if (tailDeque.isNotEmpty()) 1L else 0L
+                    }
+                    while (tailDeque.size > 1 && bufferedChars - (tailDeque.first().length + 1L) > safeMax) {
+                        val dropped = tailDeque.removeFirst()
+                        bufferedChars -= dropped.length + 1L
+                    }
+                }
+            }
+            selectedCount = tailDeque.size
+            rawContent = tailDeque.joinToString("\n")
+        } else {
+            val startIdx = offset - 1
+            val limit = requestedLines?.coerceAtLeast(0)
+            val sb = StringBuilder()
+            var hitCharLimit = false
+            file.bufferedReader().use { reader ->
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    val lineIdx = totalLines
+                    totalLines++
+                    val inWindow = lineIdx >= startIdx && (limit == null || selectedCount < limit)
+                    if (inWindow) {
+                        if (!hitCharLimit) {
+                            if (selectedCount > 0) sb.append('\n')
+                            if (sb.length + line.length > safeMax) {
+                                val need = (safeMax - sb.length + 1).coerceIn(0, line.length)
+                                if (need > 0) sb.append(line, 0, need)
+                                hitCharLimit = true
+                            } else {
+                                sb.append(line)
+                            }
+                        }
+                        selectedCount++
+                    }
+                }
+            }
+            rawContent = sb.toString()
+        }
+
+        val showStart = if (direction == "tail") {
+            (totalLines - selectedCount) + 1
+        } else {
+            offset
+        }
+        val showEnd = showStart + selectedCount - 1
+
+        var content = rawContent
+
+        // [T-fileread-truncation-header] Recompute the range that actually survived
+        // truncation and hand back the offset to resume from.
+        var effectiveStart = showStart
+        var effectiveEnd = showEnd
+        var nextOffset: Int? = null
+        var wasTruncated = false
+        if (content.length > maxLength) {
+            wasTruncated = true
+            if (direction == "tail") {
+                content = content.takeLast(maxLength)
+                val firstNewline = content.indexOf('\n')
+                if (firstNewline in 0 until content.length - 1) {
+                    content = content.substring(firstNewline + 1)
+                }
+                effectiveStart = effectiveEnd - content.count { it == '\n' }
+            } else {
+                content = content.take(maxLength)
+                val lastNewline = content.lastIndexOf('\n')
+                if (lastNewline > 0) content = content.substring(0, lastNewline)
+                effectiveEnd = showStart + content.count { it == '\n' }
+                if (effectiveEnd < totalLines) nextOffset = effectiveEnd + 1
+            }
+        }
+
+        var header = "[$displayPath | $size bytes | $totalLines lines | " +
+            "showing $effectiveStart-$effectiveEnd of $totalLines"
+        if (wasTruncated) {
+            header += " | truncated at $maxLength chars"
+            header += if (nextOffset != null) ", next_offset=$nextOffset"
+            else ", retry with a smaller lines value"
+        }
+        header += "]"
+        return ToolExecutionResult("$header\n$content", true, toolTitle = toolTitle)
     }
 }

@@ -9,6 +9,8 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
@@ -103,6 +105,12 @@ object NativeOffloadServer {
 
     private val handlers = ConcurrentHashMap<String, NativeOffloadHandler>()
     private val counter = AtomicLong(0)
+    private val workerThreadSeq = AtomicLong(0)
+    private val workerPool: ExecutorService = Executors.newCachedThreadPool { runnable ->
+        Thread(runnable, "native-offload-worker-${workerThreadSeq.incrementAndGet()}").apply {
+            isDaemon = true
+        }
+    }
     private var serverSocket: LocalServerSocket? = null
     private var acceptThread: Thread? = null
 
@@ -232,7 +240,7 @@ object NativeOffloadServer {
                 return
             }
             Log.d(TAG, "accepted client from proot extension")
-            thread(name = "native-offload-worker", isDaemon = true) {
+            workerPool.execute {
                 try {
                     handleClient(client)
                 } catch (e: Exception) {

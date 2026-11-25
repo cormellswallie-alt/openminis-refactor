@@ -3,6 +3,7 @@ package com.openminis.app.sandbox
 import android.content.Context
 import android.util.Log
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * [T-android-session-private-mounts] The ONE place a shell's `/var/minis`
@@ -61,10 +62,13 @@ object SessionMounts {
      * All directories are prepared and checked first and the map is built
      * after, so a failure report names every unusable directory at once.
      */
+    private val verifiedDirs = ConcurrentHashMap.newKeySet<String>()
+
     fun build(
         filesDir: File,
         sessionId: String?,
         externalMounts: List<Pair<String, String>> = emptyList(),
+        useDirCache: Boolean = false,
     ): Built {
         val candidates = linkedMapOf<String, File>()
         if (sessionId != null) {
@@ -76,7 +80,13 @@ object SessionMounts {
         val mounts = linkedMapOf<String, String>()
         val skipped = mutableListOf<String>()
         for ((linux, dir) in candidates) {
-            if (ensureDir(dir)) mounts[linux] = dir.absolutePath else skipped += linux
+            val hostPath = dir.absolutePath
+            val ready = if (useDirCache && hostPath in verifiedDirs) {
+                true
+            } else {
+                ensureDir(dir).also { if (it && useDirCache) verifiedDirs.add(hostPath) }
+            }
+            if (ready) mounts[linux] = hostPath else skipped += linux
         }
         // External (SAF-picked) folders are the user's, not ours to create,
         // and are passed through as before: under scoped storage a Java
@@ -84,7 +94,13 @@ object SessionMounts {
         // so dropping on that answer would take working mounts away. Only log.
         for ((linux, host) in externalMounts) {
             mounts[linux] = host
-            if (!File(host).isDirectory) Log.w(TAG, "external mount $linux -> $host is not visible as a directory")
+            if (!(useDirCache && host in verifiedDirs)) {
+                if (File(host).isDirectory) {
+                    if (useDirCache) verifiedDirs.add(host)
+                } else {
+                    Log.w(TAG, "external mount $linux -> $host is not visible as a directory")
+                }
+            }
         }
         if (skipped.isNotEmpty()) {
             Log.e(
@@ -98,7 +114,18 @@ object SessionMounts {
 
     /** [build] with the app's files dir and the current external mounts. */
     fun forContext(context: Context, sessionId: String?): Built =
-        build(context.filesDir, sessionId, externalMountsSnapshot())
+        build(context.filesDir, sessionId, externalMountsSnapshot(), useDirCache = true)
+
+    /** Drop cached directory checks for a terminated/deleted session. */
+    internal fun invalidateSession(filesDir: File, sessionId: String) {
+        for (sub in SESSION_SUBDIRS) {
+            verifiedDirs.remove(sessionDir(filesDir, sessionId, sub).absolutePath)
+        }
+    }
+
+    internal fun clearDirCacheForTest() {
+        verifiedDirs.clear()
+    }
 
     /** `-b host:linux` pairs for [mounts], with a soft size warning. */
     fun toProotArgs(mounts: Map<String, String>): List<String> {
