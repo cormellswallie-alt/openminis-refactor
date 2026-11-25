@@ -262,7 +262,8 @@ object FileSearchTool {
         var skippedLargeOrBinary = 0
         var truncated = false
 
-        outer@ for ((file, displayPath) in candidateFiles) {
+        for ((file, displayPath) in candidateFiles) {
+            if (truncated) break
             if (file.length() > MAX_CONTENT_FILE_BYTES) {
                 skippedLargeOrBinary++
                 continue
@@ -281,13 +282,13 @@ object FileSearchTool {
                         if (compiledPattern.matcher(line).find()) {
                             if (matchCount >= safeMaxResults) {
                                 truncated = true
-                                break@outer
+                                break
                             }
                             val clipped = if (line.length > 300) line.substring(0, 300) + "…" else line
                             val entry = "$displayPath:$lineNum: $clipped"
                             if (body.length + entry.length + 1 > maxOutputChars) {
                                 truncated = true
-                                break@outer
+                                break
                             }
                             if (matchCount > 0) body.append('\n')
                             body.append(entry)
@@ -302,6 +303,7 @@ object FileSearchTool {
             } catch (_: Exception) {
                 // Skip unreadable files without aborting the rest of the search.
             }
+            if (truncated) break
         }
 
         val header = buildString {
