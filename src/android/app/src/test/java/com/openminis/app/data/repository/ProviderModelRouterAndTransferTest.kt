@@ -74,7 +74,7 @@ class ProviderModelRouterAndTransferTest {
         val group = ModelGroup(
             id = "g1",
             name = "Primary",
-            memberEntryIds = mutableListOf(eDisabled.id, eAbsent.id, eHidden.id, eNewText.id, eOld.id),
+            memberEntryIds = mutableListOf(eDisabled.id, eHidden.id, eNewText.id, eAbsent.id, eOld.id),
         )
         val cfg = ProviderConfig(
             instances = mutableListOf(oldProv, newProv, disabledProv),
@@ -100,8 +100,8 @@ class ProviderModelRouterAndTransferTest {
             listOf(eHidden.id, eNewText.id, eOld.id),
             router.enabledMemberEntries(group).map { it.id },
         )
-        // availableMemberEntries additionally requires non-hidden & credential present.
-        assertEquals(listOf(eNewText.id), router.availableMemberEntries(group).map { it.id })
+        // availableMemberEntries requires non-hidden, enabled provider, and credentials present.
+        assertEquals(listOf(eNewText.id, eAbsent.id), router.availableMemberEntries(group).map { it.id })
         assertEquals(eNewText.id, router.resolveTitleSubEntry()?.id)
         assertFalse(router.isEntryProviderEnabled(eDisabled.id))
         assertTrue(router.isEntryProviderEnabled(eNewText.id))
