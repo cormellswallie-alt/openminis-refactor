@@ -38,8 +38,8 @@ android {
         applicationId = "com.openminis.next"
         minSdk = 26
         targetSdk = 35
-        versionCode = 30
-        versionName = "2.0.0-next.1"
+        versionCode = 31
+        versionName = "2.0.0-next.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
