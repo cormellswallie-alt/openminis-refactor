@@ -23,6 +23,7 @@ import com.openminis.app.ui.settings.AgentToolsSettingsScreen
 import com.openminis.app.ui.settings.AppearanceScreen
 import com.openminis.app.ui.settings.BackgroundSettingsScreen
 import com.openminis.app.ui.settings.EnvironmentVariablesScreen
+import com.openminis.app.ui.settings.FeatureTutorialScreen
 import com.openminis.app.ui.settings.LogDetailScreen
 import com.openminis.app.ui.settings.LogManagementScreen
 import com.openminis.app.ui.settings.MCPIntegrationsScreen
@@ -73,6 +74,7 @@ internal fun NavGraphBuilder.addSettingsAndToolsRoutes(
             onBackgroundClick = { navController.safeNavigate(Routes.BACKGROUND) },
             onLogsClick = { navController.safeNavigate(Routes.LOGS) },
             onAboutClick = { navController.safeNavigate(Routes.ABOUT) },
+            onTutorialClick = { navController.safeNavigate(Routes.TUTORIAL) },
             onMountedFoldersClick = { navController.safeNavigate(Routes.MOUNTED_FOLDERS) },
             onSharedFoldersClick = { navController.safeNavigate(Routes.SHARED_FOLDERS) },
         )
@@ -286,6 +288,10 @@ internal fun NavGraphBuilder.addSettingsAndToolsRoutes(
 
     composable(Routes.ABOUT) {
         AboutScreen(onBack = { navController.safePopBackStack() })
+    }
+
+    composable(Routes.TUTORIAL) {
+        FeatureTutorialScreen(onBack = { navController.safePopBackStack() })
     }
 
     composable(Routes.LOGS) {

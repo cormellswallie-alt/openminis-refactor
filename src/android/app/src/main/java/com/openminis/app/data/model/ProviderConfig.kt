@@ -314,12 +314,13 @@ data class ProviderInstance(
     var azureMode: Boolean = false,
 
 ) {
-    /** Returns the effective API base URL, trimming whitespace and applying v1 suffix if configured. */
+    /** Returns the effective API base URL, normalizing pasted suffixes/schemes and applying /v1 safely. */
     val effectiveBaseURL: String?
-        get() {
-            val base = customBaseURL?.trim()?.trimEnd('/')?.takeIf { it.isNotEmpty() } ?: return null
-            return if (appendV1Suffix && !base.endsWith("/v1")) "$base/v1" else base
-        }
+        get() = ProviderBaseUrlNormalizer.effectiveBaseUrl(
+            customBaseURL = customBaseURL,
+            appendV1Suffix = appendV1Suffix,
+            azureMode = azureMode,
+        )
 
     /**
      * [T-empty-key-compat-endpoints] Whether an EMPTY API key is a valid

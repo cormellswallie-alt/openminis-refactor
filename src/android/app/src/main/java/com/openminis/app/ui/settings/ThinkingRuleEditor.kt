@@ -57,33 +57,33 @@ fun ThinkingRuleEditorDialog(
     onSave: (ThinkingRule) -> Unit,
 ) {
     val seed = request.seed
-    var label by remember { mutableStateOf(seed.label) }
-    var allModels by remember { mutableStateOf(seed.scope is ThinkingRule.Scope.AllModels) }
-    var pattern by remember {
+    var label by remember(request) { mutableStateOf(seed.label) }
+    var allModels by remember(request) { mutableStateOf(seed.scope is ThinkingRule.Scope.AllModels) }
+    var pattern by remember(request) {
         mutableStateOf((seed.scope as? ThinkingRule.Scope.ModelPattern)?.pattern ?: "")
     }
-    var choice by remember { mutableStateOf(FormatChoice.from(seed.wireFormat)) }
+    var choice by remember(request) { mutableStateOf(FormatChoice.from(seed.wireFormat)) }
     // Shared editable params across formats.
-    var sendOffValue by remember { mutableStateOf(formatOffValue(seed.wireFormat) != null) }
-    var offValue by remember { mutableStateOf(formatOffValue(seed.wireFormat) ?: "") }
-    var path by remember { mutableStateOf(formatPath(seed.wireFormat) ?: "") }
-    var highValue by remember {
+    var sendOffValue by remember(request) { mutableStateOf(formatOffValue(seed.wireFormat) != null) }
+    var offValue by remember(request) { mutableStateOf(formatOffValue(seed.wireFormat) ?: "") }
+    var path by remember(request) { mutableStateOf(formatPath(seed.wireFormat) ?: "") }
+    var highValue by remember(request) {
         mutableStateOf((seed.wireFormat as? ThinkingWireFormat.CustomPath)?.values?.get(ThinkingLevel.HIGH) ?: "")
     }
-    var formatMenuOpen by remember { mutableStateOf(false) }
+    var formatMenuOpen by remember(request) { mutableStateOf(false) }
 
     fun buildWireFormat(): ThinkingWireFormat = when (choice) {
         FormatChoice.OMIT -> ThinkingWireFormat.OmitEverything
-        FormatChoice.REASONING_EFFORT -> ThinkingWireFormat.ReasoningEffort(if (sendOffValue) offValue.ifBlank { null } else null)
-        FormatChoice.REASONING_EFFORT_NESTED -> ThinkingWireFormat.ReasoningEffortNested(if (sendOffValue) offValue.ifBlank { null } else null)
-        FormatChoice.BOOLEAN_TOGGLE -> ThinkingWireFormat.BooleanToggle(path.ifBlank { "thinking" })
-        FormatChoice.EXTRA_BODY_TOGGLE -> ThinkingWireFormat.ExtraBodyToggle(path.ifBlank { "thinking.enabled" })
+        FormatChoice.REASONING_EFFORT -> ThinkingWireFormat.ReasoningEffort(if (sendOffValue) offValue.trim().ifBlank { null } else null)
+        FormatChoice.REASONING_EFFORT_NESTED -> ThinkingWireFormat.ReasoningEffortNested(if (sendOffValue) offValue.trim().ifBlank { null } else null)
+        FormatChoice.BOOLEAN_TOGGLE -> ThinkingWireFormat.BooleanToggle(path.trim().ifBlank { "thinking" })
+        FormatChoice.EXTRA_BODY_TOGGLE -> ThinkingWireFormat.ExtraBodyToggle(path.trim().ifBlank { "thinking.enabled" })
         FormatChoice.DEEPSEEK_SIBLING -> ThinkingWireFormat.DeepSeekSibling
         FormatChoice.QWEN_DUAL -> ThinkingWireFormat.QwenDual
         FormatChoice.CUSTOM_PATH -> ThinkingWireFormat.CustomPath(
-            path = path,
-            values = if (highValue.isNotBlank()) mapOf(ThinkingLevel.HIGH to highValue) else emptyMap(),
-            offValue = if (sendOffValue) offValue.ifBlank { null } else null,
+            path = path.trim(),
+            values = if (highValue.isNotBlank()) mapOf(ThinkingLevel.HIGH to highValue.trim()) else emptyMap(),
+            offValue = if (sendOffValue) offValue.trim().ifBlank { null } else null,
         )
     }
 
@@ -106,11 +106,12 @@ fun ThinkingRuleEditorDialog(
         "n", "functions", "function_call", "response_format",
     )
     val isCustom = choice == FormatChoice.CUSTOM_PATH
+    val hasPathField = isCustom || choice == FormatChoice.BOOLEAN_TOGGLE || choice == FormatChoice.EXTRA_BODY_TOGGLE
     val pathRoot = path.split(".").firstOrNull()?.trim()?.lowercase().orEmpty()
     val pathError: String? = when {
-        !isCustom -> null
-        path.isBlank() -> stringResource(R.string.thinking_rules_error_path_required)
-        pathRoot in reservedRoots -> stringResource(R.string.thinking_rules_error_path_reserved, pathRoot)
+        !hasPathField -> null
+        isCustom && path.isBlank() -> stringResource(R.string.thinking_rules_error_path_required)
+        pathRoot.isNotEmpty() && pathRoot in reservedRoots -> stringResource(R.string.thinking_rules_error_path_reserved, pathRoot)
         else -> null
     }
     val valueError: String? =
@@ -226,6 +227,8 @@ fun ThinkingRuleEditorDialog(
                             onValueChange = { path = it },
                             label = { Text(stringResource(R.string.thinking_rules_field_path)) },
                             singleLine = true,
+                            isError = pathError != null,
+                            supportingText = pathError?.let { { Text(it) } },
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }

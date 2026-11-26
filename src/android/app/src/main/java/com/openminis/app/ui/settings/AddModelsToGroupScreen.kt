@@ -10,6 +10,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -36,7 +37,7 @@ fun AddModelsToGroupScreen(
     val group = config.modelGroups.find { it.id == groupId }
 
     if (group == null) {
-        onBack()
+        LaunchedEffect(groupId) { onBack() }
         return
     }
 
@@ -87,7 +88,7 @@ fun AddModelsToGroupScreen(
                     com.openminis.app.ui.components.MinisSmallButton(
                         onClick = {
                             val updated = group.copy(
-                                memberEntryIds = (group.memberEntryIds + selectedIds).toMutableList()
+                                memberEntryIds = (group.memberEntryIds + selectedIds).distinct().toMutableList()
                             )
                             providerRepository.updateGroup(updated)
                             onBack()

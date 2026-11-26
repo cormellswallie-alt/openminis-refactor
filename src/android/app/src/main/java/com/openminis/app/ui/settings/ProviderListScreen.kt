@@ -448,8 +448,9 @@ private fun ProviderInstanceRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                val isOAuth = instance.credentialType == com.openminis.app.data.model.ProviderCredential.oauth
                 Text(
-                    text = stringResource(R.string.provider_list_api_key),
+                    text = if (isOAuth) "OAuth" else stringResource(R.string.provider_list_api_key),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -459,12 +460,15 @@ private fun ProviderInstanceRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
                 )
                 Text(
-                    // [T-empty-key-compat-endpoints] Keyless compatible endpoint:
-                    // say so instead of the alarming "No API key".
-                    text = if (needsReauth) stringResource(R.string.provider_oauth_sign_in_expired)
-                        else if (!apiKey.isNullOrBlank()) maskKey(apiKey)
-                        else if (instance.allowsEmptyAPIKey) stringResource(R.string.provider_no_key_required)
-                        else "No API key",
+                    // [T-empty-key-compat-endpoints] Keyless compatible endpoint & OAuth status.
+                    text = when {
+                        needsReauth -> stringResource(R.string.provider_oauth_sign_in_expired)
+                        isOAuth && isConfigured -> stringResource(R.string.provider_oauth_connected)
+                        isOAuth -> stringResource(R.string.provider_oauth_not_connected)
+                        !apiKey.isNullOrBlank() -> maskKey(apiKey)
+                        instance.allowsEmptyAPIKey -> stringResource(R.string.provider_no_key_required)
+                        else -> stringResource(R.string.provider_list_no_api_key)
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = if (needsReauth) MaterialTheme.colorScheme.error
                         else MaterialTheme.colorScheme.onSurfaceVariant,

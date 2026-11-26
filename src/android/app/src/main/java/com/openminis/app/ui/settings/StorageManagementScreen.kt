@@ -36,6 +36,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.CleaningServices
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -138,6 +142,11 @@ internal fun StorageManagementScreen(
                 R.plurals.storage_batch_delete_result, r.sessions, r.sessions,
                 Formatter.formatFileSize(context, r.freed),
             )
+            is StorageUsageViewModel.BatchResult.Optimized -> context.getString(
+                R.string.storage_optimize_result,
+                Formatter.formatFileSize(context, r.dbReclaimed + r.orphanFreed),
+                r.orphanDirsRemoved,
+            )
         }
         Toast.makeText(context, message, Toast.LENGTH_LONG).show()
         vm.consumeResult()
@@ -192,6 +201,14 @@ internal fun StorageManagementScreen(
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             item(key = "overview") {
                 SettingsSection(header = stringResource(R.string.storage_section_overview)) {
+                    StorageBreakdownBarCard(
+                        shellSize = state.shellSize,
+                        dbSize = state.dbSize,
+                        sessionsSize = state.totalSessionSize,
+                        logsSize = state.logsCachesSize,
+                        orphanSize = state.orphanSize,
+                        deviceFreeBytes = state.deviceFreeBytes,
+                    )
                     StorageOverviewRow(
                         color = MaterialTheme.colorScheme.secondary,
                         label = stringResource(R.string.storage_overview_shell),
@@ -214,6 +231,14 @@ internal fun StorageManagementScreen(
                         value = Formatter.formatFileSize(context, state.totalSessionSize),
                         showDivider = true,
                     )
+                    if (state.orphanSize > 0L || state.orphanDirCount > 0) {
+                        StorageOverviewRow(
+                            color = Color(0xFF8B5CF6),
+                            label = stringResource(R.string.storage_overview_orphans, state.orphanDirCount),
+                            value = Formatter.formatFileSize(context, state.orphanSize),
+                            showDivider = true,
+                        )
+                    }
                     StorageOverviewRow(
                         color = Color(0xFFD97706),
                         label = stringResource(R.string.storage_overview_logs_caches),
@@ -222,6 +247,41 @@ internal fun StorageManagementScreen(
                     )
                 }
 
+            }
+            item(key = "optimize") {
+                SettingsSection(footer = stringResource(R.string.storage_optimize_footer)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !state.isOptimizing && !state.isLoading) { vm.optimizeStorage() }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (state.isOptimizing) {
+                            com.openminis.app.ui.theme.ExpressiveLoadingIndicator(modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                stringResource(R.string.storage_optimizing_status),
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        } else {
+                            Icon(
+                                Icons.Default.CleaningServices,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                stringResource(R.string.storage_optimize_button),
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
             }
             item(key = "logs") {
                 // [T-storage-clear-logs-caches]
@@ -270,16 +330,19 @@ internal fun StorageManagementScreen(
                             style = MaterialTheme.typography.bodyMedium,
                             modifier = Modifier.padding(16.dp),
                         )
-                        // Rows follow as their own lazy items; the card is drawn
-                        // per row (rounded at the first and last) so it still reads
-                        // as one grouped section.
-                        else -> Unit
+                        else -> StorageSessionSearchBar(
+                            query = state.searchQuery,
+                            onQueryChange = vm::setSearchQuery,
+                            sortBySize = state.sortBySize,
+                            onToggleSort = vm::toggleSortMode,
+                        )
                     }
                 }
             }
             if (!state.isLoading) {
-                itemsIndexed(state.rows, key = { _, row -> row.id }) { index, session ->
-                    val last = state.rows.size - 1
+                val visibleRows = state.filteredRows
+                itemsIndexed(visibleRows, key = { _, row -> row.id }) { index, session ->
+                    val last = visibleRows.size - 1
                     val shape = RoundedCornerShape(
                         topStart = if (index == 0) 14.dp else 0.dp,
                         topEnd = if (index == 0) 14.dp else 0.dp,
@@ -293,8 +356,30 @@ internal fun StorageManagementScreen(
                             .clip(shape)
                             .background(MaterialTheme.colorScheme.surfaceContainerLow),
                     ) {
+                        val subtitleParts = buildList {
+                            if (session.minisSize > 0L) {
+                                add(
+                                    stringResource(
+                                        R.string.storage_row_files_part,
+                                        Formatter.formatFileSize(context, session.minisSize),
+                                    ),
+                                )
+                            }
+                            if (session.mediaSize > 0L) {
+                                add(
+                                    stringResource(
+                                        R.string.storage_row_media_part,
+                                        Formatter.formatFileSize(context, session.mediaSize),
+                                    ),
+                                )
+                            }
+                            if (session.childCount > 0) {
+                                add(stringResource(R.string.storage_row_subagents_part, session.childCount))
+                            }
+                        }
                         StorageSessionRow(
                             title = session.title ?: "Untitled",
+                            subtitle = subtitleParts.joinToString(" · ").takeIf { it.isNotEmpty() },
                             size = Formatter.formatFileSize(context, session.totalSize),
                             selecting = state.selecting,
                             selected = session.id in state.selectedIds,
@@ -379,6 +464,7 @@ internal fun StorageManagementScreen(
 @Composable
 private fun StorageSessionRow(
     title: String,
+    subtitle: String? = null,
     size: String,
     selecting: Boolean,
     selected: Boolean,
@@ -405,13 +491,23 @@ private fun StorageSessionRow(
                 )
                 Spacer(Modifier.width(12.dp))
             }
-            Text(
-                title,
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (subtitle != null) {
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
             Spacer(Modifier.width(8.dp))
             Text(
                 size,
@@ -675,6 +771,139 @@ fun SessionStorageDetailScreen(
                 MinisTextButton(onClick = { showClearDialog = false }) { Text(stringResource(R.string.common_cancel)) }
             },
         )
+    }
+}
+
+@Composable
+private fun StorageBreakdownBarCard(
+    shellSize: Long,
+    dbSize: Long,
+    sessionsSize: Long,
+    logsSize: Long,
+    orphanSize: Long,
+    deviceFreeBytes: Long,
+) {
+    val context = LocalContext.current
+    val total = (shellSize + dbSize + sessionsSize + logsSize + orphanSize).coerceAtLeast(1L)
+    val segments = listOf(
+        MaterialTheme.colorScheme.secondary to shellSize,
+        MaterialTheme.colorScheme.primary to dbSize,
+        MaterialTheme.colorScheme.tertiary to sessionsSize,
+        Color(0xFF8B5CF6) to orphanSize,
+        Color(0xFFD97706) to logsSize,
+    ).filter { it.second > 0L }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = stringResource(
+                    R.string.storage_total_used_label,
+                    Formatter.formatFileSize(context, shellSize + dbSize + sessionsSize + logsSize + orphanSize),
+                ),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+            )
+            if (deviceFreeBytes > 0L) {
+                Text(
+                    text = stringResource(
+                        R.string.storage_device_free_label,
+                        Formatter.formatFileSize(context, deviceFreeBytes),
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(10.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            for ((color, bytes) in segments) {
+                val frac = (bytes.toFloat() / total.toFloat()).coerceAtLeast(0.03f)
+                Box(
+                    modifier = Modifier
+                        .weight(frac)
+                        .height(10.dp)
+                        .background(color),
+                )
+            }
+        }
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp)
+            .height(1.dp)
+            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+    )
+}
+
+@Composable
+private fun StorageSessionSearchBar(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    sortBySize: Boolean,
+    onToggleSort: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Default.Search,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        com.openminis.app.ui.components.SectionTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            placeholder = stringResource(R.string.storage_search_sessions_placeholder),
+            singleLine = true,
+            modifier = Modifier.weight(1f),
+            trailingIcon = if (query.isNotEmpty()) {
+                {
+                    androidx.compose.material3.IconButton(onClick = { onQueryChange("") }) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = stringResource(R.string.common_clear),
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                }
+            } else null,
+        )
+        Spacer(Modifier.width(6.dp))
+        androidx.compose.material3.TextButton(onClick = onToggleSort) {
+            Icon(
+                Icons.Default.SwapVert,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                text = stringResource(
+                    if (sortBySize) R.string.storage_sort_by_size else R.string.storage_sort_by_name,
+                ),
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
     }
 }
 

@@ -20,19 +20,25 @@ class MediaStore(context: Context) {
         originalFileName: String? = null,
     ): MediaRef {
         val ref = newMediaRef(mimeType, sessionId, originalFileName)
-        prepareDestination(ref).writeBytes(data)
+        val target = prepareDestination(ref)
+        val tmp = File(target.parentFile, "${target.name}.tmp")
+        try {
+            tmp.writeBytes(data)
+            if (!tmp.renameTo(target)) {
+                target.writeBytes(data)
+                tmp.delete()
+            }
+        } catch (t: Throwable) {
+            runCatching { tmp.delete() }
+            throw t
+        }
         return ref
     }
 
     /**
-     * Streaming variant: copy from [source] InputStream into the same
-     * dated path layout as [saveMedia], without loading the whole file
-     * into memory. Used by non-image attachments (APKs, archives, large
-     * binaries) where a `readBytes()` would OOM for anything over ~100MB
-     * on low-RAM devices.
-     *
-     * Returns null on I/O failure; the caller treats this as "skip this
-     * attachment" without aborting the send.
+     * Streaming variant: copy from [source] InputStream into a staging temp file
+     * and atomically rename into the dated path layout, avoiding OOM on large
+     * binaries and preventing half-written corrupt artifacts on crash.
      */
     fun saveMediaStreamed(
         source: InputStream,
@@ -42,10 +48,18 @@ class MediaStore(context: Context) {
     ): MediaRef? {
         val ref = newMediaRef(mimeType, sessionId, originalFileName)
         val file = prepareDestination(ref)
+        val tmp = File(file.parentFile, "${file.name}.tmp")
         return try {
-            file.outputStream().use { source.copyTo(it) }
+            tmp.outputStream().buffered(64 * 1024).use { out ->
+                source.copyTo(out, bufferSize = 64 * 1024)
+            }
+            if (!tmp.renameTo(file)) {
+                tmp.copyTo(file, overwrite = true)
+                tmp.delete()
+            }
             ref
         } catch (_: Throwable) {
+            runCatching { tmp.delete() }
             runCatching { file.delete() }
             null
         }
@@ -57,11 +71,12 @@ class MediaStore(context: Context) {
     }
 
     fun deleteSessionMedia(sessionId: String) {
-        mediaBaseDir.walkTopDown().forEach { dir ->
-            if (dir.isDirectory && dir.name == sessionId) {
-                dir.deleteRecursively()
-            }
+        val parent = mediaBaseDir.parentFile ?: return
+        val sessionStorage = com.openminis.app.data.session.SessionStorage(parent)
+        for (dir in sessionStorage.mediaDirs(sessionId)) {
+            dir.deleteRecursively()
         }
+        sessionStorage.pruneEmptyMediaDirs()
     }
 
     private fun newMediaRef(
@@ -88,12 +103,26 @@ class MediaStore(context: Context) {
         File(mediaBaseDir, ref.relativePath).also { it.parentFile?.mkdirs() }
 
     private fun extensionFor(mimeType: String): String {
+        val lower = mimeType.lowercase()
         return when {
-            mimeType.contains("jpeg") || mimeType.contains("jpg") -> "jpg"
-            mimeType.contains("png") -> "png"
-            mimeType.contains("gif") -> "gif"
-            mimeType.contains("webp") -> "webp"
-            mimeType.contains("pdf") -> "pdf"
+            lower.contains("jpeg") || lower.contains("jpg") -> "jpg"
+            lower.contains("png") -> "png"
+            lower.contains("gif") -> "gif"
+            lower.contains("webp") -> "webp"
+            lower.contains("svg") -> "svg"
+            lower.contains("pdf") -> "pdf"
+            lower.contains("audio/mpeg") || lower.contains("mp3") -> "mp3"
+            lower.contains("audio/mp4") || lower.contains("m4a") -> "m4a"
+            lower.contains("wav") -> "wav"
+            lower.contains("ogg") -> "ogg"
+            lower.contains("flac") -> "flac"
+            lower.contains("aac") -> "aac"
+            lower.contains("video/mp4") -> "mp4"
+            lower.contains("webm") -> "webm"
+            lower.contains("json") -> "json"
+            lower.contains("markdown") -> "md"
+            lower.contains("text/plain") -> "txt"
+            lower.contains("zip") -> "zip"
             else -> "bin"
         }
     }

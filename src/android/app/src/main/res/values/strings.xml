@@ -2373,4 +2373,41 @@
     <string name="chat_plan_exit_cd">Exit Plan Mode</string>
     <string name="slash_plan_on">Plan Mode: ON (read-only exploration)</string>
     <string name="slash_plan_off">Plan Mode: OFF (full Code execution)</string>
+
+    <!-- Model Config Fixes -->
+    <string name="add_custom_model_duplicate_error">A model with this ID already exists for this provider.</string>
+    <string name="provider_detail_url_saved_toast">Endpoint settings saved</string>
+    <string name="provider_oauth_connected">Connected</string>
+    <string name="provider_oauth_not_connected">Not connected</string>
+    <string name="provider_list_no_api_key">No API key</string>
+
+    <!-- Storage Module Upgrade -->
+    <string name="storage_total_used_label">Total used: %1$s</string>
+    <string name="storage_device_free_label">Free: %1$s</string>
+    <string name="storage_overview_orphans">Residual Files (%1$d)</string>
+    <string name="storage_optimize_button">Optimize Database &amp; Clean Residuals</string>
+    <string name="storage_optimizing_status">Optimizing storage…</string>
+    <string name="storage_optimize_footer">Compacts the SQLite database (VACUUM + WAL truncate) to reclaim deleted pages and removes orphaned leftover session directories.</string>
+    <string name="storage_optimize_result">Optimization complete: reclaimed %1$s (%2$d residual folder(s) cleaned)</string>
+    <string name="storage_search_sessions_placeholder">Search sessions…</string>
+    <string name="storage_sort_by_size">Size</string>
+    <string name="storage_sort_by_name">Name</string>
+    <string name="storage_row_files_part">Files %1$s</string>
+    <string name="storage_row_media_part">Media %1$s</string>
+    <string name="storage_row_subagents_part">%1$d sub-agent(s)</string>
+    <string name="common_clear">Clear</string>
+
+    <!-- Settings Feature Tutorial & Searchable Guide -->
+    <string name="settings_tutorial_button_title">Feature Guide &amp; Tutorials</string>
+    <string name="settings_tutorial_button_subtitle">Search and learn every feature, slash command, memory, sub-agent &amp; tool</string>
+    <string name="tutorial_screen_title">Feature Guide</string>
+    <string name="tutorial_search_placeholder">Search features, /commands, @mentions…</string>
+    <string name="tutorial_result_count">%1$d feature(s)</string>
+    <string name="tutorial_expand_all">Expand all</string>
+    <string name="tutorial_collapse_all">Collapse all</string>
+    <string name="tutorial_no_results_title">No matching features</string>
+    <string name="tutorial_no_results_subtitle">Try searching /plan, /steer, /handoff, @diff, memory, or OAuth.</string>
+    <string name="tutorial_reset_filters">Clear search &amp; filters</string>
+    <string name="tutorial_section_what">What it does</string>
+    <string name="tutorial_section_how">How to use</string>
 </resources>

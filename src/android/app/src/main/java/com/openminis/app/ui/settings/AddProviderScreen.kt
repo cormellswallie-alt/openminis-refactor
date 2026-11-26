@@ -563,6 +563,9 @@ private fun ColumnScope.ApiKeyConfigSection(
     }
 
     // ── Endpoint (skip for OpenRouter — fixed base URL) ─────────────────
+    val baseUrlValidationError = if (providerType != ProviderType.openRouter) {
+        com.openminis.app.data.model.ProviderBaseUrlNormalizer.validateInput(customBaseURL)
+    } else null
     if (providerType != ProviderType.openRouter) {
         val defaultUrl = when (providerType) {
             ProviderType.gemini -> "https://generativelanguage.googleapis.com/v1beta"
@@ -570,15 +573,6 @@ private fun ColumnScope.ApiKeyConfigSection(
             ProviderType.openAI -> "https://api.openai.com"
             else -> "https://api.example.com"
         }
-        // T-mimo-anthropic-endpoint-android: Anthropic third-party
-        // compatible services (e.g. Mimo) frequently host the Anthropic
-        // surface under a path suffix like "/anthropic" rather than at
-        // the host root. Users routinely paste just the host
-        // (https://token-plan-cn.xiaomimimo.com) and hit 404 because
-        // /v1/messages then resolves to the wrong route. Surface a hint
-        // on the Anthropic endpoint footer so this can be discovered
-        // without scraping issue threads. Default Anthropic + other
-        // provider types keep their original footer copy.
         val baseUrlFooter = if (providerType == ProviderType.gemini) {
             "Leave empty to use the default Google endpoint. Enter the full base URL including version path."
         } else if (providerType == ProviderType.anthropic) {
@@ -600,6 +594,14 @@ private fun ColumnScope.ApiKeyConfigSection(
                     placeholder = defaultUrl,
                     singleLine = true,
                 )
+                if (baseUrlValidationError != null) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = baseUrlValidationError,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
             // Auto Append "/v1" toggle (not for Gemini — Gemini uses full path)
             if (providerType != ProviderType.gemini) {
@@ -644,14 +646,15 @@ private fun ColumnScope.ApiKeyConfigSection(
     Spacer(Modifier.height(20.dp))
     MinisButton(
         onClick = {
-            val trimmedBase = customBaseURL.trim()
+            val trimmedBase = com.openminis.app.data.model.ProviderBaseUrlNormalizer
+                .sanitizeInput(customBaseURL)
             val instance = ProviderInstance(
                 id = UUID.randomUUID().toString(),
-                label = label.ifBlank { providerType.displayName },
+                label = label.trim().ifBlank { providerType.displayName },
                 providerType = providerType,
                 credentialType = ProviderCredential.apiKey,
                 customBaseURL = trimmedBase.ifEmpty { null },
-                appendV1Suffix = appendV1Suffix,
+                appendV1Suffix = if (providerType == ProviderType.gemini) false else appendV1Suffix,
                 // Only OpenAI-family providers expose the Responses API toggle.
                 useResponsesAPI = providerType == ProviderType.openAI && useResponsesAPI,
             )
@@ -676,10 +679,15 @@ private fun ColumnScope.ApiKeyConfigSection(
         // (custom base URL filled in) — ollama / LM Studio / LiteLLM /
         // private relays need no key. Official endpoints and OAuth flows
         // keep requiring a credential. Mirrors iOS AddProviderView.
-        enabled = apiKey.isNotBlank() || (
-            customBaseURL.isNotBlank() &&
-                (providerType == ProviderType.openAI || providerType == ProviderType.anthropic)
-        ),
+        enabled = baseUrlValidationError == null && (
+            apiKey.isNotBlank() || (
+                customBaseURL.isNotBlank() && (
+                    providerType == ProviderType.openAI ||
+                        providerType == ProviderType.openAIResponses ||
+                        providerType == ProviderType.anthropic
+                    )
+                )
+            ),
     ) {
         Text(stringResource(R.string.provider_list_add_provider))
     }
@@ -1022,6 +1030,8 @@ private fun ColumnScope.OAuthConfigSection(
             ProviderType.antigravity,
             ProviderType.unsupported -> ""
         }
+        val manualBaseUrlError = com.openminis.app.data.model.ProviderBaseUrlNormalizer
+            .validateInput(customBaseURL)
         SettingsSection(
             header = stringResource(R.string.add_provider_or_configure_manually),
             footer = stringResource(R.string.add_provider_for_third_party_coding_plans_e_g_minimax),
@@ -1034,6 +1044,14 @@ private fun ColumnScope.OAuthConfigSection(
                     placeholder = defaultUrl,
                     singleLine = true,
                 )
+                if (manualBaseUrlError != null) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = manualBaseUrlError,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 Spacer(Modifier.height(12.dp))
                 RowLabel(text = stringResource(R.string.add_provider_bearer_token))
                 SectionTextField(
@@ -1056,18 +1074,23 @@ private fun ColumnScope.OAuthConfigSection(
         Spacer(Modifier.height(20.dp))
         MinisButton(
             onClick = {
-                val trimmedBase = customBaseURL.trim()
+                val trimmedBase = com.openminis.app.data.model.ProviderBaseUrlNormalizer
+                    .sanitizeInput(customBaseURL)
+                val cleanedToken = manualToken.replace(Regex("\\s+"), "")
                 val instance = ProviderInstance(
                     id = UUID.randomUUID().toString(),
-                    label = label.ifBlank { providerType.displayName },
+                    label = label.trim().ifBlank { providerType.displayName },
                     providerType = providerType,
                     credentialType = ProviderCredential.oauth,
                     customBaseURL = trimmedBase.ifEmpty { null },
-                    appendV1Suffix = appendV1Suffix,
+                    appendV1Suffix = if (providerType == ProviderType.gemini) false else appendV1Suffix,
                 )
                 providerRepository.addInstance(instance)
-                // Store the manual token as API key — ProviderFactory uses loadApiKey() for all credential types
-                providerRepository.saveApiKey(instance.id, manualToken.trim())
+                // Persist into both API-key mirror and OAuthManager manual bearer store
+                // so ProviderDetailScreen's ManualBearerTokenSection and ProviderFactory agree.
+                providerRepository.saveApiKey(instance.id, cleanedToken)
+                com.openminis.app.auth.OAuthManager.forInstance(context, instance)
+                    ?.saveManualBearerToken(cleanedToken)
                 // [T-provider-refresh-outlives-screen] (GH#265) Survives onSaved()'s pop.
                 providerRepository.triggerAsyncModelReconcile(instance.id)
                 onSaved()
@@ -1075,7 +1098,7 @@ private fun ColumnScope.OAuthConfigSection(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp),
-            enabled = manualToken.isNotBlank(),
+            enabled = manualToken.isNotBlank() && manualBaseUrlError == null,
         ) {
             Text(stringResource(R.string.provider_list_add_provider))
         }

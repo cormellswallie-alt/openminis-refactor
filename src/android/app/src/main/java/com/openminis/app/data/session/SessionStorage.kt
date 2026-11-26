@@ -35,19 +35,160 @@ class SessionStorage(private val filesDir: File) {
     fun mediaSize(sessionId: String): Long = mediaDirs(sessionId).sumOf { directorySize(it) }
 
     /**
-     * Media bytes per session for [sessionIds], from ONE walk of the media
-     * tree (the storage list sizes every session at once; walking per id
-     * would be quadratic in files).
+     * Media bytes per session for [sessionIds], from ONE no-follow walk of the
+     * media tree (hardlink-deduplicated and symlink-safe).
      */
     fun mediaSizesBySession(sessionIds: Set<String>): Map<String, Long> {
-        if (!mediaRoot.exists()) return emptyMap()
+        if (sessionIds.isEmpty() || !mediaRoot.exists()) return emptyMap()
         val sizes = mutableMapOf<String, Long>()
-        mediaRoot.walkTopDown().forEach { file ->
-            if (!file.isFile) return@forEach
-            val sid = file.parentFile?.name ?: return@forEach
-            if (sid in sessionIds) sizes[sid] = (sizes[sid] ?: 0L) + file.length()
+        val seenKeys = HashSet<Any>()
+        try {
+            java.nio.file.Files.walkFileTree(
+                mediaRoot.toPath(),
+                object : java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
+                    override fun preVisitDirectory(
+                        dir: java.nio.file.Path,
+                        attrs: java.nio.file.attribute.BasicFileAttributes,
+                    ): java.nio.file.FileVisitResult =
+                        if (attrs.isSymbolicLink) java.nio.file.FileVisitResult.SKIP_SUBTREE
+                        else java.nio.file.FileVisitResult.CONTINUE
+
+                    override fun visitFile(
+                        file: java.nio.file.Path,
+                        attrs: java.nio.file.attribute.BasicFileAttributes,
+                    ): java.nio.file.FileVisitResult {
+                        if (!attrs.isSymbolicLink && attrs.isRegularFile) {
+                            val sid = file.parent?.fileName?.toString()
+                            if (sid != null && sid in sessionIds) {
+                                val fk = attrs.fileKey()
+                                if (fk == null || seenKeys.add(fk)) {
+                                    sizes[sid] = (sizes[sid] ?: 0L) + attrs.size()
+                                }
+                            }
+                        }
+                        return java.nio.file.FileVisitResult.CONTINUE
+                    }
+
+                    override fun visitFileFailed(
+                        file: java.nio.file.Path,
+                        exc: java.io.IOException,
+                    ): java.nio.file.FileVisitResult = java.nio.file.FileVisitResult.CONTINUE
+                },
+            )
+        } catch (_: Exception) {
+            // Best effort; return whatever was accumulated.
         }
         return sizes
+    }
+
+    /** Orphaned on-disk session/media directories that no longer belong to any DB session. */
+    data class OrphanDiskSummary(
+        val sessionDirs: List<File>,
+        val mediaDirs: List<File>,
+        val totalBytes: Long,
+    ) {
+        val dirCount: Int get() = sessionDirs.size + mediaDirs.size
+    }
+
+    data class OrphanSweepResult(
+        val dirsRemoved: Int,
+        val bytesFreed: Long,
+        val failedPaths: List<String>,
+    )
+
+    /**
+     * Find on-disk session and media directories whose session ID is absent from
+     * [knownSessionIds] and whose mtime is older than [minAgeMs] (grace window
+     * prevents racing in-flight session creation or backup restore).
+     */
+    fun findOrphanDiskEntries(
+        knownSessionIds: Set<String>,
+        minAgeMs: Long = ORPHAN_GRACE_MS,
+        nowMs: Long = System.currentTimeMillis(),
+    ): OrphanDiskSummary {
+        val cutoff = nowMs - minAgeMs
+        val orphanSessions = mutableListOf<File>()
+        if (sessionsRoot.isDirectory) {
+            sessionsRoot.listFiles()?.forEach { child ->
+                if (child.isDirectory && !isSymlink(child) &&
+                    child.name !in knownSessionIds &&
+                    child.lastModified() < cutoff
+                ) {
+                    orphanSessions.add(child)
+                }
+            }
+        }
+        val orphanMedia = mutableListOf<File>()
+        if (mediaRoot.isDirectory) {
+            // Layout: media/<yyyy>/<MM>/<dd>/<sessionId>/...
+            mediaRoot.listFiles()?.forEach { yearDir ->
+                if (!yearDir.isDirectory || isSymlink(yearDir)) return@forEach
+                yearDir.listFiles()?.forEach { monthDir ->
+                    if (!monthDir.isDirectory || isSymlink(monthDir)) return@forEach
+                    monthDir.listFiles()?.forEach { dayDir ->
+                        if (!dayDir.isDirectory || isSymlink(dayDir)) return@forEach
+                        dayDir.listFiles()?.forEach { sidDir ->
+                            if (sidDir.isDirectory && !isSymlink(sidDir) &&
+                                sidDir.name !in knownSessionIds &&
+                                sidDir.lastModified() < cutoff
+                            ) {
+                                orphanMedia.add(sidDir)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        val total = orphanSessions.sumOf { directorySize(it) } + orphanMedia.sumOf { directorySize(it) }
+        return OrphanDiskSummary(
+            sessionDirs = orphanSessions,
+            mediaDirs = orphanMedia,
+            totalBytes = total,
+        )
+    }
+
+    /** Delete orphaned session/media directories and prune empty dated media folders. */
+    fun sweepOrphanDiskEntries(
+        knownSessionIds: Set<String>,
+        minAgeMs: Long = ORPHAN_GRACE_MS,
+        nowMs: Long = System.currentTimeMillis(),
+    ): OrphanSweepResult {
+        val summary = findOrphanDiskEntries(knownSessionIds, minAgeMs = minAgeMs, nowMs = nowMs)
+        var removed = 0
+        var freed = 0L
+        val failed = mutableListOf<String>()
+        for (target in summary.sessionDirs + summary.mediaDirs) {
+            if (!target.exists()) continue
+            val before = directorySize(target)
+            restoreWritable(target)
+            if (deleteTreeNoFollow(target) && !target.exists()) {
+                removed++
+                freed += before
+            } else {
+                failed += target.absolutePath
+                freed += (before - directorySize(target)).coerceAtLeast(0L)
+            }
+        }
+        pruneEmptyMediaDirs()
+        return OrphanSweepResult(dirsRemoved = removed, bytesFreed = freed, failedPaths = failed)
+    }
+
+    /** Remove empty `media/yyyy/MM/dd` date directory shells left behind after deletions. */
+    fun pruneEmptyMediaDirs() {
+        if (!mediaRoot.isDirectory) return
+        mediaRoot.listFiles()?.forEach { yearDir ->
+            if (!yearDir.isDirectory || isSymlink(yearDir)) return@forEach
+            yearDir.listFiles()?.forEach { monthDir ->
+                if (!monthDir.isDirectory || isSymlink(monthDir)) return@forEach
+                monthDir.listFiles()?.forEach { dayDir ->
+                    if (dayDir.isDirectory && !isSymlink(dayDir) && dayDir.listFiles().isNullOrEmpty()) {
+                        runCatching { dayDir.delete() }
+                    }
+                }
+                if (monthDir.listFiles().isNullOrEmpty()) runCatching { monthDir.delete() }
+            }
+            if (yearDir.listFiles().isNullOrEmpty()) runCatching { yearDir.delete() }
+        }
     }
 
     /**
@@ -95,6 +236,7 @@ class SessionStorage(private val filesDir: File) {
 
         wipe(sessionDir(sessionId))
         for (m in mediaDirs(sessionId)) wipe(m)
+        pruneEmptyMediaDirs()
         return DeleteResult(freed, failed)
     }
 
@@ -212,54 +354,56 @@ class SessionStorage(private val filesDir: File) {
     companion object {
         const val SESSIONS_DIR = "minis-sessions"
         const val MEDIA_DIR = "media"
+        const val ORPHAN_GRACE_MS = 60 * 60 * 1000L
 
         /**
-         * Bytes really stored under [dir], counting each file once and never
-         * leaving the subtree.
-         *
-         * [T-android-storage-symlink-inflation] This used to be a plain
-         * `walkTopDown()` summing `length()` of everything `isFile` said yes
-         * to — and every one of those three calls resolves symlinks. So the
-         * walk behaved like `du -L`, not `du`:
-         *
-         *   - a symlink to a FILE was counted as a second full copy of the
-         *     target's bytes (the Alpine rootfs ships ~335 of these — busybox
-         *     applets — and a user's apk installs add more);
-         *   - a symlink to a DIRECTORY was DESCENDED INTO, so the whole target
-         *     subtree was counted again, once per link pointing at it. This is
-         *     what turns a few GB of real files into tens of GB on the storage
-         *     screen: `lib -> usr/lib`, `.venv/lib64 -> lib`, node_modules and
-         *     apk layouts all create them, and the inflation multiplies rather
-         *     than adds.
-         *
-         * A user reported "Shell 容器 43.89 GB" while Android's own app-storage
-         * page said 9.60 GB of data for the same install. Android counts real
-         * blocks; we counted symlink targets repeatedly. That is the whole gap
-         * — nothing was double-counted from bind mounts, which a host-side walk
-         * cannot even see (PRoot's `-b` exists only inside the PRoot process,
-         * and `var/minis/mounts/<name>` on disk is an empty placeholder dir).
-         *
-         * A symlink contributes nothing here on purpose: its target is either
-         * inside the subtree (already counted at its real path) or outside it
-         * (someone else's bytes, which deleting this directory would not free).
-         * That also makes the number honest for [deleteFiles], which reports it
-         * as "bytes freed".
-         *
-         * Still an apparent-size sum, not `du`'s block count: sparse files read
-         * high and small files read low against a 4 KiB block. That difference
-         * is small and stable, unlike the symlink multiplier.
+         * Bytes really stored under [dir], counting each regular file once
+         * (hardlink inode deduplication + strict no-follow symlink handling)
+         * via a single-syscall `Files.walkFileTree` pass.
          */
         fun directorySize(dir: File): Long {
-            if (!dir.exists()) return 0L
+            val rootPath = try {
+                dir.toPath()
+            } catch (_: Exception) {
+                return 0L
+            }
+            if (!java.nio.file.Files.exists(rootPath, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return 0L
+            if (isSymlink(dir)) return 0L
             var total = 0L
-            // walkTopDown()'s own traversal follows directory symlinks, so the
-            // filter below cannot prevent descending into one — the link has to
-            // be pruned via onEnter before the walk steps through it.
-            dir.walkTopDown()
-                .onEnter { !isSymlink(it) }
-                .forEach { f ->
-                    if (!isSymlink(f) && f.isFile) total += f.length()
-                }
+            val seenFileKeys = HashSet<Any>()
+            try {
+                java.nio.file.Files.walkFileTree(
+                    rootPath,
+                    object : java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
+                        override fun preVisitDirectory(
+                            path: java.nio.file.Path,
+                            attrs: java.nio.file.attribute.BasicFileAttributes,
+                        ): java.nio.file.FileVisitResult =
+                            if (attrs.isSymbolicLink) java.nio.file.FileVisitResult.SKIP_SUBTREE
+                            else java.nio.file.FileVisitResult.CONTINUE
+
+                        override fun visitFile(
+                            path: java.nio.file.Path,
+                            attrs: java.nio.file.attribute.BasicFileAttributes,
+                        ): java.nio.file.FileVisitResult {
+                            if (!attrs.isSymbolicLink && attrs.isRegularFile) {
+                                val key = attrs.fileKey()
+                                if (key == null || seenFileKeys.add(key)) {
+                                    total += attrs.size()
+                                }
+                            }
+                            return java.nio.file.FileVisitResult.CONTINUE
+                        }
+
+                        override fun visitFileFailed(
+                            path: java.nio.file.Path,
+                            exc: java.io.IOException,
+                        ): java.nio.file.FileVisitResult = java.nio.file.FileVisitResult.CONTINUE
+                    },
+                )
+            } catch (_: Exception) {
+                // Best effort; return bytes accumulated before error.
+            }
             return total
         }
 

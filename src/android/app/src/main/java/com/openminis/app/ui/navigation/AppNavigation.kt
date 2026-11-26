@@ -125,6 +125,7 @@ object Routes {
     const val APPEARANCE = "appearance"
     const val BACKGROUND = "background"
     const val ABOUT = "about"
+    const val TUTORIAL = "tutorial"
     const val ONBOARDING_MODELS = "onboarding_models"
     const val MOUNTED_FOLDERS = "mounted_folders"
     const val MOUNTED_FOLDERS_DETAIL = "mounted_folders_detail/{mountId}"
