@@ -431,6 +431,21 @@ extension AIChatViewModel {
         }()
 
         do {
+        // OpenMinis Next: Enforce Plan Mode / Read-Only Sub-Agent execution policy before running any tool.
+        let policyDecision = ExecutionModePolicy.evaluateTool(
+            name: tu.name,
+            command: toolArgs["command"] as? String,
+            mode: nextExecutionMode,
+            subAgentAccess: nextSubAgentAccessMode
+        )
+        if !policyDecision.allowed {
+            let reason = policyDecision.reason ?? "Blocked by read-only execution policy."
+            toolOutput = reason
+            toolSuccess = false
+            if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
+                messages[msgIdx].blocks[blockIdx].content = reason
+            }
+        } else {
         switch tu.name {
         case "shell_execute":
             let (command, timeout, delay) = parseToolInput(from: argsJson)
@@ -976,12 +991,36 @@ extension AIChatViewModel {
             toolSuccess = memResult.success
 
         case "memory_get":
-            let memResult = executeMemoryGet(from: argsJson)
+            let memResult = executeNextEnhancedMemoryGet(from: argsJson)
             if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
                 messages[msgIdx].blocks[blockIdx].content = memResult.output
             }
             toolOutput = memResult.output
             toolSuccess = memResult.success
+
+        case "memory_delete":
+            let delResult = executeNextMemoryDelete(args: toolArgs)
+            if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
+                messages[msgIdx].blocks[blockIdx].content = delResult.output
+            }
+            toolOutput = delResult.output
+            toolSuccess = delResult.success
+
+        case "update_steps":
+            let stepsResult = executeNextUpdateSteps(args: toolArgs)
+            if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
+                messages[msgIdx].blocks[blockIdx].content = stepsResult.output
+            }
+            toolOutput = stepsResult.output
+            toolSuccess = stepsResult.success
+
+        case "repo_map":
+            let mapResult = await executeNextRepoMap(args: toolArgs)
+            if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
+                messages[msgIdx].blocks[blockIdx].content = mapResult.output
+            }
+            toolOutput = mapResult.output
+            toolSuccess = mapResult.success
 
         case UserAskTool.name:
             // [T-user-ask] Waits for the user: card in the chat, a notification
@@ -1052,6 +1091,7 @@ extension AIChatViewModel {
         default:
             toolOutput = "Error: Unknown tool '\(tu.name)'"
             toolSuccess = false
+        }
         }
         } catch is CancellationError {
             let cancelContent = "<system-reminder>The user cancelled this operation. The returned result may be incomplete.</system-reminder>"
@@ -1290,6 +1330,12 @@ extension AIChatViewModel {
                 + "transit and auto-closed by the client (repair strategy: \(tag)) before execution. "
                 + "The arguments actually used may be incomplete — verify the result and re-issue "
                 + "the call with complete arguments if anything is missing.</system-reminder>"
+        }
+
+        // OpenMinis Next: Drain opt-in user-submitted mid-loop steering notes into this tool result.
+        if !isHelper,
+           let steeringBlock = NextSessionStateStore.shared.drainSteeringForToolResult(sessionKey: nextSessionKey) {
+            finalOutput += "\n" + steeringBlock
         }
 
         let resultPart = AgentContentPart.toolResult(

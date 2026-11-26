@@ -169,14 +169,23 @@ struct ThinkingRuleEditorView: View {
             TextField("Field path", text: $togglePath)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
+            if let pathErr = reservedRootPathError(for: togglePath) {
+                Text(pathErr).font(.caption).foregroundStyle(.red)
+            }
         case .extraBodyToggle:
             TextField("Field path", text: $extraBodyPath)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
+            if let pathErr = reservedRootPathError(for: extraBodyPath) {
+                Text(pathErr).font(.caption).foregroundStyle(.red)
+            }
         case .customPath:
             TextField("Dotted path (e.g. extra.thinking.mode)", text: $customPath)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
+            if let pathErr = reservedRootPathError(for: customPath) {
+                Text(pathErr).font(.caption).foregroundStyle(.red)
+            }
             TextField("Value at High", text: $customHighValue)
                 .autocorrectionDisabled()
         case .omitEverything, .deepSeekSibling, .qwenDual, .qwenRootOnly:
@@ -184,10 +193,37 @@ struct ThinkingRuleEditorView: View {
         }
     }
 
+    private static let reservedRootKeys: Set<String> = [
+        "messages", "model", "stream", "stream_options", "tools", "tool_choice",
+        "n", "functions", "function_call", "response_format",
+    ]
+
+    private func reservedRootPathError(for path: String) -> String? {
+        let first = path.split(separator: ".").first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        if Self.reservedRootKeys.contains(first) {
+            return "'\(first)' is a reserved request field and cannot be overwritten."
+        }
+        return nil
+    }
+
     private var isValid: Bool {
         if label.trimmingCharacters(in: .whitespaces).isEmpty { return false }
         if !scopeIsAllModels && pattern.trimmingCharacters(in: .whitespaces).isEmpty { return false }
-        if choice == .customPath && customPath.trimmingCharacters(in: .whitespaces).isEmpty { return false }
+        switch choice {
+        case .booleanToggle:
+            let p = togglePath.trimmingCharacters(in: .whitespaces)
+            if p.isEmpty || reservedRootPathError(for: p) != nil { return false }
+        case .extraBodyToggle:
+            let p = extraBodyPath.trimmingCharacters(in: .whitespaces)
+            if p.isEmpty || reservedRootPathError(for: p) != nil { return false }
+        case .customPath:
+            let p = customPath.trimmingCharacters(in: .whitespaces)
+            if p.isEmpty || reservedRootPathError(for: p) != nil { return false }
+        default:
+            break
+        }
         return true
     }
 

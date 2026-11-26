@@ -171,6 +171,8 @@ extension AIChatViewModel {
             }
             return cmd
         }
+        commands.append(contentsOf: nextBuiltInSlashCommands())
+        commands.append(contentsOf: nextCustomSlashCommandRows())
         // Append enabled skills as slash entries.
         // - id is namespaced ("skill:<uuid>") so it never collides with a
         //   built-in id.
@@ -324,6 +326,7 @@ extension AIChatViewModel {
     func tryExecuteInputAsSlashCommand() -> Bool {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard text.hasPrefix("/") else { return false }
+        if tryHandleNextSlashInput(text) { return true }
         let name = String(text.dropFirst()).lowercased()
         guard let cmd = Self.availableSlashCommands.first(where: { $0.title.lowercased() == name }) else {
             return false
@@ -409,6 +412,8 @@ extension AIChatViewModel {
             appendSystemInfo("Memory writes \(status). Reads are unaffected.", icon: "brain.head.profile")
         case "clear":
             clearChatConfirmRequested = true
+        case "plan", "handoff", "steps", "stats":
+            _ = tryHandleNextSlashInput("/\(cmd.id)")
         default:
             break
         }

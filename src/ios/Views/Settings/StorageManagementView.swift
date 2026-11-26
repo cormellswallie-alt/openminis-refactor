@@ -175,6 +175,20 @@ class StorageManagementViewModel: ObservableObject {
     }
 
     @Published var isClearingLogsAndCaches = false
+    @Published var isOptimizingDatabase = false
+    @Published var deviceStorage = NextDeviceStorageMetrics.current()
+    @Published var dbMaintenanceReport: NextDatabaseMaintenanceReport?
+
+    @MainActor
+    func optimizeDatabase() async {
+        guard !isOptimizingDatabase else { return }
+        isOptimizingDatabase = true
+        defer { isOptimizingDatabase = false }
+        let report = await ChatStore.shared.runDatabaseMaintenance()
+        dbMaintenanceReport = report
+        deviceStorage = NextDeviceStorageMetrics.current()
+        await load().value
+    }
 
     /// [T-storage-clear-logs-caches] "Logs & Caches" used to be display-only:
     /// users could see it grow but had nothing on this screen to reclaim it.
@@ -555,6 +569,13 @@ struct StorageManagementView: View {
     @State private var showCleanOrphansConfirmation = false
     @State private var orphanPreview: StorageManagementViewModel.OrphanPreview?
     @State private var orphanCleanupResult: StorageManagementViewModel.OrphanCleanupResult?
+    @State private var sessionSearchText = ""
+
+    private var filteredSessions: [StorageManagementViewModel.SessionStorage] {
+        let q = sessionSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return vm.sessions }
+        return vm.sessions.filter { $0.title.lowercased().contains(q) || $0.id.lowercased().contains(q) }
+    }
 
     /// A clear/delete waiting for its confirmation.
     struct PendingSessionAction: Identifiable {
@@ -590,6 +611,7 @@ struct StorageManagementView: View {
     private var storageContent: some View {
         List {
             Section {
+                storageBreakdownHeader
                 storageRow(icon: "terminal", color: .gray, label: "Shell Container", value: vm.format(vm.shellContainerSize))
                 storageRow(icon: "cylinder", color: .blue, label: "Chat Database", value: vm.format(vm.chatDatabaseSize))
                 storageRow(icon: "doc", color: .indigo, label: "Session Files", value: vm.format(vm.totalSessionSize))
@@ -604,11 +626,14 @@ struct StorageManagementView: View {
                     Text(vm.format(vm.containerTotalSize))
                         .fontWeight(.semibold)
                 }
+                deviceFreeSpaceRow
             } header: {
                 Text("Overview")
             } footer: {
                 Text("Total is the app's full container size and should match the figure iOS Settings shows for Minis. \"Other\" covers everything not itemized above, so the categories always add up to the total.")
             }
+
+            databaseMaintenanceSection
 
             // [T-storage-clear-logs-caches]
             Section {
@@ -633,17 +658,33 @@ struct StorageManagementView: View {
             orphanCleanupSection
 
             Section("Sessions") {
+                if !vm.sessions.isEmpty {
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(.secondary)
+                        TextField("Filter sessions…", text: $sessionSearchText)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        if !sessionSearchText.isEmpty {
+                            Button { sessionSearchText = "" } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
                 if vm.isLoading {
                     HStack {
                         Spacer()
                         ProgressView()
                         Spacer()
                     }
-                } else if vm.sessions.isEmpty {
-                    Text("No sessions")
+                } else if filteredSessions.isEmpty {
+                    Text(vm.sessions.isEmpty ? "No sessions" : "No matching sessions")
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(vm.sessions) { session in
+                    ForEach(filteredSessions) { session in
                         sessionRow(session)
                     }
                 }
@@ -709,6 +750,65 @@ struct StorageManagementView: View {
 
     /// The overview rows that only exist when non-zero. Split out of `body`:
     /// with a third conditional row the type checker gave up on the section.
+    @ViewBuilder
+    private var storageBreakdownHeader: some View {
+        if vm.containerTotalSize > 0 {
+            NextStorageBreakdownBar(
+                segments: [
+                    NextStorageSegment(id: "shell", label: "Shell", bytes: vm.shellContainerSize, color: .gray),
+                    NextStorageSegment(id: "db", label: "Database", bytes: vm.chatDatabaseSize, color: .blue),
+                    NextStorageSegment(id: "sessions", label: "Sessions", bytes: vm.totalSessionSize, color: .indigo),
+                    NextStorageSegment(id: "shared", label: "Shared", bytes: vm.sharedDataSize, color: .purple),
+                    NextStorageSegment(id: "logs", label: "Logs/Cache", bytes: vm.logsAndCachesSize, color: .orange),
+                    NextStorageSegment(id: "other", label: "Other", bytes: vm.otherSize + vm.temporarySize, color: .teal),
+                ],
+                totalBytes: vm.containerTotalSize
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var deviceFreeSpaceRow: some View {
+        if vm.deviceStorage.availableBytes > 0 {
+            storageRow(
+                icon: "iphone",
+                color: .green,
+                label: "Device Free Space",
+                value: vm.format(vm.deviceStorage.availableBytes)
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var databaseMaintenanceSection: some View {
+        Section {
+            Button {
+                Task { await vm.optimizeDatabase() }
+            } label: {
+                HStack {
+                    if vm.isOptimizingDatabase {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Optimizing Database…")
+                    } else {
+                        Label("Optimize Database (WAL & VACUUM)", systemImage: "cylinder.split.1x2")
+                    }
+                }
+            }
+            .disabled(vm.isOptimizingDatabase || vm.isLoading)
+
+            if let rep = vm.dbMaintenanceReport {
+                Text(rep.freedBytes > 0
+                     ? "Reclaimed \(vm.format(rep.freedBytes)) (\(vm.format(rep.bytesBefore)) → \(vm.format(rep.bytesAfter)))."
+                     : "Database optimized (\(vm.format(rep.bytesAfter))).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } footer: {
+            Text("Checkpoints SQLite WAL journals, compacts dead pages via VACUUM, and refreshes query indexes without deleting any messages.")
+        }
+    }
+
     @ViewBuilder
     private var conditionalOverviewRows: some View {
         // Only shown when non-zero: these two are failure residue, and a

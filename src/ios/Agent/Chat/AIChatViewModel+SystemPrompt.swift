@@ -94,8 +94,10 @@ extension AIChatViewModel {
             // the bullet above. Generated from the same list the tool schema's
             // enumValues use, so a name can never appear in one and not the other.
             + ((isHelper || !Self.toolEnabled(.agents)) ? "" : Self.subAgentRosterSection())
-            + "- memory_write: Save a memory entry to today's daily log (YYYY-MM-DD.md). Use proactively to note user preferences, project patterns, and important context.\n"
-            + "- memory_get: Recall memories with keyword search. Check memory at the start of new topics to leverage past knowledge.\n"
+            + "- memory_write: Save a memory entry to today's daily log (YYYY-MM-DD.md) and index it into the hybrid memory engine. Use proactively to note user preferences, project patterns, and important context.\n"
+            + "- memory_get: Recall memories with BM25 + Jaccard hybrid search and recency weighting. Check memory at the start of new topics to leverage past knowledge.\n"
+            + "- repo_map: Generate a fast structural tree + symbol outline of a workspace directory in one call.\n"
+            + (isHelper ? "" : "- update_steps: For multi-step tasks (3+ steps), publish and keep a live task checklist updated at the top of chat so the user can track real-time progress.\n")
             // [T-user-ask-prompt-consolidated] The only user_ask text in the
             // system prompt, and only when the tool is in this run (switch on,
             // not a sub agent). Everything else travels with the tool itself.

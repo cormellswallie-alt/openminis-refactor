@@ -258,10 +258,20 @@ extension AIChatViewModel {
             if let dailyFragment = Self.loadRecentDailyMemoryFragment() {
                 userSystemPrompt += "\n\n" + dailyFragment
             }
+            if let hybridMemoryFragment = nextAdvancedMemoryContextFragment() {
+                userSystemPrompt += "\n\n" + hybridMemoryFragment
+            }
         }
         // Authoritative memory-status footer (overrides any earlier
         // baseSystemPrompt mentions when memory is disabled).
         userSystemPrompt += memoryStatusFragment
+        // OpenMinis Next: auto-loaded AGENTS.md/CLAUDE.md & active Plan/SubAgent policy
+        if let projectInstructions = nextProjectInstructionsFragment() {
+            userSystemPrompt += "\n\n" + projectInstructions
+        }
+        if let modeFragment = nextModeSystemPromptFragment() {
+            userSystemPrompt += "\n\n" + modeFragment
+        }
 
         let promptBuildMs = (CFAbsoluteTimeGetCurrent() - loopSetupStart) * 1000
         logger.info("⏱️ [runAgentLoop] prompt build elapsed=\(String(format: "%.1f", promptBuildMs))ms history=\(self.agentHistory.count)")
@@ -1098,8 +1108,17 @@ extension AIChatViewModel {
                     if let dailyFragment = Self.loadRecentDailyMemoryFragment() {
                         userSystemPrompt += "\n\n" + dailyFragment
                     }
+                    if let hybridMemoryFragment = nextAdvancedMemoryContextFragment() {
+                        userSystemPrompt += "\n\n" + hybridMemoryFragment
+                    }
                 }
                 userSystemPrompt += memoryStatusFragment
+                if let projectInstructions = nextProjectInstructionsFragment() {
+                    userSystemPrompt += "\n\n" + projectInstructions
+                }
+                if let modeFragment = nextModeSystemPromptFragment() {
+                    userSystemPrompt += "\n\n" + modeFragment
+                }
                 fallbackTrigger += 1
                 if !fallbackReasons.isEmpty {
                     // Resync the assistant message index by its stable id before

@@ -107,6 +107,18 @@ extension AIChatViewModel {
         let linuxPath = "\(Self.minisMemoryLinuxDir)/\(fileName)"
         ensureFakefsMetadata(for: linuxPath, isDirectory: false)
 
+        // OpenMinis Next: also index into hybrid BM25 + Jaccard memory engine with category & duplicate superseding
+        let explicitCategory = (dict["category"] as? String).flatMap { NextMemoryCategory(rawValue: $0.lowercased()) }
+        let explicitTags = (dict["tags"] as? [String]) ?? []
+        let explicitImportance = (dict["importance"] as? Double) ?? 0.65
+        let outcome = AdvancedMemoryManager.shared.recordWrite(
+            content: content,
+            category: explicitCategory,
+            tags: explicitTags,
+            importance: explicitImportance,
+            source: fileName
+        )
+
         // Enqueue for iCloud v2 sync. Reuse fileName's stem (no second
         // Date() call) so the dateKey matches what was actually written
         // even across a midnight boundary.
@@ -116,7 +128,8 @@ extension AIChatViewModel {
         }
         NotificationCenter.default.post(name: .memoryFilesDidChange, object: nil)
 
-        return FileToolResult(output: "Memory saved to \(fileName) (\(content.count) chars)", success: true)
+        let dupNote = outcome.supersededIds.isEmpty ? "" : ", superseded \(outcome.supersededIds.count) near-duplicate(s)"
+        return FileToolResult(output: "Memory saved to \(fileName) (\(content.count) chars, category=\(outcome.record.category.rawValue)\(dupNote))", success: true)
     }
 
     /// Execute a memory_get tool call: read and optionally search memory files.

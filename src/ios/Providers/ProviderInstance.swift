@@ -199,25 +199,34 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
     }
 
     /// Returns customBaseURL if non-nil and non-empty, otherwise nil.
-    /// Use this to check whether a custom base is configured; for building request URLs use resolvedBaseURL(default:).
+    /// Normalized via ProviderBaseUrlNormalizer so pasted leaf suffixes or missing schemes do not break requests.
     var effectiveCustomBaseURL: String? {
-        guard let url = customBaseURL, !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        return url.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sanitized = ProviderBaseUrlNormalizer.sanitizeInput(customBaseURL ?? "", azureMode: azureMode)
+        return sanitized.isEmpty ? nil : sanitized
     }
 
     /// Returns the base URL to use for API requests.
     /// - When no custom URL is set, returns `defaultBase`.
     /// - When `appendV1Suffix` is true (default), strips any trailing "/v1" so callers can safely append "/v1/...".
+    ///   If the custom URL already ends in another version segment (e.g. `/api/paas/v4`, `/api/v3`, `/v1beta`),
+    ///   returns it verbatim with `appendV1: false` to prevent `/v4/v1` 404s.
     /// - When `appendV1Suffix` is false, returns the custom URL verbatim (no strip, no append by caller).
     func resolvedBaseURL(default defaultBase: String) -> (url: String, appendV1: Bool) {
         guard let custom = effectiveCustomBaseURL else {
             return (normalizeV1(defaultBase), true)
         }
-        if appendV1Suffix {
-            return (normalizeV1(custom), true)
-        } else {
+        if azureMode || !appendV1Suffix {
             return (custom, false)
         }
+        let eff = ProviderBaseUrlNormalizer.effectiveBaseUrl(
+            customBaseURL: custom,
+            appendV1Suffix: true,
+            azureMode: false
+        ) ?? custom
+        if eff.lowercased().hasSuffix("/v1") {
+            return (normalizeV1(eff), true)
+        }
+        return (eff, false)
     }
 
     private func normalizeV1(_ s: String) -> String {

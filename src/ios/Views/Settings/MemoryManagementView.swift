@@ -26,6 +26,8 @@ struct MemoryManagementView: View {
                 Text(AppLocalized("settings_memory_global_enabled_footer"))
             }
 
+            NextMemoryInsightsSection()
+
             ForEach(memoryFiles) { file in
                 NavigationLink {
                     MemoryFileEditView(fileName: file.name, isGlobal: file.isGlobal)

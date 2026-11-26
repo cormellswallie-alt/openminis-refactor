@@ -82,6 +82,8 @@ extension AIChatView {
             if let sid = vm.sessionId {
                 ScheduledTaskBanner(sessionId: sid)
             }
+            // OpenMinis Next: Antigravity-style pinned collapsible live task checklist
+            NextStepChecklistBanner(sessionKey: vm.nextSessionKey)
             // [T-in-chat-search] Right under the navigation bar (below the
             // scheduled-task banner when the chat has one).
             if isChatSearchActive {

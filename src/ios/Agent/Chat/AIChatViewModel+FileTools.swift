@@ -667,6 +667,15 @@ extension AIChatViewModel {
 
         let replaceAll = (dict["replace_all"] as? Bool) ?? false
 
+        // Snapshot pre-edit text for compact unified diff (capped at 512 KB to avoid memory spikes).
+        let preEditSnapshot: String? = {
+            if let sz = (try? FileManager.default.attributesOfItem(atPath: hostURL.path)[.size]) as? Int,
+               sz <= 512 * 1024 {
+                return try? String(contentsOf: hostURL, encoding: .utf8)
+            }
+            return nil
+        }()
+
         // [T-filetool-io-offmain] Read, match/replace and write back off the
         // main thread, with a timeout. An iCloud file is downloaded first and
         // edited under one coordinated read+write. This String(contentsOf:)
@@ -699,6 +708,11 @@ extension AIChatViewModel {
         var result = "Edited \(path) (\(replacements), \(bytes) bytes)"
         if let note = fuzzyNote {
             result += " — \(note)"
+        }
+        if let before = preEditSnapshot,
+           let after = try? String(contentsOf: hostURL, encoding: .utf8),
+           let diff = UnifiedDiffGenerator.generate(oldText: before, newText: after, filePath: path) {
+            result += "\n\n```diff\n\(diff)\n```"
         }
         if let minisURL = linuxPathToMinisURL(path) {
             result += "\nminis_url: \(minisURL)"

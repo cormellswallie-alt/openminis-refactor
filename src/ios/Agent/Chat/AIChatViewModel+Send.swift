@@ -73,6 +73,13 @@ extension AIChatViewModel {
             return
         }
 
+        // OpenMinis Next: Zero-token `!command` inline shell passthrough when sent from composer.
+        if usingComposer, pendingAttachments.isEmpty,
+           let shellCmd = InlineShellShortcut.extractCommand(from: text) {
+            executeNextInlineShellShortcut(shellCmd)
+            return
+        }
+
         // Don't stop TTS here — let the previous reply finish playing. The stream
         // handler will clear the queue on the FIRST textDelta of the new reply, so
         // the old audio plays until actual new content starts arriving.
@@ -471,8 +478,9 @@ extension AIChatViewModel {
             if !text.isEmpty {
                 if let consumed = await self.consumePastedDraft(text, sessionId: sid,
                                                                plannedFileIds: pastePlanned.plan) {
-                    userParts.append(.text(consumed.modelText))
-                    pastedStoredParts[consumed.modelText] = consumed.storedParts
+                    let expandedModelText = await self.expandNextDynamicContextMentions(in: consumed.modelText)
+                    userParts.append(.text(expandedModelText))
+                    pastedStoredParts[expandedModelText] = consumed.storedParts
                     // [T-paste-live-bubble-card] The bubble was born with the
                     // planned cards; this only reconciles ids the plan missed
                     // (a chip removed mid-send leaves a dead card at worst).
@@ -489,7 +497,8 @@ extension AIChatViewModel {
                         }
                     }
                 } else {
-                    userParts.append(.text(text))
+                    let expandedText = await self.expandNextDynamicContextMentions(in: text)
+                    userParts.append(.text(expandedText))
                 }
             }
             // [T-bubble-span] A Stop followed by an edit or delete-from-here

@@ -91,6 +91,9 @@ extension AIChatView {
                 .background(Color.yellow.opacity(0.08))
             }
 
+            // OpenMinis Next: Plan Mode toggle & opt-in mid-loop steering bar
+            NextComposerControlStrip(vm: vm)
+
             // [T-ios-chat-body-stack-erase] Same as body: erase the composer
             // before its modifier chain so each opaque step copies a pointer,
             // not the whole composer (30 dynamic stack buffers in this closure).

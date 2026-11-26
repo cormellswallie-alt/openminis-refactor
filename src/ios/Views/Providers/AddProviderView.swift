@@ -964,6 +964,12 @@ struct AddProviderView: View {
                 .autocorrectionDisabled()
                 .keyboardType(.URL)
 
+            if let urlErr = ProviderBaseUrlNormalizer.validateInput(customBaseURLInput) {
+                Text(urlErr)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
             if !enteredViaVoiceTemplate, selectedType != .gemini {
                 Toggle("Auto Append \"/v1\"", isOn: $appendV1SuffixInput)
             }
@@ -1000,9 +1006,10 @@ struct AddProviderView: View {
 
     private func saveApiKeyInstance() {
         guard let type = selectedType else { return }
+        if ProviderBaseUrlNormalizer.validateInput(customBaseURLInput) != nil { return }
         let trimmedKey = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedLabel = labelInput.trimmingCharacters(in: .whitespaces)
-        let trimmedBase = customBaseURLInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedBase = ProviderBaseUrlNormalizer.sanitizeInput(customBaseURLInput)
         // [T-empty-key-compat-endpoints] Empty key is allowed for third-party
         // compatible endpoints (see emptyKeyAllowedForCurrentInput).
         guard !trimmedKey.isEmpty || emptyKeyAllowedForCurrentInput else { return }

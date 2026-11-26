@@ -669,6 +669,12 @@ struct ProviderInstanceDetailView: View {
                 .onSubmit { saveCustomBaseURL(instance) }
                 .onDisappear { saveCustomBaseURL(instance) }
 
+            if let urlErr = ProviderBaseUrlNormalizer.validateInput(editingCustomBaseURL, azureMode: instance.azureMode) {
+                Text(urlErr)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
             // [T-mimo-shadow-voice] /v1 toggle always shown — instances are no
             // longer classified voice-only; this is a normal endpoint setting.
             Toggle("Auto Append \"/v1\"", isOn: Binding(
@@ -1295,11 +1301,15 @@ struct ProviderInstanceDetailView: View {
     }
 
     private func saveCustomBaseURL(_ instance: ProviderInstance) {
+        if ProviderBaseUrlNormalizer.validateInput(editingCustomBaseURL, azureMode: instance.azureMode) != nil {
+            return
+        }
         let current = instance.customBaseURL ?? ""
-        let trimmed = editingCustomBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed != current else { return }
+        let sanitized = ProviderBaseUrlNormalizer.sanitizeInput(editingCustomBaseURL, azureMode: instance.azureMode)
+        editingCustomBaseURL = sanitized
+        guard sanitized != current else { return }
         var updated = instance
-        updated.customBaseURL = trimmed.isEmpty ? nil : trimmed
+        updated.customBaseURL = sanitized.isEmpty ? nil : sanitized
         store.updateInstance(updated)
     }
 

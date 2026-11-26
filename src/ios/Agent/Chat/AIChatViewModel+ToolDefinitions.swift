@@ -253,6 +253,9 @@ extension AIChatViewModel {
             tools.append(Self.userAskToolDefinition)
         }
 
+        // OpenMinis Next tools: live checklist (update_steps), repo_map, memory_delete.
+        tools.append(contentsOf: nextExtraAgentTools())
+
         return tools
     }
 

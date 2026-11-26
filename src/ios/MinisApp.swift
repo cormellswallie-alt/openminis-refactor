@@ -170,6 +170,10 @@ struct MinisApp: App {
         // .onAppear refresh) locks the sidebar title to the default even when the
         // user set a custom name. refreshCache() only reads the tiny SOUL.md file.
         SoulStore.refreshCache()
+        // Seed OpenMinis Next specialized sub-agent presets (Explore/Plan/Review/Verify) once.
+        Task { @MainActor in
+            NextSubAgentPresetSeeder.seedDefaultsIfNeeded()
+        }
         // Pre-warm KaTeX WKWebView as fallback for formulas SwiftMath can't render
         KaTeXRenderer.shared.warmUp()
         // Pre-warm the biometric capability probe off the main thread. The

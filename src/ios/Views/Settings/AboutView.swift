@@ -83,9 +83,9 @@ struct AboutView: View {
                                     .stroke(Color(UIColor.separator), lineWidth: 0.5)
                             )
                     }
-                    Text("Minis")
+                    Text(OpenMinisNextInfo.displayName)
                         .font(.title2.bold())
-                    Text("Version \(appVersion)")
+                    Text("Version \(OpenMinisNextInfo.releaseVersion) (\(appVersion))")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     Text("Built \(buildDate)")
@@ -100,9 +100,10 @@ struct AboutView: View {
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                         .textSelection(.enabled)
-                    Text("Minis is Your Fully Local, Fully Private On-Device Agent.")
+                    Text("OpenMinis Next — Community-upgraded on-device AI Agent with embedded ARM64 Linux, Plan Mode, Hybrid Memory & Sub-Agents (GPL-3.0, derived from OpenMinis/OpenMinis).")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
@@ -111,10 +112,10 @@ struct AboutView: View {
 
             // MARK: - Links
             Section("Links") {
-                Link(destination: URL(string: "https://github.com/OpenMinis")!) {
+                Link(destination: URL(string: OpenMinisNextInfo.repositoryURL)!) {
                     Label {
                         HStack {
-                            Text("GitHub Repository")
+                            Text("OpenMinis Next (GitHub)")
                                 .foregroundStyle(Color(UIColor.label))
                             Spacer()
                             Image(systemName: "arrow.up.right.square")
@@ -125,7 +126,21 @@ struct AboutView: View {
                         Image(systemName: "link.circle.fill")
                     }
                 }
-                Link(destination: URL(string: "https://github.com/OpenMinis/OpenMinis/issues")!) {
+                Link(destination: URL(string: "https://github.com/OpenMinis/OpenMinis")!) {
+                    Label {
+                        HStack {
+                            Text("Upstream OpenMinis (GPL-3.0)")
+                                .foregroundStyle(Color(UIColor.label))
+                            Spacer()
+                            Image(systemName: "arrow.up.right.square")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "arrow.triangle.branch")
+                    }
+                }
+                Link(destination: URL(string: "\(OpenMinisNextInfo.repositoryURL)/issues")!) {
                     Label {
                         HStack {
                             Text("Report an Issue")

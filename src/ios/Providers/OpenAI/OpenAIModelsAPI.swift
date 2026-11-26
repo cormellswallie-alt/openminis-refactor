@@ -16,24 +16,52 @@ enum OpenAIModelsAPI {
     private static let defaultBaseURL = "https://api.openai.com"
 
     static func fetchModels(apiKey: String, baseURL: String? = nil, appendV1Suffix: Bool = true, forceRefresh: Bool = false, userAgent: String? = nil) async throws -> [LLMModel] {
-        if !forceRefresh, let cached = OpenAIModelsCache.load(credential: apiKey) {
+        let isCustomBase = baseURL != nil
+        let effectiveBase = ProviderBaseUrlNormalizer.effectiveBaseUrl(
+            customBaseURL: baseURL ?? defaultBaseURL,
+            appendV1Suffix: appendV1Suffix,
+            azureMode: false
+        ) ?? (appendV1Suffix ? URLBuilding.join(stripV1Suffix(baseURL ?? defaultBaseURL), "/v1") : (baseURL ?? defaultBaseURL))
+        let cacheCredential = "\(effectiveBase)|\(apiKey)"
+        if !forceRefresh, let cached = OpenAIModelsCache.load(credential: cacheCredential) {
             logger.info("Returning \(cached.count) cached models (API key)")
             return cached
         }
 
-        let isCustomBase = baseURL != nil
-        let base = appendV1Suffix ? stripV1Suffix(baseURL ?? defaultBaseURL) : (baseURL ?? defaultBaseURL)
-        let v1Path = appendV1Suffix ? "/v1" : ""
-        guard let url = URL(string: URLBuilding.join(base, v1Path, "/models")) else {
-            throw LLMError.providerError(message: "Invalid base URL: \(base)")
+        let plainModelsURLString = URLBuilding.join(effectiveBase, "/models")
+        let preferredURLString = ProviderBaseUrlNormalizer.siliconFlowChatModelsURL(from: plainModelsURLString)
+        guard let preferredURL = URL(string: preferredURLString) else {
+            throw LLMError.providerError(message: "Invalid base URL: \(effectiveBase)")
         }
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        if let ua = userAgent { request.setValue(ua, forHTTPHeaderField: "User-Agent") }
-        logger.info("Fetching OpenAI models (API key auth, custom base: \(isCustomBase), appendV1: \(appendV1Suffix))")
-        let models = try await performFetch(request, filterOpenAIOnly: !isCustomBase)
-        OpenAIModelsCache.save(models, credential: apiKey)
+
+        func makeRequest(url: URL) -> URLRequest {
+            var req = URLRequest(url: url)
+            req.httpMethod = "GET"
+            if !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            }
+            if let ua = userAgent { req.setValue(ua, forHTTPHeaderField: "User-Agent") }
+            return req
+        }
+
+        logger.info("Fetching OpenAI models (API key auth, custom base: \(isCustomBase), appendV1: \(appendV1Suffix), siliconFlowFiltered: \(preferredURLString != plainModelsURLString))")
+        var models: [LLMModel]
+        if preferredURLString != plainModelsURLString, let fallbackURL = URL(string: plainModelsURLString) {
+            do {
+                let filtered = try await performFetch(makeRequest(url: preferredURL), filterOpenAIOnly: false)
+                models = filtered.isEmpty
+                    ? try await performFetch(makeRequest(url: fallbackURL), filterOpenAIOnly: false)
+                    : filtered
+            } catch let err as LLMError {
+                if case .invalidAPIKey = err { throw err }
+                models = try await performFetch(makeRequest(url: fallbackURL), filterOpenAIOnly: false)
+            } catch {
+                models = try await performFetch(makeRequest(url: fallbackURL), filterOpenAIOnly: false)
+            }
+        } else {
+            models = try await performFetch(makeRequest(url: preferredURL), filterOpenAIOnly: !isCustomBase)
+        }
+        OpenAIModelsCache.save(models, credential: cacheCredential)
         return models
     }
 

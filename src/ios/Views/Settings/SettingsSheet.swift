@@ -376,6 +376,30 @@ struct SettingsSheet: View {
                     }
                 }
 
+                // OpenMinis Next: Bottom searchable Feature Guide & Tutorials entry
+                Section {
+                    NavigationLink {
+                        FeatureTutorialView()
+                    } label: {
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("功能教程与使用指南")
+                                Text("Feature Guide & Tutorials (Searchable)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "book.fill")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.white)
+                                .frame(width: 21, height: 21)
+                                .background(.blue, in: Circle())
+                        }
+                    }
+                } footer: {
+                    Text("内置搜索框，快速查找硅基流动配置、规划模式、实时任务清单、主动纠偏、记忆引擎、子代理与 iSH 沙盒等全部功能用法。")
+                }
+
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
