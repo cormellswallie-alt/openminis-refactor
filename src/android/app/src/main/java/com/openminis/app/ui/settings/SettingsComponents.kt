@@ -28,7 +28,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.MediumTopAppBar
 import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -60,7 +60,7 @@ import com.openminis.app.ui.theme.toShape
 import androidx.compose.ui.graphics.Shape
 
 /**
- * Reusable Material 3 Expressive 40dp tonal squircle navigation button for TopAppBars.
+ * Reusable Material 3 Expressive 40dp circular tonal navigation button for TopAppBars.
  */
 @Composable
 fun ExpressiveNavIconButton(
@@ -74,9 +74,10 @@ fun ExpressiveNavIconButton(
         modifier = modifier
             .padding(start = 6.dp)
             .size(40.dp)
+            .clip(CircleShape)
             .background(
-                MaterialTheme.colorScheme.surfaceContainerHigh,
-                RoundedCornerShape(14.dp),
+                com.openminis.app.ui.theme.expressiveChromeColor(),
+                CircleShape,
             ),
         colors = IconButtonDefaults.iconButtonColors(
             containerColor = Color.Transparent,
@@ -92,7 +93,7 @@ fun ExpressiveNavIconButton(
 }
 
 /**
- * Reusable Material 3 Expressive 40dp tonal squircle action button for TopAppBar trailing slots.
+ * Reusable Material 3 Expressive 40dp circular tonal action button for TopAppBar trailing slots.
  */
 @Composable
 fun ExpressiveTopBarActionButton(
@@ -106,7 +107,7 @@ fun ExpressiveTopBarActionButton(
     val bg = when {
         !enabled -> MaterialTheme.colorScheme.surfaceContainerLow
         highlighted -> MaterialTheme.colorScheme.primaryContainer
-        else -> MaterialTheme.colorScheme.surfaceContainerHigh
+        else -> com.openminis.app.ui.theme.expressiveChromeColor()
     }
     val fg = when {
         !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
@@ -119,7 +120,8 @@ fun ExpressiveTopBarActionButton(
         modifier = modifier
             .padding(horizontal = 3.dp)
             .size(40.dp)
-            .background(bg, RoundedCornerShape(14.dp)),
+            .clip(CircleShape)
+            .background(bg, CircleShape),
         colors = IconButtonDefaults.iconButtonColors(
             containerColor = Color.Transparent,
             contentColor = fg,
@@ -152,7 +154,7 @@ fun ExpressiveEmptyStateCard(
             .fillMaxWidth()
             .padding(top = 20.dp, start = 16.dp, end = 16.dp)
             .background(
-                MaterialTheme.colorScheme.surfaceContainerLow,
+                com.openminis.app.ui.theme.expressiveCardColor(),
                 RoundedCornerShape(ExpressiveTokens.OuterGroupRadius),
             )
             .padding(horizontal = 24.dp, vertical = 32.dp),
@@ -257,7 +259,7 @@ fun SettingsScaffold(
                     )
                 }
                 useCollapsingHeader -> {
-                    LargeTopAppBar(
+                    MediumTopAppBar(
                         title = {
                             Text(
                                 title,
@@ -269,9 +271,9 @@ fun SettingsScaffold(
                         navigationIcon = navigationSlot,
                         actions = { actions?.invoke() },
                         scrollBehavior = scrollBehavior,
-                        colors = TopAppBarDefaults.largeTopAppBarColors(
+                        colors = TopAppBarDefaults.mediumTopAppBarColors(
                             containerColor = MaterialTheme.colorScheme.background,
-                            scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                            scrolledContainerColor = MaterialTheme.colorScheme.background,
                         ),
                     )
                 }
@@ -375,7 +377,7 @@ fun SettingsSection(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp)
                 .clip(RoundedCornerShape(ExpressiveTokens.OuterGroupRadius))
-                .background(MaterialTheme.colorScheme.surfaceContainerLow),
+                .background(com.openminis.app.ui.theme.expressiveCardColor()),
             content = content,
         )
         if (footer != null) {
@@ -432,14 +434,14 @@ fun SettingsRow(
                 Box(
                     modifier = Modifier
                         .size(40.dp)
-                        .background(badgeBg, RoundedCornerShape(14.dp)),
+                        .background(badgeBg, CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         imageVector = icon,
                         contentDescription = null,
                         tint = badgeFg,
-                        modifier = Modifier.size(21.dp),
+                        modifier = Modifier.size(20.dp),
                     )
                 }
                 Spacer(Modifier.width(14.dp))
@@ -474,23 +476,13 @@ fun SettingsRow(
             }
 
             if (showChevron) {
-                Spacer(Modifier.width(6.dp))
-                Box(
-                    modifier = Modifier
-                        .size(26.dp)
-                        .background(
-                            MaterialTheme.colorScheme.surfaceContainerHigh,
-                            CircleShape,
-                        ),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(16.dp),
-                    )
-                }
+                Spacer(Modifier.width(4.dp))
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                    modifier = Modifier.size(20.dp),
+                )
             }
         }
 

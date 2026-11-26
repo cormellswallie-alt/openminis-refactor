@@ -155,9 +155,9 @@ internal fun ChatScreenTopBar(
                     onClick = {
                         if (isStreaming) showNewChatStopDialog = true else onNewChat()
                     },
-                    shape = RoundedCornerShape(14.dp),
+                    shape = CircleShape,
                     colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f),
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
                         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                     ),
                     modifier = Modifier.size(40.dp),
@@ -171,9 +171,9 @@ internal fun ChatScreenTopBar(
                 Box {
                     FilledIconButton(
                         onClick = { showChatMenu = true },
-                        shape = RoundedCornerShape(14.dp),
+                        shape = CircleShape,
                         colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
+                            containerColor = com.openminis.app.ui.theme.expressiveChromeColor(),
                             contentColor = MaterialTheme.colorScheme.onSurface,
                         ),
                         modifier = Modifier.size(40.dp),
@@ -224,13 +224,13 @@ private fun ChatTopBarNavButton(
     onToggleSidebar: (() -> Unit)?,
 ) {
     val buttonColors = IconButtonDefaults.filledIconButtonColors(
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
+        containerColor = com.openminis.app.ui.theme.expressiveChromeColor(),
         contentColor = MaterialTheme.colorScheme.onSurface,
     )
     if (!isTwoPane) {
         FilledIconButton(
             onClick = onBack,
-            shape = RoundedCornerShape(14.dp),
+            shape = CircleShape,
             colors = buttonColors,
             modifier = Modifier.padding(start = 6.dp, end = 2.dp).size(40.dp),
         ) {
@@ -239,7 +239,7 @@ private fun ChatTopBarNavButton(
     } else if (onToggleSidebar != null) {
         FilledIconButton(
             onClick = onToggleSidebar,
-            shape = RoundedCornerShape(14.dp),
+            shape = CircleShape,
             colors = buttonColors,
             modifier = Modifier.padding(start = 6.dp, end = 2.dp).size(40.dp),
         ) {
@@ -279,16 +279,17 @@ private fun ChatTopBarModelCapsule(
         }
     }
 
-    val capsuleShape = RoundedCornerShape(16.dp)
+    val capsuleShape = RoundedCornerShape(20.dp)
     val pulseOverlay = fallbackPulseAlpha.value
+    val baseBg = com.openminis.app.ui.theme.expressiveChromeColor()
     val capsuleBg = if (pulseOverlay > 0.01f) {
         lerp(
-            MaterialTheme.colorScheme.surfaceContainerHigh,
+            baseBg,
             MaterialTheme.colorScheme.errorContainer,
             (0.75f * pulseOverlay).coerceIn(0f, 1f),
         )
     } else {
-        MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (ChatColors.isDark) 0.78f else 0.92f)
+        baseBg
     }
 
     Box(
@@ -299,11 +300,10 @@ private fun ChatTopBarModelCapsule(
             horizontalAlignment = Alignment.Start,
             verticalArrangement = Arrangement.spacedBy(2.dp),
             modifier = Modifier
-                .background(capsuleBg, capsuleShape)
-                .border(0.75.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.48f), capsuleShape)
                 .clip(capsuleShape)
+                .background(capsuleBg)
                 .clickable(interactionSource = modelPickerInteraction, indication = ripple(), onClick = onOpenModelPicker)
-                .padding(horizontal = 11.dp, vertical = 5.dp),
+                .padding(horizontal = 13.dp, vertical = 6.dp),
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,

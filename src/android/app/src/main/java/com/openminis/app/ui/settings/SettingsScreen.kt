@@ -114,46 +114,35 @@ fun SettingsScreen(
     val context = LocalContext.current
     var showFeedbackSheet by remember { mutableStateOf(false) }
 
-    val accentBlue = MaterialTheme.colorScheme.primary
-    val accentIndigo = MaterialTheme.colorScheme.secondary
-    val accentAmber = MaterialTheme.colorScheme.tertiary
-    val accentTeal = Color(0xFF0097A7)
-    val accentEmerald = Color(0xFF1F9D55)
+    val accentPrimary = MaterialTheme.colorScheme.primary
+    val accentSecondary = MaterialTheme.colorScheme.secondary
+    val accentTertiary = MaterialTheme.colorScheme.tertiary
 
     SettingsScaffold(
         title = stringResource(R.string.settings_title),
         onBack = onBack,
     ) {
-        // -- M3 Expressive Control Center Bento Grid --
-        ControlCenterBentoGrid(
-            onProvidersClick = onProvidersClick,
-            onModelGroupsClick = onModelGroupsClick,
-            onSoulClick = onSoulClick,
-            onRootfsClick = onRootfsClick,
-        )
-
         // -- LLM Providers --
         SettingsSection(
             header = stringResource(R.string.settings_section_llm_providers),
-            footer = stringResource(R.string.settings_section_llm_providers_footer),
         ) {
             SettingsRow(
                 icon = Icons.Outlined.Lock,
-                iconColor = accentBlue,
+                iconColor = accentPrimary,
                 title = stringResource(R.string.settings_manage_providers),
                 subtitle = stringResource(R.string.settings_manage_providers_subtitle),
                 onClick = onProvidersClick,
             )
             SettingsRow(
                 icon = Icons.Outlined.Settings,
-                iconColor = accentIndigo,
+                iconColor = accentSecondary,
                 title = stringResource(R.string.settings_model_groups),
                 subtitle = stringResource(R.string.settings_model_groups_subtitle),
                 onClick = onModelGroupsClick,
             )
             SettingsRow(
                 icon = Icons.Outlined.BarChart,
-                iconColor = accentTeal,
+                iconColor = accentTertiary,
                 title = stringResource(R.string.settings_token_usage),
                 subtitle = stringResource(R.string.settings_token_usage_subtitle),
                 onClick = onUsageClick,
@@ -165,7 +154,7 @@ fun SettingsScreen(
         SettingsSection(header = stringResource(R.string.settings_section_appearance)) {
             SettingsRow(
                 icon = Icons.Outlined.Palette,
-                iconColor = accentAmber,
+                iconColor = accentTertiary,
                 title = stringResource(R.string.settings_section_appearance),
                 subtitle = stringResource(R.string.settings_appearance_subtitle),
                 onClick = onAppearanceClick,
@@ -179,49 +168,49 @@ fun SettingsScreen(
         SettingsSection(header = stringResource(R.string.settings_section_agent_runtime)) {
             SettingsRow(
                 icon = Icons.Outlined.Handyman,
-                iconColor = accentIndigo,
+                iconColor = accentSecondary,
                 title = stringResource(R.string.settings_agent_tools),
                 subtitle = stringResource(R.string.settings_agent_tools_subtitle),
                 onClick = onAgentToolsClick,
             )
             SettingsRow(
                 icon = Icons.Outlined.Groups,
-                iconColor = com.openminis.app.ui.chat.HelperAccentStatic,
+                iconColor = accentPrimary,
                 title = stringResource(R.string.settings_agents),
                 subtitle = stringResource(R.string.settings_agents_subtitle),
                 onClick = onAgentsClick,
             )
             SettingsRow(
                 icon = Icons.Outlined.Extension,
-                iconColor = accentBlue,
+                iconColor = accentPrimary,
                 title = stringResource(R.string.settings_skills),
                 subtitle = stringResource(R.string.settings_skills_subtitle),
                 onClick = onSkillsClick,
             )
             SettingsRow(
                 icon = Icons.Outlined.AutoAwesome,
-                iconColor = accentAmber,
+                iconColor = accentTertiary,
                 title = stringResource(R.string.settings_soul),
                 subtitle = stringResource(R.string.settings_soul_subtitle),
                 onClick = onSoulClick,
             )
             SettingsRow(
                 icon = Icons.Outlined.Psychology,
-                iconColor = accentIndigo,
+                iconColor = accentSecondary,
                 title = stringResource(R.string.settings_memory),
                 subtitle = stringResource(R.string.settings_memory_subtitle),
                 onClick = onMemoryClick,
             )
             SettingsRow(
                 icon = Icons.Outlined.Dashboard,
-                iconColor = accentTeal,
+                iconColor = accentPrimary,
                 title = stringResource(R.string.settings_mcp),
                 subtitle = stringResource(R.string.settings_mcp_subtitle),
                 onClick = onMcpClick,
             )
             SettingsRow(
                 icon = Icons.Outlined.Terminal,
-                iconColor = accentEmerald,
+                iconColor = accentSecondary,
                 title = stringResource(R.string.settings_env_vars),
                 subtitle = stringResource(R.string.settings_env_vars_subtitle),
                 onClick = onEnvVarsClick,
@@ -233,28 +222,28 @@ fun SettingsScreen(
         SettingsSection(header = stringResource(R.string.settings_section_storage)) {
             SettingsRow(
                 icon = Icons.Outlined.Inventory2,
-                iconColor = accentBlue,
+                iconColor = accentPrimary,
                 title = stringResource(R.string.settings_section_storage),
                 subtitle = stringResource(R.string.settings_storage_subtitle),
                 onClick = onRootfsClick,
             )
             SettingsRow(
                 icon = Icons.Outlined.Folder,
-                iconColor = accentEmerald,
+                iconColor = accentSecondary,
                 title = stringResource(R.string.settings_shared_folders),
                 subtitle = stringResource(R.string.settings_shared_folders_subtitle),
                 onClick = onSharedFoldersClick,
             )
             SettingsRow(
                 icon = Icons.Outlined.FolderShared,
-                iconColor = accentAmber,
+                iconColor = accentTertiary,
                 title = stringResource(R.string.settings_mount_external_folders),
                 subtitle = stringResource(R.string.settings_mount_external_folders_subtitle),
                 onClick = onMountedFoldersClick,
             )
             SettingsRow(
                 icon = Icons.Outlined.Backup,
-                iconColor = accentTeal,
+                iconColor = accentPrimary,
                 title = stringResource(R.string.settings_backup_restore),
                 subtitle = stringResource(R.string.settings_backup_restore_subtitle),
                 onClick = onBackupClick,
@@ -266,7 +255,7 @@ fun SettingsScreen(
         SettingsSection(header = stringResource(R.string.settings_section_permissions)) {
             SettingsRow(
                 icon = Icons.Outlined.Shield,
-                iconColor = accentBlue,
+                iconColor = accentPrimary,
                 title = stringResource(R.string.settings_section_permissions),
                 subtitle = stringResource(R.string.settings_permissions_subtitle),
                 onClick = onPermissionsClick,
@@ -277,11 +266,10 @@ fun SettingsScreen(
         // -- Background & Notifications (T50) --
         SettingsSection(
             header = stringResource(R.string.bg_section_header),
-            footer = stringResource(R.string.bg_section_footer),
         ) {
             SettingsRow(
                 icon = Icons.Outlined.BatteryFull,
-                iconColor = accentAmber,
+                iconColor = accentTertiary,
                 title = stringResource(R.string.bg_section_header),
                 subtitle = stringResource(R.string.bg_section_subtitle),
                 onClick = onBackgroundClick,
@@ -293,7 +281,7 @@ fun SettingsScreen(
         SettingsSection(header = stringResource(R.string.settings_section_logs)) {
             SettingsRow(
                 icon = Icons.Outlined.Description,
-                iconColor = accentIndigo,
+                iconColor = accentSecondary,
                 title = stringResource(R.string.settings_section_logs),
                 subtitle = stringResource(R.string.settings_logs_subtitle),
                 onClick = onLogsClick,
@@ -305,21 +293,21 @@ fun SettingsScreen(
         SettingsSection(header = stringResource(R.string.settings_section_about)) {
             SettingsRow(
                 icon = Icons.Outlined.Info,
-                iconColor = accentBlue,
+                iconColor = accentPrimary,
                 title = stringResource(R.string.settings_about_minis),
                 subtitle = stringResource(R.string.settings_about_subtitle),
                 onClick = onAboutClick,
             )
             SettingsRow(
                 icon = Icons.Outlined.FrontHand,
-                iconColor = accentTeal,
+                iconColor = accentSecondary,
                 title = stringResource(R.string.settings_privacy_policy),
                 subtitle = null,
                 onClick = { openExternalUrl(context, "https://openminis.github.io/privacy-policy.html") },
             )
             SettingsRow(
                 icon = Icons.Outlined.Feedback,
-                iconColor = accentAmber,
+                iconColor = accentTertiary,
                 title = stringResource(R.string.settings_feedback),
                 subtitle = null,
                 onClick = { showFeedbackSheet = true },
@@ -327,31 +315,11 @@ fun SettingsScreen(
             )
         }
 
-        Spacer(Modifier.height(16.dp))
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-            ) {
-                Text(
-                    text = "Minis v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                )
-            }
-        }
-
         // -- Bottom Feature Guide & Tutorial Button --
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(20.dp))
         Surface(
             onClick = onTutorialClick,
-            shape = RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(ExpressiveTokens.OuterGroupRadius),
             color = MaterialTheme.colorScheme.primaryContainer,
             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
             modifier = Modifier
@@ -361,13 +329,13 @@ fun SettingsScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                    .padding(horizontal = 18.dp, vertical = 15.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(
                     modifier = Modifier
                         .size(40.dp)
-                        .background(MaterialTheme.colorScheme.primary, MaterialShapes.Sunny.toShape()),
+                        .background(MaterialTheme.colorScheme.primary, CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
@@ -388,7 +356,7 @@ fun SettingsScreen(
                     Text(
                         text = stringResource(R.string.settings_tutorial_button_subtitle),
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.82f),
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.80f),
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -397,7 +365,7 @@ fun SettingsScreen(
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowForward,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f),
                     modifier = Modifier.size(18.dp),
                 )
             }
@@ -409,10 +377,10 @@ fun SettingsScreen(
         ModalBottomSheet(
             onDismissRequest = { showFeedbackSheet = false },
             shape = RoundedCornerShape(
-                topStart = 28.dp,
-                topEnd = 28.dp,
+                topStart = ExpressiveTokens.SheetTopRadius,
+                topEnd = ExpressiveTokens.SheetTopRadius,
             ),
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            containerColor = MaterialTheme.colorScheme.background,
         ) {
             Column(
                 modifier = Modifier
@@ -431,7 +399,7 @@ fun SettingsScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(ExpressiveTokens.OuterGroupRadius))
-                        .background(MaterialTheme.colorScheme.surfaceContainer),
+                        .background(com.openminis.app.ui.theme.expressiveCardColor()),
                 ) {
                     FeedbackSheetItem(
                         icon = Icons.Outlined.BugReport,
@@ -470,162 +438,6 @@ fun SettingsScreen(
 }
 
 @Composable
-private fun ControlCenterBentoGrid(
-    onProvidersClick: () -> Unit,
-    onModelGroupsClick: () -> Unit,
-    onSoulClick: () -> Unit,
-    onRootfsClick: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp)
-            .padding(top = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            BentoControlTile(
-                modifier = Modifier.weight(1f),
-                title = stringResource(R.string.settings_manage_providers),
-                subtitle = stringResource(R.string.settings_manage_providers_subtitle),
-                icon = Icons.Outlined.Lock,
-                badgeShape = MaterialShapes.Gem.toShape(),
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                badgeColor = MaterialTheme.colorScheme.primary,
-                badgeIconColor = MaterialTheme.colorScheme.onPrimary,
-                onClick = onProvidersClick,
-            )
-            BentoControlTile(
-                modifier = Modifier.weight(1f),
-                title = stringResource(R.string.settings_model_groups),
-                subtitle = stringResource(R.string.settings_model_groups_subtitle),
-                icon = Icons.Outlined.Settings,
-                badgeShape = MaterialShapes.Cookie9Sided.toShape(),
-                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                badgeColor = MaterialTheme.colorScheme.secondary,
-                badgeIconColor = MaterialTheme.colorScheme.onSecondary,
-                onClick = onModelGroupsClick,
-            )
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            BentoControlTile(
-                modifier = Modifier.weight(1f),
-                title = stringResource(R.string.settings_soul),
-                subtitle = stringResource(R.string.settings_soul_subtitle),
-                icon = Icons.Outlined.AutoAwesome,
-                badgeShape = MaterialShapes.Sunny.toShape(),
-                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                badgeColor = MaterialTheme.colorScheme.tertiary,
-                badgeIconColor = MaterialTheme.colorScheme.onTertiary,
-                onClick = onSoulClick,
-            )
-            BentoControlTile(
-                modifier = Modifier.weight(1f),
-                title = stringResource(R.string.settings_section_storage),
-                subtitle = stringResource(R.string.settings_storage_subtitle),
-                icon = Icons.Outlined.Inventory2,
-                badgeShape = MaterialShapes.Pentagon.toShape(),
-                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                contentColor = MaterialTheme.colorScheme.onSurface,
-                badgeColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                badgeIconColor = MaterialTheme.colorScheme.primary,
-                onClick = onRootfsClick,
-            )
-        }
-    }
-}
-
-@Composable
-private fun BentoControlTile(
-    modifier: Modifier = Modifier,
-    title: String,
-    subtitle: String,
-    icon: ImageVector,
-    badgeShape: Shape,
-    containerColor: Color,
-    contentColor: Color,
-    badgeColor: Color,
-    badgeIconColor: Color,
-    onClick: () -> Unit,
-) {
-    Surface(
-        onClick = onClick,
-        modifier = modifier.heightIn(min = 126.dp),
-        shape = RoundedCornerShape(24.dp),
-        color = containerColor,
-        contentColor = contentColor,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top,
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(42.dp)
-                        .background(badgeColor, badgeShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = badgeIconColor,
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .size(28.dp)
-                        .clip(CircleShape)
-                        .background(contentColor.copy(alpha = 0.10f)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = null,
-                        tint = contentColor.copy(alpha = 0.8f),
-                        modifier = Modifier.size(14.dp),
-                    )
-                }
-            }
-            Spacer(Modifier.height(14.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = contentColor,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = contentColor.copy(alpha = 0.78f),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun FeedbackSheetItem(
     icon: ImageVector,
     iconColor: Color,
@@ -644,8 +456,8 @@ private fun FeedbackSheetItem(
         ) {
             Box(
                 modifier = Modifier
-                    .size(38.dp)
-                    .background(badgeBg, RoundedCornerShape(13.dp)),
+                    .size(40.dp)
+                    .background(badgeBg, CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(

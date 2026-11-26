@@ -13,6 +13,7 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -47,31 +48,33 @@ private val ExpressiveLightColorScheme = lightColorScheme(
     inversePrimary = Color(0xFFB5C4FF),
     secondary = Color(0xFF475D82),
     onSecondary = Color(0xFFFFFFFF),
-    secondaryContainer = Color(0xFFD9E2FF),
-    onSecondaryContainer = Color(0xFF0E1B37),
-    tertiary = Color(0xFF8C4168),
+    secondaryContainer = Color(0xFFDCE4F8),
+    onSecondaryContainer = Color(0xFF10203E),
+    tertiary = Color(0xFF7D4970),
     onTertiary = Color(0xFFFFFFFF),
-    tertiaryContainer = Color(0xFFFFD8E8),
-    onTertiaryContainer = Color(0xFF390022),
+    tertiaryContainer = Color(0xFFFFD8F0),
+    onTertiaryContainer = Color(0xFF330A2B),
     error = Color(0xFFBA1A1A),
     onError = Color(0xFFFFFFFF),
     errorContainer = Color(0xFFFFDAD6),
     onErrorContainer = Color(0xFF410002),
-    background = Color(0xFFF6F7FC),
+    // Tinted cool-mist Expressive canvas so pure white surfaceContainerLowest
+    // segmented cards pop cleanly with zero hairline borders.
+    background = Color(0xFFEEF1F9),
     onBackground = Color(0xFF171B23),
-    surface = Color(0xFFF6F7FC),
+    surface = Color(0xFFEEF1F9),
     onSurface = Color(0xFF171B23),
-    surfaceVariant = Color(0xFFE0E3F0),
-    onSurfaceVariant = Color(0xFF434753),
-    surfaceDim = Color(0xFFD7DAE4),
-    surfaceBright = Color(0xFFFCF8FF),
+    surfaceVariant = Color(0xFFDFE3F0),
+    onSurfaceVariant = Color(0xFF444856),
+    surfaceDim = Color(0xFFD6DAE6),
+    surfaceBright = Color(0xFFFCFDFE),
     surfaceContainerLowest = Color(0xFFFFFFFF),
-    surfaceContainerLow = Color(0xFFF0F2FA),
-    surfaceContainer = Color(0xFFEAEDF7),
-    surfaceContainerHigh = Color(0xFFE3E7F3),
-    surfaceContainerHighest = Color(0xFFDCE1EF),
-    outline = Color(0xFF737785),
-    outlineVariant = Color(0xFFC3C6D6),
+    surfaceContainerLow = Color(0xFFF6F8FD),
+    surfaceContainer = Color(0xFFE6EBF6),
+    surfaceContainerHigh = Color(0xFFDCE2F1),
+    surfaceContainerHighest = Color(0xFFD2D9EC),
+    outline = Color(0xFF747886),
+    outlineVariant = Color(0xFFC4C8D8),
     inverseSurface = Color(0xFF2C3039),
     inverseOnSurface = Color(0xFFEEF0FA),
     scrim = Color(0xFF000000),
@@ -85,35 +88,55 @@ private val ExpressiveDarkColorScheme = darkColorScheme(
     inversePrimary = Color(0xFF2956D8),
     secondary = Color(0xFFB8C6EA),
     onSecondary = Color(0xFF22304F),
-    secondaryContainer = Color(0xFF334263),
-    onSecondaryContainer = Color(0xFFD9E2FF),
-    tertiary = Color(0xFFFFB0D0),
-    onTertiary = Color(0xFF541238),
-    tertiaryContainer = Color(0xFF6F294F),
-    onTertiaryContainer = Color(0xFFFFD8E8),
+    secondaryContainer = Color(0xFF303F5F),
+    onSecondaryContainer = Color(0xFFDCE4F8),
+    tertiary = Color(0xFFEDB4DD),
+    onTertiary = Color(0xFF4A1B40),
+    tertiaryContainer = Color(0xFF633258),
+    onTertiaryContainer = Color(0xFFFFD8F0),
     error = Color(0xFFFFB4AB),
     onError = Color(0xFF690005),
     errorContainer = Color(0xFF93000A),
     onErrorContainer = Color(0xFFFFDAD6),
-    background = Color(0xFF0F131B),
-    onBackground = Color(0xFFE2E5F0),
-    surface = Color(0xFF0F131B),
-    onSurface = Color(0xFFE2E5F0),
+    background = Color(0xFF0D1119),
+    onBackground = Color(0xFFE3E6F0),
+    surface = Color(0xFF0D1119),
+    onSurface = Color(0xFFE3E6F0),
     surfaceVariant = Color(0xFF434754),
-    onSurfaceVariant = Color(0xFFC3C6D6),
-    surfaceDim = Color(0xFF0F131B),
-    surfaceBright = Color(0xFF353944),
-    surfaceContainerLowest = Color(0xFF0A0D14),
-    surfaceContainerLow = Color(0xFF171B24),
-    surfaceContainer = Color(0xFF1D222D),
-    surfaceContainerHigh = Color(0xFF272C3A),
-    surfaceContainerHighest = Color(0xFF323848),
+    onSurfaceVariant = Color(0xFFC2C6D6),
+    surfaceDim = Color(0xFF0D1119),
+    surfaceBright = Color(0xFF343946),
+    surfaceContainerLowest = Color(0xFF080B12),
+    surfaceContainerLow = Color(0xFF171C27),
+    surfaceContainer = Color(0xFF1D2331),
+    surfaceContainerHigh = Color(0xFF262D3E),
+    surfaceContainerHighest = Color(0xFF31394E),
     outline = Color(0xFF8D91A0),
     outlineVariant = Color(0xFF434754),
-    inverseSurface = Color(0xFFE2E5F0),
+    inverseSurface = Color(0xFFE3E6F0),
     inverseOnSurface = Color(0xFF2C3039),
     scrim = Color(0xFF000000),
 )
+
+/**
+ * Primary Material 3 Expressive lifted card surface:
+ * pure crisp white on the tinted light canvas, elevated tonal slate in dark mode.
+ */
+@Composable
+@ReadOnlyComposable
+fun expressiveCardColor(): Color =
+    if (ChatColors.isDark) MaterialTheme.colorScheme.surfaceContainerLow
+    else MaterialTheme.colorScheme.surfaceContainerLowest
+
+/**
+ * Expressive elevated chrome color for circular top-bar buttons, search bars,
+ * and floating docks that sit directly over the tinted page canvas.
+ */
+@Composable
+@ReadOnlyComposable
+fun expressiveChromeColor(): Color =
+    if (ChatColors.isDark) MaterialTheme.colorScheme.surfaceContainerHigh
+    else MaterialTheme.colorScheme.surfaceContainerLowest
 
 /** Expressive primary FAB container color (replaces legacy iOS warm beige). */
 @Composable
@@ -126,17 +149,17 @@ fun minisFabColor(): Color = MaterialTheme.colorScheme.primaryContainer
 val ExpressiveShapes = Shapes(
     extraSmall = RoundedCornerShape(10.dp),
     small = RoundedCornerShape(14.dp),
-    medium = RoundedCornerShape(22.dp),
-    large = RoundedCornerShape(26.dp),
-    extraLarge = RoundedCornerShape(32.dp),
+    medium = RoundedCornerShape(20.dp),
+    large = RoundedCornerShape(24.dp),
+    extraLarge = RoundedCornerShape(30.dp),
 )
 
 object ExpressiveTokens {
-    val OuterGroupRadius = 26.dp
+    val OuterGroupRadius = 24.dp
     val InnerGroupRadius = 6.dp
     val GroupItemGap = 3.dp
-    val BentoCornerRadius = 26.dp
-    val SheetTopRadius = 32.dp
+    val BentoCornerRadius = 24.dp
+    val SheetTopRadius = 30.dp
     val PillCornerRadius = 999.dp
 }
 
@@ -362,7 +385,17 @@ fun MinisTheme(
     val context = LocalContext.current
     val colorScheme = when {
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+            if (darkTheme) {
+                dynamicDarkColorScheme(context)
+            } else {
+                // Anchor light Material You canvas on surfaceContainer so pure white
+                // surfaceContainerLowest segmented cards retain crisp M3 Expressive lift.
+                val dyn = dynamicLightColorScheme(context)
+                dyn.copy(
+                    background = dyn.surfaceContainer,
+                    surface = dyn.surfaceContainer,
+                )
+            }
         }
         darkTheme -> ExpressiveDarkColorScheme
         else -> ExpressiveLightColorScheme

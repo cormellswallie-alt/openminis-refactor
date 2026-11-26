@@ -15,6 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.openminis.app.ui.theme.ExpressiveTokens
+import com.openminis.app.ui.theme.expressiveCardColor
 
 /**
  * Material 3 Expressive articulated settings section used by detail/sandbox screens.
@@ -35,7 +36,7 @@ fun SettingsSection(
         )
         Surface(
             shape = RoundedCornerShape(ExpressiveTokens.OuterGroupRadius),
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            color = expressiveCardColor(),
             tonalElevation = 0.dp,
             modifier = Modifier.fillMaxWidth(),
         ) {

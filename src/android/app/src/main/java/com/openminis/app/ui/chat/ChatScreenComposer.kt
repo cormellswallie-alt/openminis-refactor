@@ -324,18 +324,20 @@ private fun Modifier.composerDeckSurface(
     shadowPaint.setShadowLayer(12.dp.toPx(), 0f, 4.dp.toPx(), android.graphics.Color.argb(24, 0, 0, 0))
     canvas.drawRoundRect(0f, 0f, size.width, size.height, radiusPx, radiusPx, shadowPaint)
 
-    val strokePx = (if (inputFocused) 1.25.dp else 1.dp).toPx()
-    val half = strokePx * 0.5f
-    drawRoundRect(
-        color = deckBorderColor,
-        topLeft = Offset(half, half),
-        size = Size(
-            (size.width - strokePx).coerceAtLeast(0f),
-            (size.height - strokePx).coerceAtLeast(0f),
-        ),
-        cornerRadius = CornerRadius(radiusPx, radiusPx),
-        style = Stroke(width = strokePx),
-    )
+    val strokePx = (if (inputFocused) 1.5.dp else 0.dp).toPx()
+    if (strokePx > 0f) {
+        val half = strokePx * 0.5f
+        drawRoundRect(
+            color = deckBorderColor,
+            topLeft = Offset(half, half),
+            size = Size(
+                (size.width - strokePx).coerceAtLeast(0f),
+                (size.height - strokePx).coerceAtLeast(0f),
+            ),
+            cornerRadius = CornerRadius(radiusPx, radiusPx),
+            style = Stroke(width = strokePx),
+        )
+    }
 }
 
 @Composable

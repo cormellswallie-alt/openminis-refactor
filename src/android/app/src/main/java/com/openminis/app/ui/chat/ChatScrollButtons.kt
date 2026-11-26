@@ -13,7 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.Icon
@@ -64,10 +64,10 @@ internal fun BoxScope.ChatScrollButtons(
             },
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 12.dp + fabEndInset, bottom = upBaseBottom + 46.dp)
-                .shadow(6.dp, RoundedCornerShape(14.dp))
-                .size(36.dp),
-            shape = RoundedCornerShape(14.dp),
+                .padding(end = 12.dp + fabEndInset, bottom = upBaseBottom + 48.dp)
+                .shadow(4.dp, CircleShape)
+                .size(40.dp),
+            shape = CircleShape,
             colors = androidx.compose.material3.IconButtonDefaults.filledIconButtonColors(
                 containerColor = MaterialTheme.colorScheme.secondaryContainer,
                 contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
@@ -108,9 +108,9 @@ internal fun BoxScope.ChatScrollButtons(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(end = 12.dp + fabEndInset, bottom = fabBottomPadding)
-                .shadow(6.dp, RoundedCornerShape(14.dp))
-                .size(36.dp),
-            shape = RoundedCornerShape(14.dp),
+                .shadow(4.dp, CircleShape)
+                .size(40.dp),
+            shape = CircleShape,
             colors = androidx.compose.material3.IconButtonDefaults.filledIconButtonColors(
                 containerColor = MaterialTheme.colorScheme.secondaryContainer,
                 contentColor = MaterialTheme.colorScheme.onSecondaryContainer,

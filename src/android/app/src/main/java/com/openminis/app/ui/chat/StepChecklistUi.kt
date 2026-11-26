@@ -66,8 +66,6 @@ import com.openminis.app.tools.UpdateStepsTool.StepChecklist
 import com.openminis.app.tools.UpdateStepsTool.StepItem
 import com.openminis.app.tools.UpdateStepsTool.StepStatus
 
-private val StepDoneColor = Color(0xFF10B981)
-
 /**
  * Pinned, collapsible live task checklist banner rendered at the top of the
  * chat pane (Antigravity `update_steps` parity). Shows active step + progress
@@ -96,7 +94,7 @@ internal fun LiveStepChecklistBanner(
             animationSpec = tween(durationMillis = 260),
             label = "stepChecklistProgress",
         )
-        val shape = RoundedCornerShape(18.dp)
+        val shape = RoundedCornerShape(20.dp)
         val headerTitle = when {
             current.isAllSucceeded -> stringResource(R.string.steps_banner_all_done, current.totalCount)
             current.activeStepTitle != null -> current.activeStepTitle!!
@@ -105,7 +103,6 @@ internal fun LiveStepChecklistBanner(
         val activeWorking = isStreaming && current.inProgressSteps.isNotEmpty()
         val progressTint = when {
             current.failedCount > 0 -> MaterialTheme.colorScheme.error
-            current.isAllSucceeded -> StepDoneColor
             else -> MaterialTheme.colorScheme.primary
         }
 
@@ -116,12 +113,7 @@ internal fun LiveStepChecklistBanner(
                 .widthIn(max = CHAT_MAX_CONTENT_WIDTH)
                 .padding(horizontal = 12.dp, vertical = 4.dp)
                 .clip(shape)
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                .border(
-                    width = 1.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
-                    shape = shape,
-                ),
+                .background(com.openminis.app.ui.theme.expressiveCardColor()),
         ) {
             Row(
                 modifier = Modifier
@@ -228,28 +220,27 @@ private fun ChecklistHeaderLeadingIcon(
     activeWorking: Boolean,
 ) {
     when {
-        activeWorking -> CircularProgressIndicator(
-            modifier = Modifier.size(15.dp),
-            strokeWidth = 2.dp,
+        activeWorking -> com.openminis.app.ui.theme.ExpressiveLoadingIndicator(
+            modifier = Modifier.size(18.dp),
             color = MaterialTheme.colorScheme.primary,
         )
         checklist.failedCount > 0 -> Icon(
             imageVector = Icons.Default.ErrorOutline,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.error,
-            modifier = Modifier.size(16.dp),
+            modifier = Modifier.size(17.dp),
         )
         checklist.isAllSucceeded -> Icon(
             imageVector = Icons.Default.CheckCircle,
             contentDescription = null,
-            tint = StepDoneColor,
-            modifier = Modifier.size(16.dp),
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(17.dp),
         )
         else -> Icon(
             imageVector = Icons.Default.PlayArrow,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(16.dp),
+            modifier = Modifier.size(17.dp),
         )
     }
 }
@@ -268,7 +259,7 @@ internal fun StepChecklistRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
+            .clip(RoundedCornerShape(12.dp))
             .background(rowBg)
             .padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -277,13 +268,12 @@ internal fun StepChecklistRow(
             StepStatus.DONE -> Icon(
                 imageVector = Icons.Default.CheckCircle,
                 contentDescription = null,
-                tint = StepDoneColor,
+                tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(15.dp),
             )
             StepStatus.IN_PROGRESS -> if (isStreaming) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(14.dp),
-                    strokeWidth = 1.8.dp,
+                com.openminis.app.ui.theme.ExpressiveLoadingIndicator(
+                    modifier = Modifier.size(16.dp),
                     color = MaterialTheme.colorScheme.primary,
                 )
             } else {
@@ -374,7 +364,7 @@ internal fun StepChecklistDetailContent(block: AssistantBlock) {
             Text(
                 text = "${checklist.resolvedCount}/${checklist.totalCount}",
                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                color = if (checklist.isAllSucceeded) StepDoneColor else MaterialTheme.colorScheme.primary,
+                color = MaterialTheme.colorScheme.primary,
             )
         }
         LinearProgressIndicator(
@@ -384,7 +374,6 @@ internal fun StepChecklistDetailContent(block: AssistantBlock) {
                 .height(4.dp)
                 .clip(CircleShape),
             color = if (checklist.failedCount > 0) MaterialTheme.colorScheme.error
-            else if (checklist.isAllSucceeded) StepDoneColor
             else MaterialTheme.colorScheme.primary,
             trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
             strokeCap = StrokeCap.Round,

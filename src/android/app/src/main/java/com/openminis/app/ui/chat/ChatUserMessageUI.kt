@@ -226,15 +226,6 @@ internal fun UserMessageBubble(
                             // but legacy sessions can carry pasted log dumps) blow
                             // up text layout the same way large assistant content
                             // does. User bubbles never stream so isStreaming=false.
-                            val rimStroke = if (!isQueued) {
-                                Modifier.border(
-                                    width = 0.75.dp,
-                                    color = MaterialTheme.colorScheme.primary.copy(
-                                        alpha = if (ChatColors.isDark) 0.24f else 0.14f,
-                                    ),
-                                    shape = shape,
-                                )
-                            } else Modifier
                             LargeContentGuard(
                                 content = message.content,
                                 isStreaming = false,
@@ -248,9 +239,8 @@ internal fun UserMessageBubble(
                                         lineHeight = 23.5.sp,
                                     ),
                                     modifier = bubbleModifier
-                                        .background(bubbleBg, shape)
-                                        .then(rimStroke)
                                         .clip(shape)
+                                        .background(bubbleBg)
                                         .then(dashedStroke)
                                         .padding(horizontal = 17.dp, vertical = 11.dp),
                                 )

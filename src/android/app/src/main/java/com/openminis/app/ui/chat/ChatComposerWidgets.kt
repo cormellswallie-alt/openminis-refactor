@@ -892,7 +892,7 @@ internal fun FloatingToolStatusBar(
     val isRunning = block.toolStatus == ToolBlockStatus.RUNNING ||
         block.toolStatus == ToolBlockStatus.STREAMING ||
         block.toolStatus == ToolBlockStatus.PENDING
-    val toolAccent = toolAccentColor(block.toolName)
+    val toolAccent = expressiveToolAccent(block.toolName)
     val previewEnabled = LocalToolPreviewEnabled.current
 
     // iOS layout: ZStack(alignment: .bottomLeading)
@@ -916,12 +916,12 @@ internal fun FloatingToolStatusBar(
                 .height(barHeight)
                 .align(Alignment.BottomCenter)
                 .shadow(
-                    elevation = 10.dp,
+                    elevation = 8.dp,
                     shape = RoundedCornerShape(19.dp),
                     ambientColor = Color.Black.copy(alpha = 0.08f),
-                    spotColor = Color.Black.copy(alpha = 0.14f),
+                    spotColor = Color.Black.copy(alpha = 0.12f),
                 )
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(19.dp))
+                .background(com.openminis.app.ui.theme.expressiveChromeColor(), RoundedCornerShape(19.dp))
                 .padding(start = barStartPadding, end = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -932,9 +932,9 @@ internal fun FloatingToolStatusBar(
                 )
             } else {
                 val (icon, tint) = when {
-                    isDone -> Icons.Default.CheckCircle to ToolCheckColor
-                    isFailed -> Icons.Default.Error to ToolErrorColor
-                    isCancelled -> Icons.Default.Close to ToolCancelColor
+                    isDone -> Icons.Default.CheckCircle to MaterialTheme.colorScheme.primary
+                    isFailed -> Icons.Default.Error to MaterialTheme.colorScheme.error
+                    isCancelled -> Icons.Default.Close to MaterialTheme.colorScheme.outline
                     else -> Icons.Default.Build to MaterialTheme.colorScheme.onSurfaceVariant
                 }
                 Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(15.dp))

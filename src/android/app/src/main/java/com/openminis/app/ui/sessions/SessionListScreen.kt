@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -581,134 +582,91 @@ fun SessionListScreen(
                                 )
                             }
                             Spacer(Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = stringResource(R.string.app_name),
-                                    style = MaterialTheme.typography.headlineSmall,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                if (activeSessionIds.isNotEmpty()) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(7.dp)
-                                                .background(
-                                                    MaterialTheme.colorScheme.primary,
-                                                    CircleShape,
-                                                ),
-                                        )
-                                        Text(
-                                            text = "${activeSessionIds.size} active",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.primary,
-                                        )
-                                    }
-                                }
-                            }
+                            Text(
+                                text = stringResource(R.string.app_name),
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
 
-                            // Top-bar Settings + Workspace overflow so Settings is always
-                            // 1-tap reachable even during loading or onboarding.
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
+                            Box {
                                 IconButton(
-                                    onClick = onSettingsClick,
+                                    onClick = { showOverflowMenu = true },
                                     modifier = Modifier.size(40.dp),
                                     colors = IconButtonDefaults.iconButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                        containerColor = com.openminis.app.ui.theme.expressiveChromeColor(),
                                         contentColor = MaterialTheme.colorScheme.onSurface,
                                     ),
                                 ) {
                                     Icon(
-                                        Icons.Outlined.Settings,
-                                        contentDescription = stringResource(R.string.sessionlist_settings),
+                                        Icons.Default.MoreVert,
+                                        contentDescription = stringResource(R.string.sessionlist_shell),
                                         modifier = Modifier.size(20.dp),
                                     )
                                 }
-
-                                Box {
-                                    IconButton(
-                                        onClick = { showOverflowMenu = true },
-                                        modifier = Modifier.size(40.dp),
-                                        colors = IconButtonDefaults.iconButtonColors(
-                                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                            contentColor = MaterialTheme.colorScheme.onSurface,
-                                        ),
-                                    ) {
-                                        Icon(
-                                            Icons.Default.MoreVert,
-                                            contentDescription = stringResource(R.string.sessionlist_shell),
-                                            modifier = Modifier.size(20.dp),
-                                        )
-                                    }
-                                    MinisMenu(
-                                        expanded = showOverflowMenu,
-                                        onDismissRequest = { showOverflowMenu = false },
-                                        alignEnd = true,
-                                    ) {
-                                        if (sessions.isNotEmpty()) {
-                                            DropdownMenuItem(
-                                                text = { Text(stringResource(R.string.sessionlist_select_action)) },
-                                                onClick = {
-                                                    showOverflowMenu = false
-                                                    viewModel.isSelecting.value = true
-                                                },
-                                                leadingIcon = {
-                                                    Icon(Icons.Outlined.ChecklistRtl, contentDescription = null)
-                                                },
-                                            )
-                                            MinisMenuDivider()
-                                        }
+                                MinisMenu(
+                                    expanded = showOverflowMenu,
+                                    onDismissRequest = { showOverflowMenu = false },
+                                    alignEnd = true,
+                                ) {
+                                    if (sessions.isNotEmpty()) {
                                         DropdownMenuItem(
-                                            text = { Text(stringResource(R.string.sessionlist_shell_terminal)) },
+                                            text = { Text(stringResource(R.string.sessionlist_select_action)) },
                                             onClick = {
                                                 showOverflowMenu = false
-                                                onTerminalClick()
+                                                viewModel.isSelecting.value = true
                                             },
                                             leadingIcon = {
-                                                Icon(Icons.Outlined.Terminal, contentDescription = null)
-                                            },
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text(stringResource(R.string.sessionlist_rootfs_management)) },
-                                            onClick = {
-                                                showOverflowMenu = false
-                                                onRootfsClick()
-                                            },
-                                            leadingIcon = {
-                                                Icon(Icons.Outlined.Dns, contentDescription = null)
+                                                Icon(Icons.Outlined.ChecklistRtl, contentDescription = null)
                                             },
                                         )
                                         MinisMenuDivider()
-                                        DropdownMenuItem(
-                                            text = { Text(stringResource(R.string.sessionlist_open_browser)) },
-                                            onClick = {
-                                                showOverflowMenu = false
-                                                browserTabPool.ensureTabForUI()
-                                                showBrowserSheet = true
-                                            },
-                                            leadingIcon = {
-                                                Icon(Icons.Outlined.Language, contentDescription = null)
-                                            },
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text(stringResource(R.string.sessionlist_browser_settings)) },
-                                            onClick = {
-                                                showOverflowMenu = false
-                                                showBrowserSettings = true
-                                            },
-                                            leadingIcon = {
-                                                Icon(Icons.Outlined.Settings, contentDescription = null)
-                                            },
-                                        )
                                     }
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.sessionlist_shell_terminal)) },
+                                        onClick = {
+                                            showOverflowMenu = false
+                                            onTerminalClick()
+                                        },
+                                        leadingIcon = {
+                                            Icon(Icons.Outlined.Terminal, contentDescription = null)
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.sessionlist_rootfs_management)) },
+                                        onClick = {
+                                            showOverflowMenu = false
+                                            onRootfsClick()
+                                        },
+                                        leadingIcon = {
+                                            Icon(Icons.Outlined.Dns, contentDescription = null)
+                                        },
+                                    )
+                                    MinisMenuDivider()
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.sessionlist_open_browser)) },
+                                        onClick = {
+                                            showOverflowMenu = false
+                                            browserTabPool.ensureTabForUI()
+                                            showBrowserSheet = true
+                                        },
+                                        leadingIcon = {
+                                            Icon(Icons.Outlined.Language, contentDescription = null)
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.sessionlist_browser_settings)) },
+                                        onClick = {
+                                            showOverflowMenu = false
+                                            showBrowserSettings = true
+                                        },
+                                        leadingIcon = {
+                                            Icon(Icons.Outlined.Settings, contentDescription = null)
+                                        },
+                                    )
                                 }
                             }
                         }
@@ -717,7 +675,7 @@ fun SessionListScreen(
                         if (hasProviders && (sessions.isNotEmpty() || isSearchActive)) {
                             Surface(
                                 shape = CircleShape,
-                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                color = com.openminis.app.ui.theme.expressiveChromeColor(),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .heightIn(min = 48.dp),
@@ -870,11 +828,14 @@ fun SessionListScreen(
                         ) {
                             val safeRows = rows.distinctBy { it.id }
                             if (safeRows.isEmpty()) return
-                            val lastRowId = safeRows.lastOrNull()?.id
-                            items(safeRows, key = { it.id }) { session ->
+                            val rowCount = safeRows.size
+                            itemsIndexed(
+                                items = safeRows,
+                                key = { _, it -> it.id },
+                            ) { index, session ->
                                 val activeQuery =
                                     if (isSearchActive && searchQuery.isNotBlank()) searchQuery else ""
-                                val isLast = session.id == lastRowId
+                                val isLast = index == rowCount - 1
                                 val memberShape = if (isLast) {
                                     RoundedCornerShape(
                                         topStart = ExpressiveTokens.InnerGroupRadius,
@@ -888,13 +849,13 @@ fun SessionListScreen(
                                 val rowModifier = if (inFolder) {
                                     Modifier
                                         .padding(
-                                            start = 12.dp,
-                                            end = 12.dp,
-                                            top = 2.dp,
+                                            start = 16.dp,
+                                            end = 16.dp,
+                                            top = ExpressiveTokens.GroupItemGap,
                                             bottom = if (isLast) 6.dp else 0.dp,
                                         )
                                         .clip(memberShape)
-                                        .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                                        .background(com.openminis.app.ui.theme.expressiveCardColor())
                                 } else {
                                     Modifier
                                 }
@@ -938,6 +899,8 @@ fun SessionListScreen(
                                             else -> null
                                         },
                                         isFolderMember = inFolder,
+                                        itemIndex = index,
+                                        itemCount = rowCount,
                                     )
                                 }
                             }
@@ -1023,9 +986,9 @@ fun SessionListScreen(
                         val headerIdx = folderHeaderIndices[bar.folder.id]
                         Surface(
                             shape = CircleShape,
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            shadowElevation = 10.dp,
-                            tonalElevation = 4.dp,
+                            color = com.openminis.app.ui.theme.expressiveChromeColor(),
+                            shadowElevation = 6.dp,
+                            tonalElevation = 2.dp,
                             modifier = Modifier
                                 .padding(top = 8.dp, start = 24.dp, end = 24.dp)
                                 .widthIn(max = 320.dp)

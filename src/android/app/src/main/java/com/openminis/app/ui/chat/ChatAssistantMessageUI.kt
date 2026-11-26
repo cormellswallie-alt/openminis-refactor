@@ -128,6 +128,11 @@ private val usageClockFormatter = ThreadLocal.withInitial {
 internal fun AssistantHeader() {
     val soulMeta by com.openminis.app.agent.SoulStore.cachedMetadata.collectAsStateWithLifecycle()
     val displayName = soulMeta.name.ifBlank { com.openminis.app.agent.SoulMetadata.DEFAULT.name }
+    val primary = MaterialTheme.colorScheme.primary
+    val tertiary = MaterialTheme.colorScheme.tertiary
+    val sparkleBrush = remember(primary, tertiary) {
+        Brush.linearGradient(colors = listOf(primary, tertiary))
+    }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -143,7 +148,7 @@ internal fun AssistantHeader() {
                 icon = soulMeta.icon,
                 sizeDp = 16.dp,
                 emojiSp = 13.sp,
-                sparkleTint = AssistantSparkleGradient,
+                sparkleTint = sparkleBrush,
             )
         }
         Spacer(modifier = Modifier.width(9.dp))
@@ -203,13 +208,8 @@ internal fun UsageCapsule(usage: ChatTokenUsage?, completedAt: Long?) {
             .padding(top = 4.dp, bottom = 4.dp)
             .background(
                 MaterialTheme.colorScheme.surfaceContainerHigh.copy(
-                    alpha = if (ChatColors.isDark) 0.52f else 0.72f,
+                    alpha = if (ChatColors.isDark) 0.56f else 0.78f,
                 ),
-                CircleShape,
-            )
-            .border(
-                0.75.dp,
-                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.38f),
                 CircleShape,
             )
             .clip(CircleShape)
@@ -592,44 +592,33 @@ internal fun ToolCallPill(
         block.toolStatus == ToolBlockStatus.TIMEOUT
     val isCancelled = block.toolStatus == ToolBlockStatus.CANCELLED
 
-    val toolAccent = toolAccentColor(block.toolName)
+    val toolAccent = expressiveToolAccent(block.toolName)
     val controlSummary = helperControlSummary(block).takeIf {
         com.openminis.app.agent.jobs.HelperRunner.isSubAgentToolName(block.toolName)
     }
     val toolIcon = if (controlSummary != null) Icons.Default.Tune else toolIconFor(block.toolName)
 
     val iconTint = when {
-        isFailed -> ToolErrorColor
-        isCancelled -> ToolCancelColor
+        isFailed -> MaterialTheme.colorScheme.error
+        isCancelled -> MaterialTheme.colorScheme.outline
         else -> toolAccent
     }
 
     val displayIcon = toolIcon
 
-    val durationText = if (block.durationMs > 0 && !isRunning) {
-        val seconds = block.durationMs / 1000.0
-        if (seconds < 10) String.format("%.1fs", seconds)
-        else String.format("%.0fs", seconds)
-    } else null
-
     val shimmerTick = if (isRunning) rememberDecorativeTick() else null
     var showToolMenu by remember { mutableStateOf(false) }
 
-    val pillShape = RoundedCornerShape(16.dp)
+    val pillShape = RoundedCornerShape(18.dp)
     val pillBg = when {
-        isFailed -> MaterialTheme.colorScheme.errorContainer.copy(alpha = if (ChatColors.isDark) 0.42f else 0.58f)
-        isRunning -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = if (ChatColors.isDark) 0.48f else 0.65f)
-        else -> MaterialTheme.colorScheme.surfaceContainerLow
-    }
-    val pillBorder = when {
-        isFailed -> MaterialTheme.colorScheme.error.copy(alpha = 0.30f)
-        isRunning -> toolAccent.copy(alpha = 0.38f)
-        else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.48f)
+        isFailed -> MaterialTheme.colorScheme.errorContainer.copy(alpha = if (ChatColors.isDark) 0.45f else 0.72f)
+        isRunning -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = if (ChatColors.isDark) 0.52f else 0.78f)
+        else -> com.openminis.app.ui.theme.expressiveCardColor()
     }
     val badgeShape = if (isRunning) {
         MaterialShapes.Sunny.toShape()
     } else {
-        MaterialShapes.Cookie9Sided.toShape()
+        CircleShape
     }
 
     Row(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
@@ -637,7 +626,6 @@ internal fun ToolCallPill(
         Row(
             modifier = Modifier
                 .background(pillBg, pillShape)
-                .border(1.dp, pillBorder, pillShape)
                 .clip(pillShape)
                 .combinedClickable(
                     onClick = { onOpenDetail(block.id) },
@@ -645,7 +633,7 @@ internal fun ToolCallPill(
                         { showToolMenu = true }
                     } else null,
                 )
-                .padding(start = 7.dp, end = 10.dp)
+                .padding(start = 7.dp, end = 12.dp)
                 .height(38.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -653,7 +641,7 @@ internal fun ToolCallPill(
                 modifier = Modifier
                     .size(26.dp)
                     .background(
-                        iconTint.copy(alpha = if (ChatColors.isDark) 0.24f else 0.16f),
+                        iconTint.copy(alpha = if (ChatColors.isDark) 0.22f else 0.13f),
                         badgeShape,
                     ),
                 contentAlignment = Alignment.Center,
@@ -689,50 +677,22 @@ internal fun ToolCallPill(
 
             if (!isRunning) {
                 val (statusIcon, statusTint) = when {
-                    isFailed -> Icons.Default.Error to ToolErrorColor
-                    isCancelled -> Icons.Default.Cancel to ToolCancelColor
-                    isDone -> Icons.Default.CheckCircle to ToolCheckColor
-                    else -> Icons.Default.CheckCircle to ToolCheckColor
+                    isFailed -> Icons.Default.Error to MaterialTheme.colorScheme.error
+                    isCancelled -> Icons.Default.Cancel to MaterialTheme.colorScheme.outline
+                    isDone -> Icons.Default.CheckCircle to MaterialTheme.colorScheme.primary
+                    else -> Icons.Default.CheckCircle to MaterialTheme.colorScheme.primary
                 }
-                Spacer(modifier = Modifier.width(7.dp))
+                Spacer(modifier = Modifier.width(8.dp))
                 Icon(
                     imageVector = statusIcon,
                     contentDescription = null,
                     tint = statusTint,
-                    modifier = Modifier.size(14.dp),
+                    modifier = Modifier.size(15.dp),
                 )
-            }
-
-            if (durationText != null) {
-                Spacer(modifier = Modifier.width(6.dp))
-                Box(
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.85f))
-                        .padding(horizontal = 7.dp, vertical = 2.dp),
-                ) {
-                    Text(
-                        text = durationText,
-                        fontSize = 10.5.sp,
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        softWrap = false,
-                        maxLines = 1,
-                    )
-                }
             }
             if (isRunning && onStop != null) {
                 Spacer(modifier = Modifier.width(8.dp))
                 ToolStopButton(onStop = onStop)
-            } else if (!isRunning) {
-                Spacer(modifier = Modifier.width(4.dp))
-                Icon(
-                    imageVector = Icons.Default.ChevronRight,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
-                    modifier = Modifier.size(15.dp),
-                )
             }
         }
         if (shimmerTick != null) {
@@ -831,13 +791,6 @@ internal fun ThinkingBlock(block: AssistantBlock, isStreaming: Boolean, isLast: 
     val activeStreaming = isStreaming && block.toolStatus != ToolBlockStatus.SUCCESS
     val thinkingAccent = MaterialTheme.colorScheme.primary
     val charCount = block.content.length
-    val charLabel = remember(charCount) {
-        when {
-            charCount >= 10_000 -> "${charCount / 1000}K"
-            charCount >= 1_000 -> String.format(java.util.Locale.US, "%.1fK", charCount / 1000.0)
-            else -> "$charCount"
-        }
-    }
     val thinkingWindowSize = 8000
     val thinkingHardCap = 100_000
     val overHardCap = charCount > thinkingHardCap
@@ -852,16 +805,11 @@ internal fun ThinkingBlock(block: AssistantBlock, isStreaming: Boolean, isLast: 
 
     val cardShape = RoundedCornerShape(if (expanded) 24.dp else 18.dp)
     val cardBg = if (activeStreaming) {
-        MaterialTheme.colorScheme.secondaryContainer.copy(
-            alpha = if (ChatColors.isDark) 0.42f else 0.56f,
+        MaterialTheme.colorScheme.primaryContainer.copy(
+            alpha = if (ChatColors.isDark) 0.30f else 0.42f,
         )
     } else {
-        MaterialTheme.colorScheme.surfaceContainerLow
-    }
-    val cardBorder = if (activeStreaming) {
-        thinkingAccent.copy(alpha = 0.36f)
-    } else {
-        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.50f)
+        com.openminis.app.ui.theme.expressiveCardColor()
     }
     val chevronRotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
@@ -872,28 +820,25 @@ internal fun ThinkingBlock(block: AssistantBlock, isStreaming: Boolean, isLast: 
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
-            .background(cardBg, cardShape)
-            .border(1.dp, cardBorder, cardShape)
             .clip(cardShape)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .background(cardBg),
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
                 .clickable {
                     if (!overHardCap) userIntent = !expanded
                     if (overHardCap) showFullContent = true
                     else expanded = !expanded
                 }
-                .padding(horizontal = 2.dp, vertical = 1.dp),
+                .padding(horizontal = 14.dp, vertical = 11.dp),
         ) {
             Box(
                 modifier = Modifier
-                    .size(28.dp)
+                    .size(30.dp)
                     .background(
-                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        color = MaterialTheme.colorScheme.primaryContainer,
                         shape = if (activeStreaming) MaterialShapes.Sunny.toShape()
                         else MaterialShapes.SoftBurst.toShape(),
                     ),
@@ -908,21 +853,21 @@ internal fun ThinkingBlock(block: AssistantBlock, isStreaming: Boolean, isLast: 
                     Icon(
                         imageVector = Icons.Default.Psychology,
                         contentDescription = null,
-                        tint = thinkingAccent,
-                        modifier = Modifier.size(15.dp),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(16.dp),
                     )
                 }
             }
-            Spacer(modifier = Modifier.width(9.dp))
+            Spacer(modifier = Modifier.width(10.dp))
             Text(
                 text = stringResource(
                     if (activeStreaming) R.string.thinking_header_streaming
                     else R.string.thinking_header_done,
                 ),
                 style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
+                fontWeight = FontWeight.SemiBold,
                 color = if (activeStreaming) {
-                    MaterialTheme.colorScheme.onSecondaryContainer
+                    MaterialTheme.colorScheme.onPrimaryContainer
                 } else {
                     MaterialTheme.colorScheme.onSurface
                 },
@@ -931,34 +876,10 @@ internal fun ThinkingBlock(block: AssistantBlock, isStreaming: Boolean, isLast: 
                 StreamingDotsText()
             }
             Spacer(modifier = Modifier.weight(1f))
-            if (charCount > 0) {
-                Box(
-                    modifier = Modifier
-                        .background(
-                            MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.85f),
-                            CircleShape,
-                        )
-                        .padding(horizontal = 8.dp, vertical = 2.dp),
-                ) {
-                    Text(
-                        text = charLabel,
-                        fontSize = 10.5.sp,
-                        lineHeight = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        fontFamily = FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Spacer(modifier = Modifier.width(6.dp))
-            }
             if ((expanded || overHardCap) && charCount > 0) {
                 Box(
                     modifier = Modifier
-                        .size(26.dp)
-                        .background(
-                            MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.85f),
-                            CircleShape,
-                        )
+                        .size(30.dp)
                         .clip(CircleShape)
                         .clickable {
                             clipboard.setText(AnnotatedString(block.content))
@@ -969,18 +890,13 @@ internal fun ThinkingBlock(block: AssistantBlock, isStreaming: Boolean, isLast: 
                     Icon(
                         imageVector = if (copiedThought) Icons.Default.Check else Icons.Default.ContentCopy,
                         contentDescription = "Copy thought",
-                        tint = if (copiedThought) thinkingAccent else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(13.5.dp),
+                        tint = if (copiedThought) thinkingAccent else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                        modifier = Modifier.size(16.dp),
                     )
                 }
-                Spacer(modifier = Modifier.width(5.dp))
                 Box(
                     modifier = Modifier
-                        .size(26.dp)
-                        .background(
-                            MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.85f),
-                            CircleShape,
-                        )
+                        .size(30.dp)
                         .clip(CircleShape)
                         .clickable { showFullContent = true },
                     contentAlignment = Alignment.Center,
@@ -988,25 +904,25 @@ internal fun ThinkingBlock(block: AssistantBlock, isStreaming: Boolean, isLast: 
                     Icon(
                         imageVector = Icons.Default.OpenInFull,
                         contentDescription = stringResource(R.string.thinking_view_full),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(13.5.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                        modifier = Modifier.size(16.dp),
                     )
                 }
-                Spacer(modifier = Modifier.width(5.dp))
+                Spacer(modifier = Modifier.width(4.dp))
             }
             if (overHardCap) {
                 Text(
                     text = stringResource(R.string.thinking_view_full),
                     style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
+                    fontWeight = FontWeight.SemiBold,
                     color = thinkingAccent,
                 )
             } else {
                 Box(
                     modifier = Modifier
-                        .size(26.dp)
+                        .size(28.dp)
                         .background(
-                            MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.85f),
+                            MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
                             CircleShape,
                         ),
                     contentAlignment = Alignment.Center,
@@ -1016,7 +932,7 @@ internal fun ThinkingBlock(block: AssistantBlock, isStreaming: Boolean, isLast: 
                         contentDescription = if (expanded) "Collapse" else "Expand",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier
-                            .size(16.dp)
+                            .size(17.dp)
                             .graphicsLayer { rotationZ = chevronRotation },
                     )
                 }
@@ -1027,28 +943,18 @@ internal fun ThinkingBlock(block: AssistantBlock, isStreaming: Boolean, isLast: 
         if (!expanded && activeStreaming && charCount > 0) {
             val liveSnippet = remember(charCount) { extractLiveThoughtSnippet(block.content) }
             if (liveSnippet.isNotEmpty()) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
+                Text(
+                    text = liveSnippet,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontSize = 12.5.sp,
+                    lineHeight = 17.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.84f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 6.dp, end = 4.dp, top = 6.dp, bottom = 1.dp),
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(5.dp)
-                            .background(thinkingAccent.copy(alpha = 0.75f), CircleShape),
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = liveSnippet,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontSize = 12.sp,
-                        lineHeight = 16.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.82f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
+                        .padding(start = 54.dp, end = 16.dp, bottom = 11.dp),
+                )
             }
         }
 
@@ -1092,136 +998,118 @@ internal fun ThinkingBlock(block: AssistantBlock, isStreaming: Boolean, isLast: 
             }
 
             val segments = remember(displayContent) { parseThoughtSegments(displayContent) }
-            val wellShape = RoundedCornerShape(16.dp)
-            val wellBg = if (ChatColors.isDark) {
-                MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.72f)
-            } else {
-                MaterialTheme.colorScheme.surfaceContainerLowest
-            }
-            val wellBorder = MaterialTheme.colorScheme.outlineVariant.copy(
-                alpha = if (ChatColors.isDark) 0.36f else 0.48f,
-            )
             val canScrollUp = scrollState.canScrollBackward
             val canScrollDown = scrollState.canScrollForward
 
-            Box(
-                modifier = Modifier
-                    .padding(top = 10.dp)
-                    .fillMaxWidth()
-                    .background(wellBg, wellShape)
-                    .border(1.dp, wellBorder, wellShape)
-                    .clip(wellShape),
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 320.dp)
-                        .then(
-                            if (canScrollUp || canScrollDown) {
-                                Modifier
-                                    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                                    .drawWithCache {
-                                        val h = size.height
-                                        val fadeBrush = if (h > 1f) {
-                                            val topFade = (16.dp.toPx() / h).coerceIn(0.01f, 0.18f)
-                                            val bottomFade = (1f - (18.dp.toPx() / h).coerceIn(0.01f, 0.18f))
-                                            val stops = buildList {
-                                                if (canScrollUp) {
-                                                    add(0f to Color.Transparent)
-                                                    add(topFade to Color.Black)
-                                                } else {
-                                                    add(0f to Color.Black)
+            Column(modifier = Modifier.fillMaxWidth()) {
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    thickness = 1.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                )
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp)
+                            .then(
+                                if (canScrollUp || canScrollDown) {
+                                    Modifier
+                                        .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                                        .drawWithCache {
+                                            val h = size.height
+                                            val fadeBrush = if (h > 1f) {
+                                                val topFade = (16.dp.toPx() / h).coerceIn(0.01f, 0.16f)
+                                                val bottomFade = (1f - (18.dp.toPx() / h).coerceIn(0.01f, 0.16f))
+                                                val stops = buildList {
+                                                    if (canScrollUp) {
+                                                        add(0f to Color.Transparent)
+                                                        add(topFade to Color.Black)
+                                                    } else {
+                                                        add(0f to Color.Black)
+                                                    }
+                                                    if (canScrollDown) {
+                                                        add(bottomFade to Color.Black)
+                                                        add(1f to Color.Transparent)
+                                                    } else {
+                                                        add(1f to Color.Black)
+                                                    }
+                                                }.toTypedArray()
+                                                Brush.verticalGradient(colorStops = stops)
+                                            } else {
+                                                null
+                                            }
+                                            onDrawWithContent {
+                                                drawContent()
+                                                if (fadeBrush != null) {
+                                                    drawRect(
+                                                        brush = fadeBrush,
+                                                        blendMode = BlendMode.DstIn,
+                                                    )
                                                 }
-                                                if (canScrollDown) {
-                                                    add(bottomFade to Color.Black)
-                                                    add(1f to Color.Transparent)
-                                                } else {
-                                                    add(1f to Color.Black)
-                                                }
-                                            }.toTypedArray()
-                                            Brush.verticalGradient(colorStops = stops)
-                                        } else {
-                                            null
-                                        }
-                                        onDrawWithContent {
-                                            drawContent()
-                                            if (fadeBrush != null) {
-                                                drawRect(
-                                                    brush = fadeBrush,
-                                                    blendMode = BlendMode.DstIn,
-                                                )
                                             }
                                         }
-                                    }
-                            } else Modifier,
-                        )
-                        .verticalScroll(scrollState)
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                ) {
-                    if (isTruncated) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 8.dp)
-                                .background(
-                                    MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.7f),
-                                    RoundedCornerShape(10.dp),
-                                )
-                                .clip(RoundedCornerShape(10.dp))
-                                .clickable { showFullContent = true }
-                                .padding(horizontal = 10.dp, vertical = 6.dp),
-                        ) {
-                            Text(
-                                text = stringResource(
-                                    R.string.thinking_truncated_hint,
-                                    displayContent.length / 1000,
-                                    charCount / 1000,
-                                ),
-                                fontSize = 11.sp,
-                                lineHeight = 15.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.weight(1f),
+                                } else Modifier,
                             )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Icon(
-                                imageVector = Icons.Default.OpenInFull,
-                                contentDescription = null,
-                                tint = thinkingAccent,
-                                modifier = Modifier.size(13.dp),
-                            )
-                        }
-                    }
-                    ThoughtTimelineContent(
-                        segments = segments,
-                        activeStreaming = activeStreaming,
-                        wellBackground = wellBg,
-                    )
-                }
-
-                if (userScrolledAway && canScrollDown) {
-                    Surface(
-                        onClick = {
-                            userScrolledAway = false
-                            coroutineScope.launch {
-                                scrollState.animateScrollTo(scrollState.maxValue)
-                            }
-                        },
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        shadowElevation = 3.dp,
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(10.dp)
-                            .size(28.dp),
+                            .verticalScroll(scrollState)
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Default.KeyboardArrowDown,
-                                contentDescription = "Scroll to latest thought",
-                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                modifier = Modifier.size(17.dp),
-                            )
+                        if (isTruncated) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 10.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceContainer)
+                                    .clickable { showFullContent = true }
+                                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.thinking_view_full),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = thinkingAccent,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Icon(
+                                    imageVector = Icons.Default.OpenInFull,
+                                    contentDescription = null,
+                                    tint = thinkingAccent,
+                                    modifier = Modifier.size(14.dp),
+                                )
+                            }
+                        }
+                        ThoughtTimelineContent(
+                            segments = segments,
+                            activeStreaming = activeStreaming,
+                            wellBackground = cardBg,
+                        )
+                    }
+
+                    if (userScrolledAway && canScrollDown) {
+                        Surface(
+                            onClick = {
+                                userScrolledAway = false
+                                coroutineScope.launch {
+                                    scrollState.animateScrollTo(scrollState.maxValue)
+                                }
+                            },
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            shadowElevation = 2.dp,
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(12.dp)
+                                .size(30.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Scroll to latest thought",
+                                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
                         }
                     }
                 }
@@ -1378,12 +1266,12 @@ private fun formatThoughtInline(
                         withStyle(
                             SpanStyle(
                                 fontFamily = FontFamily.Monospace,
-                                fontSize = 12.sp,
+                                fontSize = 12.5.sp,
                                 color = codeColor,
                                 background = codeBg,
                             ),
                         ) {
-                            append("\u00A0" + text.substring(i + 1, end) + "\u00A0")
+                            append("\u2006" + text.substring(i + 1, end) + "\u2006")
                         }
                         i = end + 1
                     } else {
@@ -1420,45 +1308,54 @@ private fun ThoughtTimelineContent(
 ) {
     if (segments.isEmpty()) return
     val primaryColor = MaterialTheme.colorScheme.primary
-    val tertiaryColor = MaterialTheme.colorScheme.tertiary
-    val railColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+    val railColor = primaryColor.copy(alpha = if (ChatColors.isDark) 0.28f else 0.18f)
     val headingColor = MaterialTheme.colorScheme.onSurface
     val bodyColor = MaterialTheme.colorScheme.onSurfaceVariant
-    val inlineCodeBg = MaterialTheme.colorScheme.surfaceContainerHigh
-    val codeCardBg = MaterialTheme.colorScheme.surfaceContainerHighest.copy(
-        alpha = if (ChatColors.isDark) 0.65f else 0.82f,
+    val inlineCodeColor = MaterialTheme.colorScheme.onSecondaryContainer
+    val inlineCodeBg = MaterialTheme.colorScheme.secondaryContainer.copy(
+        alpha = if (ChatColors.isDark) 0.45f else 0.52f,
     )
+    val codeCardBg = MaterialTheme.colorScheme.surfaceContainer
+    val hasHeadings = remember(segments) { segments.any { it is ThoughtSegment.Heading } }
     val lastHeadingIndex = remember(segments) {
         segments.indexOfLast { it is ThoughtSegment.Heading }
     }
+    val contentStartIndent = if (hasHeadings) 18.dp else 0.dp
 
     Column(
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .drawBehind {
-                val x = 4.dp.toPx()
-                val stroke = 1.5.dp.toPx()
-                if (size.height > 12.dp.toPx()) {
-                    drawLine(
-                        color = railColor,
-                        start = Offset(x, 8.dp.toPx()),
-                        end = Offset(x, size.height - 6.dp.toPx()),
-                        strokeWidth = stroke,
-                    )
-                }
-            },
+            .then(
+                if (hasHeadings) {
+                    Modifier.drawBehind {
+                        val x = 4.dp.toPx()
+                        val stroke = 2.dp.toPx()
+                        if (size.height > 16.dp.toPx()) {
+                            drawLine(
+                                color = railColor,
+                                start = Offset(x, 10.dp.toPx()),
+                                end = Offset(x, size.height - 6.dp.toPx()),
+                                strokeWidth = stroke,
+                                cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                            )
+                        }
+                    }
+                } else {
+                    Modifier
+                },
+            ),
     ) {
         segments.forEachIndexed { index, segment ->
             when (segment) {
                 is ThoughtSegment.Heading -> {
                     val isTrailingStep = activeStreaming && index == lastHeadingIndex
-                    val dotColor = if (isTrailingStep) primaryColor else primaryColor.copy(alpha = 0.72f)
+                    val dotColor = if (isTrailingStep) primaryColor else primaryColor.copy(alpha = 0.78f)
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = if (index == 0) 0.dp else 4.dp),
+                            .padding(top = if (index == 0) 0.dp else 8.dp),
                     ) {
                         Box(
                             modifier = Modifier
@@ -1472,63 +1369,41 @@ private fun ThoughtTimelineContent(
                                     .background(dotColor, CircleShape),
                             )
                         }
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(9.dp))
                         Text(
                             text = formatThoughtInline(
                                 text = segment.title,
                                 boldColor = headingColor,
-                                codeColor = tertiaryColor,
+                                codeColor = inlineCodeColor,
                                 codeBg = inlineCodeBg,
                             ),
                             style = MaterialTheme.typography.titleSmall.copy(
-                                fontSize = 13.sp,
-                                lineHeight = 18.sp,
+                                fontSize = 13.5.sp,
+                                lineHeight = 19.sp,
                             ),
-                            fontWeight = FontWeight.Bold,
+                            fontWeight = FontWeight.SemiBold,
                             color = headingColor,
                         )
                     }
                 }
 
                 is ThoughtSegment.Paragraph -> {
-                    val showAnchorDot = index == 0
-                    Row(
-                        verticalAlignment = Alignment.Top,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        if (showAnchorDot) {
-                            Box(
-                                modifier = Modifier
-                                    .padding(top = 5.dp)
-                                    .size(9.dp)
-                                    .background(wellBackground, CircleShape),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(6.dp)
-                                        .background(primaryColor.copy(alpha = 0.65f), CircleShape),
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                        } else {
-                            Spacer(modifier = Modifier.width(17.dp))
-                        }
-                        Text(
-                            text = formatThoughtInline(
-                                text = segment.text,
-                                boldColor = headingColor,
-                                codeColor = tertiaryColor,
-                                codeBg = inlineCodeBg,
-                            ),
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                fontSize = 13.sp,
-                                lineHeight = 19.5.sp,
-                            ),
-                            color = bodyColor,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
+                    Text(
+                        text = formatThoughtInline(
+                            text = segment.text,
+                            boldColor = headingColor,
+                            codeColor = inlineCodeColor,
+                            codeBg = inlineCodeBg,
+                        ),
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontSize = 13.5.sp,
+                            lineHeight = 20.5.sp,
+                        ),
+                        color = bodyColor,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = contentStartIndent),
+                    )
                 }
 
                 is ThoughtSegment.Bullet -> {
@@ -1536,14 +1411,14 @@ private fun ThoughtTimelineContent(
                         verticalAlignment = Alignment.Top,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 17.dp),
+                            .padding(start = contentStartIndent),
                     ) {
                         Text(
                             text = segment.marker,
-                            fontSize = 12.5.sp,
-                            lineHeight = 19.sp,
+                            fontSize = 13.sp,
+                            lineHeight = 20.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = primaryColor.copy(alpha = 0.85f),
+                            color = primaryColor.copy(alpha = 0.80f),
                             modifier = Modifier.widthIn(min = 14.dp),
                         )
                         Spacer(modifier = Modifier.width(6.dp))
@@ -1551,12 +1426,12 @@ private fun ThoughtTimelineContent(
                             text = formatThoughtInline(
                                 text = segment.text,
                                 boldColor = headingColor,
-                                codeColor = tertiaryColor,
+                                codeColor = inlineCodeColor,
                                 codeBg = inlineCodeBg,
                             ),
                             style = MaterialTheme.typography.bodyMedium.copy(
-                                fontSize = 13.sp,
-                                lineHeight = 19.sp,
+                                fontSize = 13.5.sp,
+                                lineHeight = 20.sp,
                             ),
                             color = bodyColor,
                             modifier = Modifier.weight(1f),
@@ -1568,30 +1443,30 @@ private fun ThoughtTimelineContent(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 17.dp)
+                            .padding(start = contentStartIndent)
                             .drawBehind {
                                 drawRoundRect(
-                                    color = tertiaryColor.copy(alpha = 0.6f),
+                                    color = primaryColor.copy(alpha = 0.45f),
                                     topLeft = Offset.Zero,
                                     size = androidx.compose.ui.geometry.Size(2.5.dp.toPx(), size.height),
                                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx()),
                                 )
                             }
-                            .padding(start = 10.dp, top = 1.dp, bottom = 1.dp),
+                            .padding(start = 10.dp, top = 2.dp, bottom = 2.dp),
                     ) {
                         Text(
                             text = formatThoughtInline(
                                 text = segment.text,
                                 boldColor = headingColor,
-                                codeColor = tertiaryColor,
+                                codeColor = inlineCodeColor,
                                 codeBg = inlineCodeBg,
                             ),
                             style = MaterialTheme.typography.bodySmall.copy(
-                                fontSize = 12.5.sp,
-                                lineHeight = 18.sp,
+                                fontSize = 13.sp,
+                                lineHeight = 19.sp,
                                 fontStyle = FontStyle.Italic,
                             ),
-                            color = bodyColor.copy(alpha = 0.9f),
+                            color = bodyColor.copy(alpha = 0.92f),
                         )
                     }
                 }
@@ -1601,32 +1476,27 @@ private fun ThoughtTimelineContent(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 17.dp, top = 2.dp, bottom = 2.dp)
-                            .background(codeCardBg, RoundedCornerShape(12.dp))
-                            .border(
-                                0.75.dp,
-                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                                RoundedCornerShape(12.dp),
-                            )
-                            .clip(RoundedCornerShape(12.dp))
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                            .padding(start = contentStartIndent, top = 2.dp, bottom = 2.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(codeCardBg)
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
                     ) {
                         if (segment.lang.isNotEmpty()) {
                             Text(
                                 text = segment.lang,
-                                fontSize = 10.sp,
-                                lineHeight = 13.sp,
+                                fontSize = 11.sp,
+                                lineHeight = 14.sp,
                                 fontFamily = FontFamily.Monospace,
                                 fontWeight = FontWeight.SemiBold,
-                                color = primaryColor.copy(alpha = 0.8f),
-                                modifier = Modifier.padding(bottom = 4.dp),
+                                color = primaryColor,
+                                modifier = Modifier.padding(bottom = 5.dp),
                             )
                         }
                         Box(modifier = Modifier.horizontalScroll(hScroll)) {
                             Text(
                                 text = segment.code,
-                                fontSize = 11.5.sp,
-                                lineHeight = 16.5.sp,
+                                fontSize = 12.sp,
+                                lineHeight = 17.5.sp,
                                 fontFamily = FontFamily.Monospace,
                                 color = headingColor.copy(alpha = 0.92f),
                             )
@@ -1660,58 +1530,51 @@ private fun ThinkingFullContentDialog(content: String, onDismiss: () -> Unit) {
     ) {
         Surface(
             modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            color = MaterialTheme.colorScheme.background,
         ) {
             Column(modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(34.dp)
-                            .background(MaterialTheme.colorScheme.secondaryContainer, MaterialShapes.SoftBurst.toShape()),
+                            .size(36.dp)
+                            .background(MaterialTheme.colorScheme.primaryContainer, MaterialShapes.SoftBurst.toShape()),
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
                             imageVector = Icons.Default.Psychology,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
                             modifier = Modifier.size(18.dp),
                         )
                     }
                     Spacer(modifier = Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = stringResource(R.string.thinking_header_done),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Text(
-                            text = "${content.length} chars",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    Text(
+                        text = stringResource(R.string.thinking_header_done),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f),
+                    )
                     Surface(
                         onClick = {
                             clipboard.setText(AnnotatedString(content))
                             copied = true
                         },
                         shape = CircleShape,
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        modifier = Modifier.size(36.dp),
+                        color = com.openminis.app.ui.theme.expressiveChromeColor(),
+                        modifier = Modifier.size(40.dp),
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
                                 contentDescription = "Copy",
-                                tint = if (copied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(16.dp),
+                                tint = if (copied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(18.dp),
                             )
                         }
                     }
@@ -1720,27 +1583,22 @@ private fun ThinkingFullContentDialog(content: String, onDismiss: () -> Unit) {
                         onClick = onDismiss,
                         shape = CircleShape,
                         color = MaterialTheme.colorScheme.secondaryContainer,
-                        modifier = Modifier.size(36.dp),
+                        modifier = Modifier.size(40.dp),
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Default.Close,
                                 contentDescription = stringResource(android.R.string.ok),
                                 tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                modifier = Modifier.size(18.dp),
+                                modifier = Modifier.size(19.dp),
                             )
                         }
                     }
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
                 if (content.length <= 32_000) {
                     val fullSegments = remember(content) { parseThoughtSegments(content) }
                     val dialogScroll = rememberScrollState()
-                    val wellBg = if (ChatColors.isDark) {
-                        MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.75f)
-                    } else {
-                        MaterialTheme.colorScheme.surfaceContainerLowest
-                    }
+                    val cardBg = com.openminis.app.ui.theme.expressiveCardColor()
                     SelectionContainer(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1750,23 +1608,20 @@ private fun ThinkingFullContentDialog(content: String, onDismiss: () -> Unit) {
                             modifier = Modifier
                                 .fillMaxSize()
                                 .verticalScroll(dialogScroll)
-                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                                .padding(horizontal = 16.dp, vertical = 4.dp)
+                                .padding(bottom = 20.dp),
                         ) {
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .background(wellBg, RoundedCornerShape(20.dp))
-                                    .border(
-                                        1.dp,
-                                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
-                                        RoundedCornerShape(20.dp),
-                                    )
-                                    .padding(16.dp),
+                                    .clip(RoundedCornerShape(24.dp))
+                                    .background(cardBg)
+                                    .padding(18.dp),
                             ) {
                                 ThoughtTimelineContent(
                                     segments = fullSegments,
                                     activeStreaming = false,
-                                    wellBackground = wellBg,
+                                    wellBackground = cardBg,
                                 )
                             }
                         }
@@ -1777,10 +1632,10 @@ private fun ThinkingFullContentDialog(content: String, onDismiss: () -> Unit) {
                             android.widget.ScrollView(ctx).apply {
                                 addView(
                                     android.widget.TextView(ctx).apply {
-                                        textSize = 13f
+                                        textSize = 13.5f
                                         setTextColor(textColor.toArgb())
                                         setTextIsSelectable(true)
-                                        setPadding(40, 28, 40, 64)
+                                        setPadding(40, 24, 40, 64)
                                         text = content
                                     }
                                 )

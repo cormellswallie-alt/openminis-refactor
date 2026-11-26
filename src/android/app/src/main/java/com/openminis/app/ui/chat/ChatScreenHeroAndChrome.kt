@@ -64,13 +64,13 @@ import com.openminis.app.ui.theme.MaterialShapes
 import com.openminis.app.ui.theme.articulatedItemShape
 import com.openminis.app.ui.theme.toShape
 
-// Material 3 Expressive semantic tool status colors
-internal val ToolCheckColor = Color(0xFF10B981)
-internal val ToolErrorColor = Color(0xFFDC2626)
-internal val ToolCancelColor = Color(0xFFEAB308)
-internal val ToolMemoryAccent = Color(0xFFFF2D55)
-internal val SparkleColor1 = Color(0xFFB8B096)
-internal val SparkleColor2 = Color(0xFF99998C)
+// Material 3 Expressive semantic tool status fallback colors
+internal val ToolCheckColor = Color(0xFF2956D8)
+internal val ToolErrorColor = Color(0xFFBA1A1A)
+internal val ToolCancelColor = Color(0xFF747886)
+internal val ToolMemoryAccent = Color(0xFF7D4970)
+internal val SparkleColor1 = Color(0xFF2956D8)
+internal val SparkleColor2 = Color(0xFF7D4970)
 
 /** [T-android-chat-max-content-width] Reading-measure cap shared by list, composer, and tool bar. */
 internal val CHAT_MAX_CONTENT_WIDTH = 900.dp

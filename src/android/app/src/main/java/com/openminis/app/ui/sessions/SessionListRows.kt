@@ -149,25 +149,31 @@ internal fun categoryStyle(category: String?): CategoryStyle {
     }
 }
 
+/**
+ * Cohesive Material 3 Expressive theme-derived tonal pair (container, foreground)
+ * for session & folder category avatars — automatically follows Material You.
+ */
+@Composable
+internal fun expressiveCategoryBadgeColors(category: String?): Pair<Color, Color> {
+    val scheme = MaterialTheme.colorScheme
+    return when (category?.lowercase()) {
+        "writing", "education", "support", "chat", "analysis" ->
+            scheme.primaryContainer to scheme.primary
+        "creative", "design", "health", "math", "travel", "finance" ->
+            scheme.tertiaryContainer to scheme.tertiary
+        else ->
+            scheme.secondaryContainer to scheme.secondary
+    }
+}
+
 @Composable
 internal fun categoryPolygonShape(category: String?): Shape {
     val polygon = when (category?.lowercase()) {
-        "code"         -> MaterialShapes.Pentagon
-        "writing"      -> MaterialShapes.Arch
-        "research"     -> MaterialShapes.Cookie9Sided
-        "analysis"     -> MaterialShapes.Gem
-        "creative"     -> MaterialShapes.Sunny
-        "chat"         -> MaterialShapes.Cookie12Sided
-        "math"         -> MaterialShapes.Clover4Leaf
-        "translation"  -> MaterialShapes.SoftBurst
-        "health"       -> MaterialShapes.Heart
-        "finance"      -> MaterialShapes.Diamond
-        "travel"       -> MaterialShapes.Fan
-        "education"    -> MaterialShapes.Cookie7Sided
-        "design"       -> MaterialShapes.Flower
-        "productivity" -> MaterialShapes.Cookie6Sided
-        "support"      -> MaterialShapes.PuffyDiamond
-        else           -> MaterialShapes.Cookie9Sided
+        "code", "analysis", "finance" -> MaterialShapes.Gem
+        "creative", "design", "travel" -> MaterialShapes.Sunny
+        "math", "education", "productivity" -> MaterialShapes.Clover4Leaf
+        "writing", "research", "translation", "health" -> MaterialShapes.SoftBurst
+        else -> MaterialShapes.Cookie9Sided
     }
     return polygon.toShape()
 }
@@ -180,8 +186,8 @@ internal fun SectionHeader(title: String) {
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp)
-            .padding(top = 14.dp, bottom = 6.dp),
+            .padding(horizontal = 22.dp)
+            .padding(top = 16.dp, bottom = 8.dp),
     ) {
         if (isPinned) {
             Icon(
@@ -250,6 +256,8 @@ internal fun SessionItemContent(
      * also carries the two-pane selection tint — see SessionRow.
      */
     isFolderMember: Boolean = false,
+    itemIndex: Int = 0,
+    itemCount: Int = 1,
 ) {
     if (isSelecting) {
         val isSelected = session.id in selectedIds
@@ -261,6 +269,8 @@ internal fun SessionItemContent(
             searchSnippet = searchSnippet,
             rowBackground = rowBackground,
             isFolderMember = isFolderMember,
+            itemIndex = itemIndex,
+            itemCount = itemCount,
             leadingIcon = {
                 Icon(
                     imageVector = if (isSelected) Icons.Filled.CheckCircle else Icons.Outlined.Circle,
@@ -298,6 +308,8 @@ internal fun SessionItemContent(
                 searchSnippet = searchSnippet,
                 rowBackground = rowBackground,
                 isFolderMember = isFolderMember,
+                itemIndex = itemIndex,
+                itemCount = itemCount,
                 onLongClick = { offsetPx ->
                     pressOffset = with(density) {
                         DpOffset(offsetPx.x.toDp(), offsetPx.y.toDp())
@@ -516,16 +528,16 @@ private fun groupGlyphPath(side: Float): Path = Path().apply {
 }
 
 @Composable
-internal fun FolderComposedIcon(category: String?, diameter: Dp = 46.dp) {
-    val tint = categoryStyle(category).color
+internal fun FolderComposedIcon(category: String?, diameter: Dp = 44.dp) {
+    val (bg, tint) = expressiveCategoryBadgeColors(category)
     val shape = MaterialShapes.Cookie9Sided.toShape()
     Box(
         modifier = Modifier
             .size(diameter)
-            .background(tint.copy(alpha = if (ChatColors.isDark) 0.28f else 0.18f), shape),
+            .background(bg, shape),
         contentAlignment = Alignment.Center,
     ) {
-        Canvas(Modifier.size(diameter * 0.52f)) {
+        Canvas(Modifier.size(diameter * 0.50f)) {
             drawPath(groupGlyphPath(size.width), tint)
         }
     }
@@ -575,19 +587,13 @@ internal fun FolderCard(
     Box(
         modifier = Modifier
             .padding(
-                start = 12.dp,
-                end = 12.dp,
+                start = 16.dp,
+                end = 16.dp,
                 top = 5.dp,
                 bottom = if (isExpandedWithRows) 0.dp else 5.dp,
             )
             .clip(cardShape)
-            .background(
-                if (isExpandedWithRows) {
-                    MaterialTheme.colorScheme.surfaceContainer
-                } else {
-                    MaterialTheme.colorScheme.surfaceContainerLow
-                }
-            ),
+            .background(com.openminis.app.ui.theme.expressiveCardColor()),
     ) {
         Row(
             modifier = Modifier
@@ -620,16 +626,17 @@ internal fun FolderCard(
                 .semantics(mergeDescendants = true) {
                     onClick(label = expandLabel) { onToggle(); true }
                 }
-                .padding(horizontal = 14.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 13.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(modifier = Modifier.size(46.dp)) {
-                FolderComposedIcon(category = block.firstCategory)
+            val (_, ringTint) = expressiveCategoryBadgeColors(block.firstCategory)
+            Box(modifier = Modifier.size(44.dp)) {
+                FolderComposedIcon(category = block.firstCategory, diameter = 44.dp)
                 if (block.isCollapsed && block.anyActive) {
                     SpinningRing(
-                        color = categoryStyle(block.firstCategory).color,
+                        color = ringTint,
                         modifier = Modifier
-                            .size(44.dp)
+                            .size(42.dp)
                             .align(Alignment.Center),
                     )
                 }
@@ -653,24 +660,19 @@ internal fun FolderCard(
                     Text(
                         block.folder.name,
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
+                        fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false),
                     )
-                    if (block.totalCount > 0) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.secondaryContainer,
-                        ) {
-                            Text(
-                                text = "${block.totalCount}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 1.dp),
-                            )
-                        }
+                    if (block.folder.isPinned) {
+                        Icon(
+                            Icons.Default.PushPin,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(13.dp),
+                        )
                     }
                 }
                 Text(
@@ -689,41 +691,21 @@ internal fun FolderCard(
             Spacer(Modifier.width(8.dp))
             Column(
                 horizontalAlignment = Alignment.End,
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text(
                     dateText,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.outline,
                 )
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    if (block.folder.isPinned) {
-                        Icon(
-                            Icons.Default.PushPin,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(13.dp),
-                        )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .size(24.dp)
-                            .background(MaterialTheme.colorScheme.surfaceContainerHigh, CircleShape),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            Icons.Default.KeyboardArrowDown,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier
-                                .size(16.dp)
-                                .rotate(chevronRotation),
-                        )
-                    }
-                }
+                Icon(
+                    Icons.Default.KeyboardArrowDown,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                    modifier = Modifier
+                        .size(18.dp)
+                        .rotate(chevronRotation),
+                )
             }
         }
         Box(
@@ -803,8 +785,11 @@ private fun SessionRow(
     searchSnippet: String? = null,
     rowBackground: Color? = null,
     isFolderMember: Boolean = false,
+    itemIndex: Int = 0,
+    itemCount: Int = 1,
 ) {
     val style = remember(session.category) { categoryStyle(session.category) }
+    val (badgeBg, badgeTint) = expressiveCategoryBadgeColors(session.category)
     val avatarShape = categoryPolygonShape(session.category)
     val ctx = LocalContext.current
     val timeText = remember(session.updatedAt, ctx) { relativeDate(ctx, session.updatedAt) }
@@ -812,6 +797,7 @@ private fun SessionRow(
     val pressInteractions = remember { MutableInteractionSource() }
     val inFolder = isFolderMember
     val selectionTint = rowBackground?.takeIf { inFolder && it != Color.Transparent }
+    val cardShape = com.openminis.app.ui.theme.articulatedItemShape(index = itemIndex, count = itemCount)
 
     Row(
         modifier = Modifier
@@ -819,8 +805,12 @@ private fun SessionRow(
             .then(
                 if (!inFolder) {
                     Modifier
-                        .padding(horizontal = 12.dp, vertical = 2.dp)
-                        .clip(RoundedCornerShape(22.dp))
+                        .padding(
+                            start = 16.dp,
+                            end = 16.dp,
+                            top = if (itemIndex == 0) 0.dp else ExpressiveTokens.GroupItemGap,
+                        )
+                        .clip(cardShape)
                 } else {
                     Modifier
                 }
@@ -829,7 +819,7 @@ private fun SessionRow(
                 when {
                     selectionTint != null -> Color.Transparent
                     rowBackground != null -> rowBackground
-                    else -> MaterialTheme.colorScheme.surfaceContainerLow
+                    else -> com.openminis.app.ui.theme.expressiveCardColor()
                 },
             )
             .then(
@@ -892,7 +882,7 @@ private fun SessionRow(
                     }
                 }
             )
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -906,12 +896,12 @@ private fun SessionRow(
         val badgeMap by com.openminis.app.service.SessionBadgeStore.byId.collectAsStateWithLifecycle()
         val badgeHead = badgeMap[session.id]?.firstOrNull()
 
-        Box(modifier = Modifier.size(46.dp)) {
+        Box(modifier = Modifier.size(44.dp)) {
             Box(
                 modifier = Modifier
-                    .size(46.dp)
+                    .size(44.dp)
                     .background(
-                        color = style.color.copy(alpha = if (ChatColors.isDark) 0.24f else 0.15f),
+                        color = badgeBg,
                         shape = avatarShape,
                     ),
                 contentAlignment = Alignment.Center,
@@ -919,20 +909,20 @@ private fun SessionRow(
                 Icon(
                     imageVector = style.icon,
                     contentDescription = null,
-                    tint = style.color,
-                    modifier = Modifier.size(21.dp),
+                    tint = badgeTint,
+                    modifier = Modifier.size(20.dp),
                 )
             }
             if (isActive) {
                 Box(
                     modifier = Modifier
-                        .size(46.dp)
+                        .size(44.dp)
                         .align(Alignment.Center),
                     contentAlignment = Alignment.Center,
                 ) {
                     SpinningRing(
-                        color = style.color,
-                        modifier = Modifier.size(44.dp),
+                        color = badgeTint,
+                        modifier = Modifier.size(42.dp),
                     )
                 }
             }
@@ -1091,25 +1081,22 @@ private fun SessionBadgeOverlay(
             Box(
                 modifier = modifier
                     .offset(x = 2.dp, y = 2.dp)
-                    .size(14.dp)
+                    .size(16.dp)
                     .background(
-                        // Warm amber badge so the alert reads as "attention" rather than "info".
-                        color = Color(0xFFD97706),
+                        color = MaterialTheme.colorScheme.tertiary,
                         shape = CircleShape,
                     )
                     .border(
                         width = 1.5.dp,
-                        color = MaterialTheme.colorScheme.surface,
+                        color = com.openminis.app.ui.theme.expressiveCardColor(),
                         shape = CircleShape,
                     ),
                 contentAlignment = Alignment.Center,
             ) {
-                // Pause glyph (⏸) — mirrors iOS's "pause.fill" badge so the
-                // cross-platform "this task was paused" affordance matches.
                 Icon(
                     imageVector = Icons.Filled.Pause,
                     contentDescription = null,
-                    tint = Color.White,
+                    tint = MaterialTheme.colorScheme.onTertiary,
                     modifier = Modifier.size(9.dp),
                 )
             }

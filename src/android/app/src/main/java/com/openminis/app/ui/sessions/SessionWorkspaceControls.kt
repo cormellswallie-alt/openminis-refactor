@@ -87,17 +87,23 @@ internal fun ExpressiveWorkspaceDock(
 ) {
     var fabMenuExpanded by remember { mutableStateOf(false) }
     val topGroups = remember(modelGroups) { modelGroups.take(8) }
-    // Convex squircle container so OEM HWUI shadow tessellation uses fast native
-    // Outline.Rounded rather than non-convex Outline.Generic star paths.
-    val fabShape = RoundedCornerShape(20.dp)
-    val innerBadgeShape = MaterialShapes.Sunny.toShape()
+    val fabShape = RoundedCornerShape(18.dp)
+    val canvasColor = MaterialTheme.colorScheme.background
 
     Box(
         modifier = modifier
             .fillMaxWidth()
+            .background(
+                androidx.compose.ui.graphics.Brush.verticalGradient(
+                    0.0f to canvasColor.copy(alpha = 0f),
+                    0.38f to canvasColor.copy(alpha = 0.86f),
+                    1.0f to canvasColor,
+                ),
+            )
             .navigationBarsPadding()
             .imePadding()
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 16.dp)
+            .padding(top = 20.dp, bottom = 14.dp),
     ) {
         Row(
             modifier = Modifier.align(Alignment.BottomCenter),
@@ -106,21 +112,17 @@ internal fun ExpressiveWorkspaceDock(
         ) {
             Surface(
                 shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                color = com.openminis.app.ui.theme.expressiveChromeColor(),
                 contentColor = MaterialTheme.colorScheme.onSurface,
-                tonalElevation = 3.dp,
-                shadowElevation = 10.dp,
-                border = androidx.compose.foundation.BorderStroke(
-                    width = 1.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-                ),
+                tonalElevation = 2.dp,
+                shadowElevation = 6.dp,
             ) {
                 Row(
                     modifier = Modifier
-                        .heightIn(min = 56.dp)
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                        .heightIn(min = 58.dp)
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     IconButton(onClick = onScheduledClick) {
                         if (scheduledTaskCount > 0) {
@@ -165,7 +167,7 @@ internal fun ExpressiveWorkspaceDock(
                         shape = fabShape,
                         color = MaterialTheme.colorScheme.primary,
                         contentColor = MaterialTheme.colorScheme.onPrimary,
-                        shadowElevation = 10.dp,
+                        shadowElevation = 6.dp,
                         modifier = Modifier
                             .size(58.dp)
                             .clip(fabShape)
@@ -175,21 +177,11 @@ internal fun ExpressiveWorkspaceDock(
                             ),
                     ) {
                         Box(contentAlignment = Alignment.Center) {
-                            Box(
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .background(
-                                        MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.16f),
-                                        innerBadgeShape,
-                                    ),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    Icons.Default.Add,
-                                    contentDescription = stringResource(R.string.new_chat),
-                                    modifier = Modifier.size(24.dp),
-                                )
-                            }
+                            Icon(
+                                Icons.Default.Add,
+                                contentDescription = stringResource(R.string.new_chat),
+                                modifier = Modifier.size(26.dp),
+                            )
                         }
                     }
                     MinisMenu(
@@ -225,23 +217,13 @@ internal fun ExpressiveWorkspaceDock(
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,
                     modifier = Modifier.size(58.dp),
-                    elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 8.dp),
+                    elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp),
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .background(
-                                MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.16f),
-                                innerBadgeShape,
-                            ),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            Icons.Default.Add,
-                            contentDescription = stringResource(R.string.new_chat),
-                            modifier = Modifier.size(24.dp),
-                        )
-                    }
+                    Icon(
+                        Icons.Default.Add,
+                        contentDescription = stringResource(R.string.new_chat),
+                        modifier = Modifier.size(26.dp),
+                    )
                 }
             }
         }
@@ -265,14 +247,10 @@ internal fun SelectionToolbar(
     ) {
         Surface(
             shape = CircleShape,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            color = com.openminis.app.ui.theme.expressiveChromeColor(),
             contentColor = MaterialTheme.colorScheme.onSurface,
-            tonalElevation = 3.dp,
-            shadowElevation = 10.dp,
-            border = androidx.compose.foundation.BorderStroke(
-                width = 1.dp,
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-            ),
+            tonalElevation = 2.dp,
+            shadowElevation = 6.dp,
         ) {
             Row(
                 modifier = Modifier
@@ -503,9 +481,9 @@ private fun SetupStepCard(
     Surface(
         shape = cardShape,
         color = if (isEnabled) {
-            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
         } else {
-            MaterialTheme.colorScheme.surfaceContainerLow
+            com.openminis.app.ui.theme.expressiveCardColor()
         },
         modifier = Modifier
             .fillMaxWidth()

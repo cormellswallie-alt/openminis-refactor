@@ -186,15 +186,14 @@ fun AppearanceScreen(
     val tilePurple = MaterialTheme.colorScheme.secondary
     val tileBlue = MaterialTheme.colorScheme.primary
     val tileOrange = MaterialTheme.colorScheme.tertiary
-    val tileGreen = Color(0xFF1F9D55)
-    val tileTeal = Color(0xFF0097A7)
+    val tileGreen = MaterialTheme.colorScheme.primary
+    val tileTeal = MaterialTheme.colorScheme.secondary
 
     SettingsScaffold(title = stringResource(R.string.appearance_title), onBack = onBack) {
 
         // -- Theme & Material You Dynamic Color --
         SettingsSection(
             header = stringResource(R.string.appearance_section_theme),
-            footer = stringResource(R.string.appearance_theme_footer),
         ) {
             data class ThemeOption(val label: String, val icon: ImageVector)
             val themeOptions = listOf(
@@ -278,7 +277,6 @@ fun AppearanceScreen(
                     icon = Icons.Outlined.Palette,
                     iconColor = tileOrange,
                     title = "Material You",
-                    subtitle = "Android 12+",
                     checked = dynamicColor,
                     onCheckedChange = {
                         dynamicColor = it
@@ -292,7 +290,6 @@ fun AppearanceScreen(
         // -- Launch Session (2x2 Expressive Bento Grid) --
         SettingsSection(
             header = stringResource(R.string.appearance_section_launch),
-            footer = stringResource(R.string.appearance_launch_footer),
         ) {
             data class LaunchOption(val label: String, val icon: ImageVector, val tint: Color)
             val launchOptions = listOf(
@@ -378,7 +375,6 @@ fun AppearanceScreen(
         // -- Return Key (Connected M3 Expressive ButtonGroup) --
         SettingsSection(
             header = stringResource(R.string.appearance_section_return_key),
-            footer = stringResource(R.string.appearance_return_key_footer),
         ) {
             data class ReturnOption(val label: String, val value: Int, val icon: ImageVector)
             val returnOptions = listOf(
@@ -516,7 +512,6 @@ fun AppearanceScreen(
         // -- Consolidated Chat Experience Articulated Stack --
         SettingsSection(
             header = stringResource(R.string.appearance_section_tool_preview),
-            footer = stringResource(R.string.appearance_auto_grouping_footer),
         ) {
             SettingsSwitchRow(
                 icon = Icons.Outlined.Visibility,
@@ -583,7 +578,6 @@ fun AppearanceScreen(
         // -- Typography & Font Scale Studio --
         SettingsSection(
             header = stringResource(R.string.appearance_section_font_size),
-            footer = stringResource(R.string.appearance_font_size_footer),
         ) {
             SettingsRow(
                 icon = Icons.Outlined.FormatSize,

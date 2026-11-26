@@ -48,21 +48,25 @@ internal fun RenderMarkdownCodeBlock(block: MdBlock.CodeBlock, colors: MdColors)
             copied = false
         }
     }
-    val codeShape = RoundedCornerShape(16.dp)
+    val codeShape = RoundedCornerShape(20.dp)
+    val copiedTint = if (com.openminis.app.ui.theme.ChatColors.isDark) {
+        androidx.compose.material3.MaterialTheme.colorScheme.primary
+    } else {
+        androidx.compose.material3.MaterialTheme.colorScheme.inversePrimary
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = 4.dp, bottom = 10.dp)
-            .background(colors.codeBg, codeShape)
-            .border(1.dp, Color.White.copy(alpha = 0.08f), codeShape)
-            .clip(codeShape),
+            .clip(codeShape)
+            .background(colors.codeBg),
     ) {
         // M3 Expressive code card header bar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(Color.White.copy(alpha = 0.045f))
-                .padding(horizontal = 12.dp, vertical = 7.dp),
+                .padding(horizontal = 14.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -78,26 +82,26 @@ internal fun RenderMarkdownCodeBlock(block: MdBlock.CodeBlock, colors: MdColors)
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 modifier = Modifier
-                    .background(Color.White.copy(alpha = 0.08f), CircleShape)
                     .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.08f))
                     .clickable {
                         clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(block.code))
                         copied = true
                     }
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                    .padding(horizontal = 9.dp, vertical = 4.dp),
             ) {
                 Icon(
                     imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
                     contentDescription = if (copied) "Copied" else "Copy code",
-                    tint = if (copied) Color(0xFF10B981) else Color.White.copy(alpha = 0.72f),
+                    tint = if (copied) copiedTint else Color.White.copy(alpha = 0.72f),
                     modifier = Modifier.size(13.dp),
                 )
                 Text(
                     text = if (copied) "Copied" else "Copy",
-                    fontSize = 10.5.sp,
+                    fontSize = 11.sp,
                     lineHeight = 13.sp,
                     fontWeight = FontWeight.Medium,
-                    color = if (copied) Color(0xFF10B981) else Color.White.copy(alpha = 0.72f),
+                    color = if (copied) copiedTint else Color.White.copy(alpha = 0.72f),
                 )
             }
         }

@@ -22,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
+import com.openminis.app.ui.theme.ChatColors
 import com.openminis.app.ui.theme.ExpressiveTokens
 
 /**
@@ -54,7 +55,11 @@ object SectionDesign {
 
     @Composable
     @ReadOnlyComposable
-    fun cardColor(): Color = MaterialTheme.colorScheme.surfaceContainerLow
+    fun cardColor(): Color = if (ChatColors.isDark) {
+        MaterialTheme.colorScheme.surfaceContainerLow
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerLowest
+    }
 
     @Composable
     @ReadOnlyComposable

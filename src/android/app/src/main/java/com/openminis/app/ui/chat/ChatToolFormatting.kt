@@ -14,6 +14,8 @@ import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.outlined.ChecklistRtl
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import java.text.SimpleDateFormat
@@ -46,7 +48,16 @@ internal fun formatStepDuration(seconds: Long, stillRunning: Boolean): String {
     return if (stillRunning) "$base…" else base
 }
 
-// Material 3 Expressive semantic tool accents
+// Theme-harmonized M3 Expressive tool accents (adapts to Material You dynamic color)
+@Composable
+internal fun expressiveToolAccent(toolName: String): Color = when (toolName) {
+    "shell_execute", "file_write", "file_edit" -> MaterialTheme.colorScheme.primary
+    "memory_write", "memory_get", "ask_user", "update_steps",
+    "subagent_task", "delegate_task", "agent_status" -> MaterialTheme.colorScheme.tertiary
+    else -> MaterialTheme.colorScheme.secondary
+}
+
+// Static fallback accents for non-composable notification/int callers
 internal fun toolAccentColor(toolName: String): Color = when (toolName) {
     "shell_execute" -> Color(0xFF10B981)
     "file_read" -> Color(0xFF0EA5E9)
