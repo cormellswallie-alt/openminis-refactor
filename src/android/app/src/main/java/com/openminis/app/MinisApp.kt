@@ -32,7 +32,6 @@ import com.openminis.app.network.NetworkMonitor
 import com.openminis.app.offload.OffloadPermissionManager
 import com.openminis.app.provider.ModelsDevApi
 import com.openminis.app.sandbox.ExecutionCoordinator
-import com.openminis.app.sandbox.MountedFolderCoordinator
 import com.openminis.app.sandbox.NativeOffloadServer
 import com.openminis.app.sandbox.PRootKernel
 import com.openminis.app.sandbox.RootfsManager
@@ -239,106 +238,43 @@ class MinisApp : Application(), ImageLoaderFactory {
     @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
     override fun onCreate() {
         super.onCreate()
-        // [T-android-content-capture-off] Opt every Compose window out of
-        // Android content capture, before any of them exists.
-        //
-        // With a content-capture service active (Pixel's Android System
-        // Intelligence enables one), Compose re-walks the whole semantics tree
-        // after UI changes to report screen content to it. Streaming replies
-        // change the UI continuously, and a Pixel 6 perf-build profile of a
-        // task put that walk (AndroidContentCaptureManager
-        // .contentCaptureChangeChecker) at 10.45% of all app CPU — about a
-        // quarter of the main thread, more than the frame work itself.
-        //
-        // Minis's own UI is unaffected: rendering, accessibility (a separate
-        // path), autofill, IME and in-app selection all stay the same. What is
-        // lost is system features that read app content through content
-        // capture (e.g. text selection in Recents, some screen-content
-        // suggestions), which also means chat text is no longer reported to
-        // that service.
-        //
-        // Set once, here, rather than paused while tasks run: in Compose 1.9.1
-        // a change check that finds the switch off returns WITHOUT clearing
-        // its pending flag, so nothing schedules another check even after the
-        // switch is turned back on. Only a switch that never flips is safe.
+        // [T-android-content-capture-off] Opt Compose out of content capture before any window exists.
         androidx.compose.ui.contentcapture.ContentCaptureManager.isEnabled = false
-        // [T-tools-granular-switches] Carry a pre-split delegation choice onto
-        // the per-tool key, once, before anything reads it. Mirrors iOS
-        // MinisApp.swift's AgentToolSwitch.migrateLegacyIfNeeded().
         com.openminis.app.tools.AgentToolSwitch.migrateLegacyIfNeeded(this)
 
-        // T287-followup: ACRA spawns a separate reporter process named
-        // "<package>:acra" (declared by the library's manifest) to send
-        // the crash report after the main process dies. Application
-        // subclasses run in EVERY process of the package, so without
-        // this early-return the :acra process would also try to bind
-        // the abstract socket / boot the database / register offload
-        // handlers — racing the next main-process spawn for resources
-        // it doesn't need. Symptom: main process gets EADDRINUSE on
-        // LocalServerSocket and stays in a permanent restart loop on
-        // the splash screen. Skip everything except ACRA.init (already
-        // done in attachBaseContext, which is what makes the :acra
-        // process do its job).
+        // T287: :acra reporter runs in a separate process and must not boot app subsystems.
         if (ACRA.isACRASenderServiceProcess()) {
             Log.i("MinisApp", "skipping app init in :acra reporter process")
             return
         }
 
-        // T-android-safemode-lateinit-crash: hand AppLogger a Context before
-        // any early-return below can skip AppLogger.init(). This costs
-        // nothing (no I/O, no prefs, no capture) and is what lets the in-app
-        // log/crash list still find filesDir/logs on a safe-mode launch —
-        // the exact launch where the user is trying to read the crash files.
+        if (!installCrashGuardsAndCheckSafeMode()) return
+        if (!initializeCoreRepositories()) return
+        initializeConfigAndSandbox()
+        registerAndStartOffloadServer()
+        initializeSessionTrackingAndNotifiers()
+        registerLifecycleAndSystemHooks()
+        runCatching { migrateGhostAlarms() }
+            .onFailure { Log.w("MinisApp", "ghost alarm migration failed: ${it.message}") }
+    }
+
+    /**
+     * Primes lightweight crash/pref hooks, installs native + FGS-timeout crash
+     * handlers, and checks safe-mode. Returns false if safe-mode short-circuits startup.
+     */
+    private fun installCrashGuardsAndCheckSafeMode(): Boolean {
         AppLogger.primeContext(this)
-
-        // [T-codex-fast-mode] Capture the app context + warm the Fast Mode
-        // flag cache so the provider layer (no Context) can read it at
-        // request-build time — including offload / title-gen calls that
-        // never pass through a ViewModel.
         com.openminis.app.data.FastModePrefs.prime(this)
-
-        // Warm the auto-compact flag the same way: the pre-send context check
-        // and the in-chat one-tap opt-in both read it from places that have no
-        // Activity context.
         com.openminis.app.data.AutoCompactPrefs.prime(this)
 
-        // T283: install NDK signal handler for native crashes (SIGSEGV/
-        // SIGABRT/SIGBUS/SIGFPE/SIGILL/SIGSYS). Writes a one-shot text
-        // report to filesDir/logs/native-crash-<stamp>.log before re-raising
-        // the signal so the system tombstone is also generated. Runs
-        // before any other native lib (proot, pty_bridge, …) is dlopen'd
-        // by the rest of onCreate so the handler is in place when those
-        // libs first execute.
         try {
-            com.openminis.app.crash.NativeCrashHandler.install(
-                java.io.File(filesDir, "logs"),
-            )
+            com.openminis.app.crash.NativeCrashHandler.install(java.io.File(filesDir, "logs"))
         } catch (t: Throwable) {
             Log.w("MinisApp", "NativeCrashHandler install failed: ${t.message}")
         }
 
-        // [T-android-alarm-reschedule-on-restart] Re-register scheduled-task
-        // alarms on every process start.
-        //
-        // AlarmManager drops an app's pending alarms whenever the app is
-        // force-stopped — which includes an app UPDATE, and the aggressive
-        // "cleanup" some OEM launchers apply. Neither sends BOOT_COMPLETED, so
-        // the receiver's boot branch never ran and the user's scheduled tasks
-        // stayed dead until the next reboot. The MY_PACKAGE_REPLACED filter
-        // added alongside this covers the update case promptly; this covers
-        // everything else, at the cost of one cheap pass per launch.
-        //
-        // Safe to run unconditionally: registerAlarm() reuses one PendingIntent
-        // per task id (requestCode = taskId.hashCode(), FLAG_UPDATE_CURRENT), so
-        // re-registering REPLACES rather than duplicates. No debounce needed
-        // even when the broadcast and this both fire during an update.
-        //
-        // On Dispatchers.IO, matching every other init in this method: it reads
-        // the task store off disk and makes one binder call per task, and cold
-        // start is not the place for either.
+        // [T-android-alarm-reschedule-on-restart] Re-register alarms after force-stop / OEM cleanup.
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-            // Defer non-critical alarm re-registration past initial UI paint so
-            // cold-start session/config loads get uncontended disk + binder access.
             kotlinx.coroutines.delay(2500L)
             runCatching {
                 com.openminis.app.scheduled.ScheduledTaskManager(this@MinisApp).rescheduleAll()
@@ -347,18 +283,22 @@ class MinisApp : Application(), ImageLoaderFactory {
             }
         }
 
-        // T-android-fgs-timeout-crash: chain an UncaughtExceptionHandler
-        // ahead of ACRA's so we can intercept
-        // android.app.RemoteServiceException$ForegroundServiceDidNotStopInTimeException
-        // specifically. The mediaPlayback FGS type change removes the
-        // dataSync 6h cap that was tripping this, but this handler keeps
-        // the user from seeing a raw process-death if a future Android
-        // version adds a new cap to mediaPlayback too. We can't actually
-        // survive this exception (it's thrown on the main looper after
-        // SystemServer has already decided to kill us) but we CAN:
-        //  - stop the foreground service explicitly so the notification
-        //    drops cleanly instead of lingering as a zombie row
-        //  - delegate to ACRA so the crash log still hits disk
+        installForegroundServiceTimeoutHandler()
+        com.openminis.app.crash.CrashFrequencyDetector.checkAtLaunch(this)
+
+        // [OpenMinis#363] Recover previous process death exit info off the main thread.
+        Thread {
+            com.openminis.app.crash.ExitInfoCollector.collect(this)
+        }.apply { isDaemon = true; name = "exit-info-collect" }.start()
+
+        if (com.openminis.app.crash.CrashFrequencyDetector.isSafeMode()) {
+            Log.w("MinisApp", "safe-mode ON — skipping app subsystem init")
+            return false
+        }
+        return true
+    }
+
+    private fun installForegroundServiceTimeoutHandler() {
         try {
             val priorHandler = Thread.getDefaultUncaughtExceptionHandler()
             Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
@@ -368,311 +308,130 @@ class MinisApp : Application(), ImageLoaderFactory {
                     ) || (throwable.message?.contains("foreground service of type") == true &&
                         throwable.message?.contains("did not stop within its timeout") == true)
                     if (isFgsTimeout) {
-                        Log.w(
-                            "MinisApp",
-                            "FGS timeout caught; stopping service before deferring to ACRA: ${throwable.message}",
-                        )
-                        // Stop the service so the system tears the
-                        // sticky binding down cleanly instead of
-                        // re-spawning into the same trap.
+                        Log.w("MinisApp", "FGS timeout caught; stopping service before deferring to ACRA: ${throwable.message}")
                         runCatching {
-                            val intent = Intent(this, com.openminis.app.service.AgentForegroundService::class.java)
-                            stopService(intent)
+                            stopService(Intent(this, com.openminis.app.service.AgentForegroundService::class.java))
                         }
                     }
                 } catch (t: Throwable) {
                     Log.w("MinisApp", "FGS-timeout handler internal failure: ${t.message}")
                 }
-                // Always defer to the prior handler so ACRA's
-                // dump-and-relaunch flow runs intact.
                 priorHandler?.uncaughtException(thread, throwable)
             }
         } catch (t: Throwable) {
             Log.w("MinisApp", "install FGS-timeout handler failed: ${t.message}")
         }
+    }
 
-        // T-android-crash-freq-share: local fallback for Crashlytics (#458).
-        // Scan filesDir/logs/ for crash-*.log + native-crash-*.log files
-        // touched in the last hour; if THRESHOLD+ are present, stash the
-        // list so MainActivity.onCreate can prompt to share them.
-        com.openminis.app.crash.CrashFrequencyDetector.checkAtLaunch(this)
-
-        // [OpenMinis#363] Recover the PREVIOUS process death from the system.
-        // A native SIGABRT kills us outright, so the only full account of it
-        // is debuggerd's tombstone — which the app cannot read from
-        // /data/tombstones/ and the user cannot fetch without adb.
-        // ApplicationExitInfo hands the same content back through a channel
-        // we ARE allowed to read, including the abort message and the memory
-        // map that turns a raw PC into a library name.
-        //
-        // Off the main thread: it does file I/O and must not sit on startup.
-        // Deliberately AFTER checkAtLaunch, which only stats existing files —
-        // safe-mode's decision is about this launch, not the previous death,
-        // and running before it would delay that decision for no gain.
-        Thread {
-            com.openminis.app.crash.ExitInfoCollector.collect(this)
-        }.apply { isDaemon = true; name = "exit-info-collect" }.start()
-
-        // Hard short-circuit: when checkAtLaunch flips safe-mode ON, skip
-        // every heavy subsystem (DB, repositories, offload server, PRoot
-        // bind mounts, network monitor, …). The only thing MainActivity
-        // will do is pop the share-or-dismiss dialog and finish. Without
-        // this guard, anything from `chatRepository = ChatRepository(...)`
-        // onward is a potential re-crash trigger on a loop — the whole
-        // point of safe-mode is to stop the bleeding before another
-        // segfault rewrites the log files.
-        if (com.openminis.app.crash.CrashFrequencyDetector.isSafeMode()) {
-            Log.w("MinisApp", "safe-mode ON — skipping app subsystem init")
-            return
-        }
-
-        // Initialize the daily-rotating file logger first. When the user has
-        // logging enabled in Settings, this also kicks off stdout/stderr
-        // capture so subsequent println / Throwable.printStackTrace lines from
-        // the rest of onCreate land in today's log file. Mirrors iOS
-        // `LoggingManager.startIfEnabled()` (called from MinisApp.swift:143).
+    /**
+     * Initializes logging, hang detection, database version guard, and all core
+     * repositories. Returns false to enter degraded mode if initialization throws.
+     */
+    private fun initializeCoreRepositories(): Boolean {
         AppLogger.init(this)
-
-        // Bug 2 (MIUI silent kill) diagnostic: write a launch-cycle beacon
-        // so a subsequent launch can observe whether the previous run
-        // exited cleanly (onTerminate hit) or was force-killed by LMK /
-        // MIUI's aggressive background cleaner. Read on next launch by
-        // [com.openminis.app.diagnostics.LaunchCycleBeacon].
         try {
             com.openminis.app.diagnostics.LaunchCycleBeacon.recordLaunch(this)
         } catch (t: Throwable) {
             Log.w("MinisApp", "LaunchCycleBeacon.recordLaunch failed: ${t.message}")
         }
-
-        // Start the main-thread hang watchdog before the heavier subsystems
-        // (DB / repositories / iSH bring-up) get going so it can observe any
-        // stall in onCreate itself. Posts heartbeats at 1s cadence; if the
-        // main thread fails to land one for 3s, the detector dumps the main
-        // stack to filesDir/logs/stall-<date>.log and bumps a persisted
-        // counter. AppNavigation reads that counter on cold start to
-        // override the launch destination to home after 3 hangs in a row,
-        // so a user trapped opening a session that hangs the UI gets
-        // unstuck on the next launch.
         com.openminis.app.diagnostics.HangDetector.start(this)
 
-        // [T-android-safemode-lateinit-crash-147] Structural backstop for the
-        // whole repository block.
-        //
-        // The individual guards below (and inside SkillRepository) close the
-        // known holes, but the failure MODE is what makes this dangerous: any
-        // throw between the first assignment and `subsystemsInitialized = true`
-        // leaves the Application permanently half-built. onCreate never re-runs,
-        // so every later launch crashes reading an unassigned lateinit, each
-        // crash re-trips the crash-burst detector, and the user is locked out
-        // until they reinstall — exactly GH#147.
-        //
-        // Rethrowing here would keep that loop. Instead: log loudly, leave
-        // subsystemsInitialized false, and let MainActivity's existing guard
-        // show the crash-share dialog. The app still cannot do real work this
-        // launch, but it FAILS VISIBLY AND RECOVERABLY instead of dying on the
-        // first Compose frame forever.
-        // [T-android-downgrade-compat] Probe the on-disk schema version BEFORE
-        // Room opens the file. If the database was written by a newer build and
-        // no downgrade migration covers the jump, Room would throw at first
-        // access and the app could never start. Deciding here — while the file
-        // is still untouched, read only via SQLiteDatabase.OPEN_READONLY — lets
-        // the UI show recoverable guidance instead of dying, and guarantees
-        // nothing has migrated or dropped a table by the time we choose.
+        // [T-android-downgrade-compat] Probe schema version read-only before Room opens the DB.
         dbVersionDecision = DatabaseVersionGuard.evaluate(this)
-
-        try {
-        // Guard INSIDE the try, so a newer-schema database takes the very same
-        // degraded-mode path the existing init-failure handling already
-        // provides (subsystemsInitialized stays false and MainActivity shows a
-        // recoverable screen) instead of returning early from onCreate — which
-        // would also skip SoulStore, ConfigRegistry, RootfsManager and the rest
-        // of startup that has nothing to do with the chat database.
-        if (dbVersionDecision == DatabaseVersionGuard.Decision.SHOW_NEWER_DB_GUIDANCE) {
-            error(
-                "on-disk chat schema is newer than this build " +
-                    "(code=${DatabaseVersionGuard.CODE_DB_VERSION}); refusing to open it. " +
-                    "The database file is left completely untouched — upgrading restores everything."
+        return try {
+            if (dbVersionDecision == DatabaseVersionGuard.Decision.SHOW_NEWER_DB_GUIDANCE) {
+                error(
+                    "on-disk chat schema is newer than this build " +
+                        "(code=${DatabaseVersionGuard.CODE_DB_VERSION}); refusing to open it. " +
+                        "The database file is left completely untouched — upgrading restores everything.",
+                )
+            }
+            database = AppDatabase.getInstance(this)
+            chatRepository = ChatRepository(database.chatDao())
+            com.openminis.app.agent.jobs.AgentSettings.init(this)
+            wireSubAgentFollowUpDispatcher()
+            com.openminis.app.agent.jobs.AgentCallbackLabels.install(this)
+            providerRepository = ProviderRepository(this)
+            envVarRepository = EnvVarRepository(this)
+            skillRepository = SkillRepository(this)
+            androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(
+                object : androidx.lifecycle.DefaultLifecycleObserver {
+                    override fun onStart(owner: androidx.lifecycle.LifecycleOwner) {
+                        skillRepository.requestReload("foreground")
+                    }
+                },
             )
+            mcpRepository = MCPRepository(this)
+            memoryRepository = MemoryRepository(java.io.File(filesDir, "minis-global/memory"))
+            webAppShortcutRepository = WebAppShortcutRepository(database.webAppShortcutDao())
+            subsystemsInitialized = true
+            true
+        } catch (t: Throwable) {
+            // [T-android-safemode-lateinit-crash-147] Leave subsystemsInitialized=false so MainActivity shows recovery UI.
+            Log.e("MinisApp", "subsystem init failed — app will start in degraded mode", t)
+            false
         }
-        database = AppDatabase.getInstance(this)
-        chatRepository = ChatRepository(database.chatDao())
-        // [subagent-unlimited] Load the user's sub agent concurrency cap.
-        com.openminis.app.agent.jobs.AgentSettings.init(this)
-        // [T-p2-agent-series] How a background agent's completion reaches its
-        // parent: submit the <agent_callback> as a PROGRAMMATIC prompt on the
-        // parent's ViewModel (queued behind a running loop, never interrupting).
+    }
+
+    private fun wireSubAgentFollowUpDispatcher() {
         com.openminis.app.agent.jobs.AgentJobRegistry.followUpDispatcher = { parentId, text, jobId ->
-            // [T-agent-port-round2] HeadlessChatRunner.prompt (not a bare
-            // submitPrompt): it waits up to 5 s for the parent's provider to
-            // resolve when the VM is freshly created (a scheduled child firing
-            // while the parent chat is not open), and reports a real outcome.
-            // A parent that no longer exists gets nothing — submitting would
-            // re-create rows for a deleted session.
             kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                 runCatching {
                     if (chatRepository.getSession(parentId) == null) {
-                        com.openminis.app.logging.AppLogger.warning("AgentJobRegistry", "followUp ${jobId.take(8)} dropped — parent ${parentId.take(8)} no longer exists")
+                        AppLogger.warning("AgentJobRegistry", "followUp ${jobId.take(8)} dropped — parent ${parentId.take(8)} no longer exists")
                         return@launch
                     }
                     val r = com.openminis.app.debug.HeadlessChatRunner.prompt(
-                        context = this@MinisApp, sessionId = parentId, text = text,
-                        attachments = emptyList(), thinkingLevel = null, wait = false, timeoutMs = 0L,
+                        context = this@MinisApp,
+                        sessionId = parentId,
+                        text = text,
+                        attachments = emptyList(),
+                        thinkingLevel = null,
+                        wait = false,
+                        timeoutMs = 0L,
                     )
-                    com.openminis.app.logging.AppLogger.info("AgentJobRegistry", "followUp ${jobId.take(8)} → parent ${parentId.take(8)} outcome=${r.status}")
-                }.onFailure { com.openminis.app.logging.AppLogger.warning("AgentJobRegistry", "followUp ${jobId.take(8)} failed: ${it.message}") }
-            }
-        }
-        com.openminis.app.agent.jobs.AgentCallbackLabels.install(this)
-        providerRepository = ProviderRepository(this)
-        envVarRepository = EnvVarRepository(this)
-        // [T-android-safemode-lateinit-crash-147] SkillRepository parses
-        // third-party content (skills imported from external hubs), which
-        // makes it the realistic source of a throw in this block. Its own
-        // init is now fully guarded, so construction cannot escape here — see
-        // the comment there for why an exception at this point permanently
-        // breaks the Application and produces the GH#147 crash loop.
-        skillRepository = SkillRepository(this)
-        // [T-android-skill-scan-parity] Mirrors iOS reloading SkillStore on
-        // scenePhase .active: pick up skills changed while the app was away.
-        // Background and signature-gated, so a no-op resume costs one listing.
-        androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(
-            object : androidx.lifecycle.DefaultLifecycleObserver {
-                override fun onStart(owner: androidx.lifecycle.LifecycleOwner) {
-                    skillRepository.requestReload("foreground")
+                    AppLogger.info("AgentJobRegistry", "followUp ${jobId.take(8)} → parent ${parentId.take(8)} outcome=${r.status}")
+                }.onFailure {
+                    AppLogger.warning("AgentJobRegistry", "followUp ${jobId.take(8)} failed: ${it.message}")
                 }
             }
-        )
-        mcpRepository = MCPRepository(this)
-        memoryRepository = MemoryRepository(java.io.File(filesDir, "minis-global/memory"))
-        webAppShortcutRepository = WebAppShortcutRepository(database.webAppShortcutDao())
-
-        // T-android-safemode-lateinit-crash: every repository the UI layer
-        // reads is now assigned, so MainActivity may safely compose. Set
-        // here rather than at the end of onCreate: the remaining work
-        // (sandbox, offload handlers, receivers) is all independently
-        // guarded and none of it is required by AppNavigation's
-        // constructor arguments. Setting it early keeps a failure in a
-        // late, non-UI subsystem from permanently locking the user out
-        // of an app whose UI dependencies are in fact ready.
-        subsystemsInitialized = true
-        } catch (t: Throwable) {
-            // subsystemsInitialized stays false — MainActivity will show the
-            // crash-share dialog rather than composing against unassigned
-            // repositories. Do NOT rethrow: that is what turns a one-off init
-            // failure into an unrecoverable launch loop.
-            Log.e("MinisApp", "subsystem init failed — app will start in degraded mode", t)
-            return
         }
+    }
 
-        // [T-soul-md] Seed SOUL.md with the default content on first launch
-        // so the Soul settings page and chat bubble identity have a real
-        // file to read. Safe no-op on subsequent launches — never
-        // overwrites existing user edits. Cache refresh primes the
-        // synchronous metadata read-path (chat header / system prompt).
+    private fun initializeConfigAndSandbox() {
         com.openminis.app.agent.SoulStore.ensureExists(this)
         com.openminis.app.agent.SoulStore.refreshCache(this)
 
-        // T-config: minis-config CLI surface — registry / audit log /
-        // master-switch store. Initialized eagerly here so
-        // ConfigRegistry.get() is safe from any thread for the rest of
-        // the process. Mirrors iOS ConfigRegistry.shared.registerBuiltinsIfNeeded().
         com.openminis.app.config.MinisConfigPermissionStore.init(this)
         com.openminis.app.config.audit.ConfigAuditLog.init(this)
-        com.openminis.app.config.ConfigRegistry.init(
-            this, providerRepository, envVarRepository, chatRepository,
-        )
+        com.openminis.app.config.ConfigRegistry.init(this, providerRepository, envVarRepository, chatRepository)
 
-        // Initialize models.dev registry (loads from bundled asset, refreshes in background)
         ModelsDevApi.init(this)
-
-        // [T-android-model-sort-anr] Build the model-release ranking index off
-        // the main thread, before anything asks for a sorted model list.
-        //
-        // `ModelReleaseIndex.rank()` builds its tables lazily on first call, and
-        // that build reads + parses the whole models.dev catalog (4.5 MB / 7561
-        // models on a real device). The first caller pays for it synchronously,
-        // and the first caller is normally `ChatViewModel.init` ->
-        // `applyNewChatDefaultModel`, i.e. the main thread while opening a chat.
-        // On a Pixel 4a under memory pressure that blew the 5s input-dispatch
-        // deadline and ANR'd the app.
-        //
-        // MUST come after ModelsDevApi.init(this): the index reads the catalog
-        // through ModelsDevApi, whose disk and bundled loaders both return null
-        // until they have a Context. Warming before that produced an EMPTY index
-        // (`full=0 tail=0`) that then stayed cached, silently unranking every
-        // model list — a worse bug than the one being fixed. Verified on device.
-        //
-        // Warming it here means the index is almost always already built by the
-        // time a chat opens. It is only a warm-up, not a barrier: `ensureIndex`
-        // is @Synchronized and idempotent, so a caller that arrives first still
-        // gets a correct (merely slower) answer, and one that arrives during the
-        // build simply waits for it. Failure is non-fatal — an unbuilt index
-        // means models fall back to their unranked order, never a crash.
+        // [T-android-model-sort-anr] Warm release ranking index off-main AFTER ModelsDevApi.init.
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch {
             runCatching { com.openminis.app.provider.ModelReleaseIndex.warmUp() }
-                .onFailure {
-                    com.openminis.app.logging.AppLogger.warning(
-                        "MinisApp", "release-index warm-up failed: ${it.message}"
-                    )
-                }
+                .onFailure { AppLogger.warning("MinisApp", "release-index warm-up failed: ${it.message}") }
         }
 
-
-        // Initialize sandbox singletons (does not trigger extraction)
         RootfsManager.getInstance(this)
         ExecutionCoordinator.init(this)
         ExecutionCoordinator.envVarRepository = envVarRepository
-
-        // Privacy Mode store + redactor wiring. Mirrors iOS
-        // EnvVarPrivacyStore.init / EnvVarRedactor static handoff.
         com.openminis.app.data.EnvVarPrivacyStore.init(this)
         com.openminis.app.data.EnvVarRedactor.envVarRepository = envVarRepository
 
-        // Start network monitoring — mirrors iOS NetworkMonitor.shared.start().
-        // The monitor writes /etc/resolv.conf immediately and on every
-        // ConnectivityManager callback so shells inside the sandbox see fresh
-        // DNS servers after Wi-Fi ↔ cellular swaps or VPN toggles.
         networkMonitor.start(this)
-
-        // Register global /var/minis/{memory,skills,shared} bind mounts up-front
-        // so direct file I/O tools (file_read) resolve these paths even before
-        // PRoot has booted or any shell has started.
         PRootKernel.registerGlobalBindMounts(this)
 
-        // T219-1: load user-mounted external folders and seed PRoot's
-        // bindMounts before the first proot invocation, so the very first
-        // `shell_execute` already has `/var/minis/mounts/<name>/` visible.
-        // Entries whose SAF tree URI didn't resolve to a real POSIX path
-        // (cloud providers, unmounted SD card) are silently skipped by
-        // bindMountSpecs.
         mountedFoldersStore = MountedFoldersStore(this)
-        // T219-5: hand the singleton to PRootKernel so applyMountedFoldersSnapshot
-        // can read the live state, and wire an onChange callback so any UI CRUD
-        // (add/remove/rename/toggle) re-applies the snapshot.
-        // T277: PersistentShell reuses one PRoot process per chat session for the
-        // session's lifetime, so an applyMountedFoldersSnapshot call alone never
-        // reaches the live shell — proot's `-b` argv is frozen at spawn time.
-        // Kill any live shells so the next execute() rebuilds them with the
-        // updated bind set. Mount CRUD is a Settings-screen action; the user
-        // is not in chat mid-command, so this restart is safe and user-invisible.
         PRootKernel.mountedFoldersStore = mountedFoldersStore
         mountedFoldersStore.onChange = {
             PRootKernel.applyMountedFoldersSnapshot(this)
             ExecutionCoordinator.stopCurrentCommand()
         }
-        // T219-6: route launch-time seeding through applyMountedFoldersSnapshot
-        // so it (a) reads the live store consistently and (b) materializes the
-        // /var/minis/mounts/<name> placeholder dirs that PRoot's `-b` needs.
-        // Note: this runs before PRootKernel.boot, so rootfs may not yet exist —
-        // applyMountedFoldersSnapshot tolerates that case (mkdirs fails silently
-        // and PRootKernel.boot calls applyMountedFoldersSnapshot again at the
-        // end of boot to materialize the targets once rootfs is on disk).
         PRootKernel.applyMountedFoldersSnapshot(this)
+    }
 
-        // Register native_offload handlers and start the server eagerly —
-        // the server only needs the rootfs tmp directory, which can be
-        // materialized lazily. Starting here means the abstract socket is
-        // reachable even before any shell session is launched.
+    private fun registerAndStartOffloadServer() {
         NativeOffloadServer.register("android-alarm", AlarmOffloadHandler(this))
         NativeOffloadServer.register("android-calendar", CalendarOffloadHandler(this))
         NativeOffloadServer.register("android-clipboard", ClipboardOffloadHandler(this))
@@ -686,110 +445,46 @@ class MinisApp : Application(), ImageLoaderFactory {
         NativeOffloadServer.register("android-speak", SpeakOffloadHandler(this))
         NativeOffloadServer.register("android-speech", SpeechOffloadHandler(this))
         NativeOffloadServer.register("android-weather", WeatherOffloadHandler(this))
-        // T323: UI-layer automation backed by MinisAccessibilityService.
         NativeOffloadServer.register("android-a11y-cli", AccessibilityOffloadHandler(this))
         NativeOffloadServer.register("minis-model-use", ModelUseOffloadHandler(this, providerRepository))
-        // T-config: minis-config — agent-facing settings management
-        // (read/write registered ConfigFields with audit + revert).
-        // Mirrors iOS `config_offload_register()` in ISHKernel.m.
-        NativeOffloadServer.register(
-            "minis-config",
-            com.openminis.app.sandbox.offload.ConfigOffloadHandler(),
-        )
+        NativeOffloadServer.register("minis-config", com.openminis.app.sandbox.offload.ConfigOffloadHandler())
         NativeOffloadServer.register("minis-browser-use", BrowserUseOffloadHandler(this))
-        // T188: minis-sessions-cli — agent-side query of chat history.
-        // Registers next to the other minis-* tools so PRootKernel.
-        // installHandlerStubs() picks it up on the next rootfs boot
-        // (writes a 17-byte exit-0 stub at /usr/local/bin/minis-sessions-cli
-        // so PATH lookup succeeds; PRoot intercepts the execve before
-        // the stub runs and routes to this handler).
         NativeOffloadServer.register("minis-sessions-cli", SessionsOffloadHandler(chatRepository))
-        // [T-android-scheduled-tasks-full] minis-scheduled — create/list/run
-        // timed AI tasks (new chat / follow-up / re-run), mirroring the in-app
-        // Scheduled Tasks editor and the iOS Shortcuts intent set.
-        NativeOffloadServer.register(
-            "minis-scheduled",
-            com.openminis.app.sandbox.offload.ScheduledTaskOffloadHandler(this),
-        )
-        // T322: android-shizuku-cli — privileged Android control via Shizuku.
-        // The handler short-circuits with a typed error envelope when the
-        // user hasn't installed / started / authorized Shizuku, so we
-        // can register unconditionally; ShizukuManager.init below wires
-        // up the binder lifecycle listeners + StateFlow.
+        NativeOffloadServer.register("minis-scheduled", com.openminis.app.sandbox.offload.ScheduledTaskOffloadHandler(this))
         NativeOffloadServer.register("android-shizuku-cli", ShizukuOffloadHandler(this))
         com.openminis.app.offload.ShizukuManager.init(this)
 
-        // T-android-minis-debug-cli: shell-side CLI wrapper around the in-app
-        // DebugServer (127.0.0.1:5321) JSON-RPC. DEBUG-only — Release builds
-        // ship neither the DebugServer nor this handler, so the
-        // `/usr/local/bin/minis-debug` stub is also absent (PRootKernel.
-        // installHandlerStubs enumerates currently-registered handlers).
         if (BuildConfig.DEV_TOOLS) {
-            NativeOffloadServer.register(
-                "minis-debug",
-                com.openminis.app.sandbox.offload.DebugOffloadHandler(this),
-            )
+            NativeOffloadServer.register("minis-debug", com.openminis.app.sandbox.offload.DebugOffloadHandler(this))
         }
 
-        // [coexist-socket-fix] Per-package abstract socket name, and never let
-        // a bind failure take the whole app down: without the offload server
-        // only the minis-* / android-* shell CLIs are unavailable, whereas a
-        // throw here is a white-screen crash loop on every launch.
         try {
             NativeOffloadServer.start(RootfsManager.getInstance(this).rootfsDir, packageName)
         } catch (e: Exception) {
-            AppLogger.error(
-                "NativeOffloadServer",
-                "start failed — continuing without shell offload: ${e.message}",
-            )
+            AppLogger.error("NativeOffloadServer", "start failed — continuing without shell offload: ${e.message}")
         }
+    }
 
-        // Initialize session activity tracker for foreground service management
+    private fun initializeSessionTrackingAndNotifiers() {
         SessionActivityTracker.init(this)
-
-        // [T-android-session-paused-badge] Per-session badge-state queue
-        // displayed in the session-list cell corner. Init early so the
-        // session list can read persisted PAUSED badges on first compose.
         com.openminis.app.service.SessionBadgeStore.init(this)
 
-        // [T-android-session-paused-badge-hardkill] Reconcile PAUSED badges
-        // against the DB's interrupted-session set. The lifecycle-callback push
-        // (onActivityStarted, below) only fires on a graceful background→
-        // foreground round-trip; a hard kill (force-quit / process death) never
-        // runs it, so the badge would be missing after restart. The persisted
-        // message tail is the durable source of truth — scan it off-main and
-        // reconcile. Runs after init() so it merges with the restored queues.
+        // Defer DB-heavy cold-start scans past first frame paint.
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-            // Defer heavy `lastMessageTailPerSession()` table scan past cold-start
-            // frame paint so `observeSessions()` never queues behind message-tail JSON scans.
             kotlinx.coroutines.delay(2500L)
             val interrupted = runCatching { chatRepository.interruptedSessionIds() }.getOrElse { emptySet() }
-            // Exclude any session that is already actively streaming (defensive;
-            // at cold start this is empty, but keeps the rule "active ⇒ never
-            // paused" uniform with the foreground reconcile path).
             val active = SessionActivityTracker.activeSessions.value
             com.openminis.app.service.SessionBadgeStore.reconcileInterruptedSessions(interrupted - active)
         }
-
-        // [T-android-zombie-child-sweep] Remove hidden sub agent sessions whose
-        // parent is gone — killed mid-run, they are invisible to every picker
-        // and accumulate with no way for the user to reach them. Runs after the
-        // repository is up, on IO, and only at cold start: a restore happens
-        // within a single app run, so it can never straddle this.
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
             kotlinx.coroutines.delay(3000L)
             runCatching {
                 com.openminis.app.data.session.OrphanChildSweeper.sweep(this@MinisApp, chatRepository)
             }.onFailure {
-                com.openminis.app.logging.AppLogger.warning("OrphanSweep", "sweep threw: ${it.message}")
+                AppLogger.warning("OrphanSweep", "sweep threw: ${it.message}")
             }
         }
 
-        // T180-bg-notif: background-settings + task-completion notifier.
-        // The notifier is wired into SessionActivityTracker's completion
-        // hook so any session whose stream finishes (success or error)
-        // posts a tap-to-open notification when the app is backgrounded.
-        // Mirrors iOS BackgroundKeepAliveManager.postBackgroundTaskNotification.
         backgroundSettingsRepository = BackgroundSettingsRepository(this)
         backgroundTaskNotifier = BackgroundTaskNotifier(
             context = this,
@@ -801,10 +496,6 @@ class MinisApp : Application(), ImageLoaderFactory {
             backgroundTaskNotifier.notifyTaskCompleted(sessionId, isError)
         }
 
-        // [T-android-config-confirm-timeout] Wire the config-confirm background
-        // notifier into the (Context-free) gate, so a minis-config approval that
-        // is waiting while the app is backgrounded nudges the user before the
-        // 120s timeout. Mirrors iOS ConfigConfirmationGate.notifyIfBackgrounded.
         val configConfirmNotifier = com.openminis.app.notification.ConfigConfirmNotifier(
             context = this,
             backgroundSettings = backgroundSettingsRepository,
@@ -816,37 +507,18 @@ class MinisApp : Application(), ImageLoaderFactory {
         com.openminis.app.config.confirm.ConfigConfirmationGate.cancelNotification = {
             configConfirmNotifier.cancel(it)
         }
+    }
 
-        // Track foreground state via ActivityLifecycleCallbacks. Counting
-        // started/stopped balances out around configuration changes (the
-        // Activity is briefly destroyed-then-created, so the count would
-        // momentarily drop to zero if we used onResume/onPause). Started/
-        // stopped is more conservative — counts non-zero while the
-        // Activity is even partially visible.
+    private fun registerLifecycleAndSystemHooks() {
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
             override fun onActivityStarted(activity: Activity) {
                 val wasBackgrounded = foregroundActivityCount == 0
                 foregroundActivityCount++
                 if (wasBackgrounded) _isAppForegroundFlow.value = true
-                // T298: as soon as the app transitions background → foreground,
-                // clear any task-completed notifications still in the tray.
-                // The user is back in front of the app — there's no point
-                // making them swipe away a "task completed" entry for the
-                // result they're about to look at directly.
                 if (wasBackgrounded && ::backgroundTaskNotifier.isInitialized) {
                     backgroundTaskNotifier.cancelAllCompletedNotifications()
                 }
-                // [T-android-session-paused-badge-hardkill] On foreground,
-                // reconcile PAUSED badges from the DB tail (authoritative
-                // interrupted-state) instead of the old heuristic that marked
-                // every STILL-ACTIVE session paused. That heuristic was wrong:
-                // a session still in activeSessions after backgrounding kept
-                // RUNNING (keep-alive) — it is executing, not paused — which
-                // surfaced a ⏸ badge on a live, spinning session. The DB tail
-                // only looks "interrupted" for a session whose loop is actually
-                // stranded; we additionally exclude currently-active sessions so
-                // a mid-loop running session is never flagged.
                 if (wasBackgrounded) {
                     kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                         val interrupted = runCatching { chatRepository.interruptedSessionIds() }.getOrElse { emptySet() }
@@ -856,34 +528,12 @@ class MinisApp : Application(), ImageLoaderFactory {
                 }
             }
             override fun onActivityResumed(activity: Activity) {
-                // T-android-crash-freq-share: if checkAtLaunch flagged a
-                // recent burst, show the share-logs dialog on the first
-                // Activity that resumes. One-shot — clears the pending
-                // list internally so config-change re-resumes don't
-                // re-prompt. Safe no-op when nothing is pending.
                 com.openminis.app.crash.CrashFrequencyDetector.maybeShowOnActivity(activity)
-                // T219-1: re-probe mounted-folder writability on every
-                // foreground resume so OS permission revocations (user
-                // toggled "Allow access" off in system Files, removable
-                // storage unmounted, etc.) propagate into the UI badge
-                // and the read-only enforcement gate. Mirrors iOS
-                // MountedFoldersManager.refreshAllWritability().
                 kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                     runCatching { mountedFoldersStore.refreshWritability() }
                 }
-                // [T-android-models-refresh-window] Re-check the model lists on
-                // a foreground return. The call is internally gated by a
-                // 6-hour rolling window, so this is a cheap no-op on ordinary
-                // app switches and only actually fetches when the window has
-                // expired while the app sat in the background.
-                //
-                // This is what closes the reported gap: a provider that turns
-                // a model on mid-session (GitHub enabling gpt-6-astra
-                // account-wide) used to be invisible until the next calendar
-                // day, because launch was the only trigger. iOS hooks the same
-                // event (scenePhase -> .active, fe625d5fd).
                 providerRepository.refreshAllModelsIfNeeded(
-                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
+                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO),
                 )
             }
             override fun onActivityPaused(activity: Activity) {}
@@ -891,9 +541,6 @@ class MinisApp : Application(), ImageLoaderFactory {
                 foregroundActivityCount = (foregroundActivityCount - 1).coerceAtLeast(0)
                 if (foregroundActivityCount == 0) {
                     _isAppForegroundFlow.value = false
-                    // [T-android-config-confirm-timeout] The user switched away
-                    // while a config-confirm dialog may still be showing — nudge
-                    // them so they can come back before the 120s timeout.
                     com.openminis.app.config.confirm.ConfigConfirmationGate.notifyPending()
                 }
             }
@@ -901,40 +548,23 @@ class MinisApp : Application(), ImageLoaderFactory {
             override fun onActivityDestroyed(activity: Activity) {}
         })
 
-        // Initialize offload permission manager
         OffloadPermissionManager.init(this)
-
-        // Initialize speech-recognition adapter layer (system + provider engines).
         com.openminis.app.speech.SpeechRecognitionManager.init(this)
-
-        // Refresh model lists once per calendar day (mirrors iOS MinisApp.swift).
-        // Runs per-instance in parallel; `autoRefreshModels` skips instances with custom models.
         providerRepository.refreshAllModelsIfNeeded(
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO),
         )
 
-        // Propagate system timezone and HTTP-proxy changes into the sandbox.
-        // iOS recomputes TZ for every command (ISHShellExecutor.m:335-353);
-        // here we update PRootKernel.customEnvironment and push `export …`
-        // into every live shell so interactive sessions pick up the change
-        // without a restart.
         val sandboxSystemReceiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context, intent: Intent) {
                 val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
                 when (intent.action) {
                     Intent.ACTION_TIMEZONE_CHANGED -> scope.launch {
-                        try {
-                            ExecutionCoordinator.broadcastTimezoneChange()
-                        } catch (t: Throwable) {
-                            Log.w("MinisApp", "broadcastTimezoneChange failed: ${t.message}")
-                        }
+                        runCatching { ExecutionCoordinator.broadcastTimezoneChange() }
+                            .onFailure { Log.w("MinisApp", "broadcastTimezoneChange failed: ${it.message}") }
                     }
                     android.net.Proxy.PROXY_CHANGE_ACTION -> scope.launch {
-                        try {
-                            ExecutionCoordinator.broadcastProxyChange()
-                        } catch (t: Throwable) {
-                            Log.w("MinisApp", "broadcastProxyChange failed: ${t.message}")
-                        }
+                        runCatching { ExecutionCoordinator.broadcastProxyChange() }
+                            .onFailure { Log.w("MinisApp", "broadcastProxyChange failed: ${it.message}") }
                     }
                 }
             }
@@ -947,7 +577,6 @@ class MinisApp : Application(), ImageLoaderFactory {
             },
         )
 
-        // Debug server: only start in debug builds (NEVER in release)
         if (BuildConfig.DEV_TOOLS) {
             try {
                 com.openminis.app.debug.DebugServer(this).start()
@@ -955,17 +584,6 @@ class MinisApp : Application(), ImageLoaderFactory {
                 Log.w("MinisApp", "Failed to start debug server: ${e.message}")
             }
         }
-
-        // T268: one-shot migration of pre-T266 internal alarms into the
-        // system Clock app. Pre-T266 builds wrote alarms into Minis's own
-        // SharedPreferences + AlarmManager; T266 retired that path but old
-        // installs still have ghost entries that fire only inside Minis.
-        // Replay each future-dated entry through the same SET_ALARM /
-        // SET_TIMER intents the new path uses, then clear prefs so the
-        // migration runs at most once. Wrapped in runCatching so an
-        // unexpected prefs shape never blocks app launch.
-        runCatching { migrateGhostAlarms() }
-            .onFailure { Log.w("MinisApp", "ghost alarm migration failed: ${it.message}") }
     }
 
     /**

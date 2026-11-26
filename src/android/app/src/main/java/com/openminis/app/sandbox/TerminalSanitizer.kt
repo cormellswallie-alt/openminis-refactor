@@ -13,6 +13,8 @@ object TerminalSanitizer {
     private val ANSI_REGEX = Regex(
         """\x1B(?:\[[0-9;]*[A-Za-z]|\][^\x07]*(?:\x07|\x1B\\)|\[[0-9;]*m|[()][0-2AB]|[A-Za-z])"""
     )
+    private val REPEATED_NULL_REGEX = Regex("(?:null){2,}")
+    private val EXCESS_BLANK_LINES_REGEX = Regex("\n{3,}")
 
     /**
      * [T-android-longsession-sanitize-pretrim / GH#326] Ceiling applied to
@@ -58,26 +60,44 @@ object TerminalSanitizer {
         // and that middle was never going to be shown.
         val pre = truncateIfNeeded(raw, PRE_SANITIZE_MAX_CHARS)
 
-        // Pass 1: CR folding
-        val crFolded = foldCarriageReturns(pre)
+        // Pass 1: CR folding (skip full split+copy when no carriage return exists)
+        val crFolded = if ('\r' in pre) foldCarriageReturns(pre) else pre
 
-        // Pass 2: Strip ANSI sequences
-        val stripped = ANSI_REGEX.replace(crFolded, "")
+        // Pass 2: Strip ANSI sequences (skip regex scan when no ESC byte exists)
+        val stripped = if ('\u001B' in crFolded) ANSI_REGEX.replace(crFolded, "") else crFolded
 
         // Pass 3: Remove null bytes and non-printable control chars (except \n \t)
-        val cleaned = stripped.filter { it == '\n' || it == '\t' || it.code >= 0x20 }
+        val cleaned = if (hasDisallowedControlChar(stripped)) {
+            stripped.filter { it == '\n' || it == '\t' || it.code >= 0x20 }
+        } else {
+            stripped
+        }
 
-        // Pass 4: Remove "null" artifacts from PRoot/pipe issues
-        // - Lines that are entirely "null"
-        // - Runs of repeated "null" (e.g., "nullnullnull" → "")
-        // - Lines that are just "null" appended to a prefix (e.g., "file:nullnullnull")
-        val noNullLines = cleaned.lines()
-            .filter { it.trim() != "null" }
-            .joinToString("\n")
-            .replace(Regex("(?:null){2,}"), "") // Remove runs of 2+ consecutive "null"
+        // Pass 4: Remove "null" artifacts from PRoot/pipe issues (skip split/regex when absent)
+        val noNullLines = if ("null" in cleaned) {
+            val filtered = cleaned.lines()
+                .filter { it.trim() != "null" }
+                .joinToString("\n")
+            if ("nullnull" in filtered) REPEATED_NULL_REGEX.replace(filtered, "") else filtered
+        } else {
+            cleaned
+        }
 
         // Pass 5: Collapse excessive blank lines (3+ consecutive → 2)
-        return noNullLines.replace(Regex("\n{3,}"), "\n\n").trim()
+        val collapsed = if ("\n\n\n" in noNullLines) {
+            EXCESS_BLANK_LINES_REGEX.replace(noNullLines, "\n\n")
+        } else {
+            noNullLines
+        }
+        return collapsed.trim()
+    }
+
+    private fun hasDisallowedControlChar(text: String): Boolean {
+        for (i in 0 until text.length) {
+            val c = text[i]
+            if (c.code < 0x20 && c != '\n' && c != '\t') return true
+        }
+        return false
     }
 
     /**
@@ -183,5 +203,82 @@ object TerminalSanitizer {
                 for (k in 0 until keep) buffer.setCharAt(k, ' ')
             }
         }
+    }
+}
+
+/**
+ * Memory-bounded output accumulator for shell executors.
+ *
+ * Keeps exact output verbatim up to [maxChars] (default 500k, safely above
+ * [TerminalSanitizer]'s 400k pre-sanitize ceiling). Beyond [maxChars], retains
+ * the head half plus a rolling tail half so a runaway multi-hundred-MB command
+ * dump cannot OOM the Android process.
+ */
+internal class BoundedHeadTailBuffer(
+    private val maxChars: Int = DEFAULT_MAX_CHARS,
+) {
+    private val headCap: Int = maxChars / 2
+    private val tailCap: Int = maxChars - headCap
+    private val head = StringBuilder()
+    private val tail = StringBuilder()
+    private var overflowing = false
+    private var totalChars = 0L
+
+    val isNotEmpty: Boolean get() = totalChars > 0L
+
+    fun lastCharOrNull(): Char? = when {
+        overflowing && tail.isNotEmpty() -> tail[tail.length - 1]
+        head.isNotEmpty() -> head[head.length - 1]
+        else -> null
+    }
+
+    fun append(chunk: String) {
+        if (chunk.isEmpty()) return
+        totalChars += chunk.length
+        if (!overflowing) {
+            if (head.length + chunk.length <= maxChars) {
+                head.append(chunk)
+                return
+            }
+            // Transition to bounded head+tail mode once total exceeds maxChars.
+            val combined = StringBuilder(head.length + chunk.length).append(head).append(chunk)
+            head.setLength(0)
+            head.append(combined, 0, minOf(headCap, combined.length))
+            val tailStart = (combined.length - tailCap).coerceAtLeast(head.length)
+            tail.setLength(0)
+            tail.append(combined, tailStart, combined.length)
+            overflowing = true
+            return
+        }
+        if (chunk.length >= tailCap) {
+            tail.setLength(0)
+            tail.append(chunk, chunk.length - tailCap, chunk.length)
+        } else {
+            tail.append(chunk)
+            val excess = tail.length - tailCap
+            if (excess > 0) {
+                tail.delete(0, excess)
+            }
+        }
+    }
+
+    fun append(ch: Char) {
+        append(ch.toString())
+    }
+
+    override fun toString(): String {
+        if (!overflowing) return head.toString()
+        val omitted = (totalChars - head.length - tail.length).coerceAtLeast(0L)
+        return buildString(head.length + tail.length + 48) {
+            append(head)
+            append("\n\n[... ")
+            append(omitted)
+            append(" characters omitted ...]\n\n")
+            append(tail)
+        }
+    }
+
+    companion object {
+        const val DEFAULT_MAX_CHARS = 500_000
     }
 }

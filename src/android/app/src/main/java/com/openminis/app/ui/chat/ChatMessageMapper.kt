@@ -110,6 +110,8 @@ object ChatMessageMapper {
                             if (toolId.startsWith("thinking_")) continue
                             val toolInput = value.optString("input", "")
                             val result = toolResultMap[toolId]
+                            val extractedSteer = result?.output?.let { ToolResultSteering.extractForDisplay(it) }
+                            val displayOutput = extractedSteer?.cleanToolOutput ?: result?.output.orEmpty()
                             val pageURL = value.optString("pageURL", "").ifEmpty { null }
                             val imgPath = value.optString("imageFilePath", "").ifEmpty { null }
                             blocks.add(
@@ -119,12 +121,12 @@ object ChatMessageMapper {
                                     toolName = value.optString("name", ""),
                                     toolTitle = value.optString("description", ""),
                                     toolArgs = toolInput,
-                                    content = result?.output?.lines()?.takeLast(80)?.joinToString("\n") ?: "",
+                                    content = displayOutput.lines().takeLast(80).joinToString("\n"),
                                     toolStatus = when {
                                         result == null -> ToolBlockStatus.SUCCESS
                                         !result.success && (
-                                            result.output.startsWith(cancelledMarker) ||
-                                                result.output.startsWith(LEGACY_CANCELLED_MARKER)
+                                            displayOutput.startsWith(cancelledMarker) ||
+                                                displayOutput.startsWith(LEGACY_CANCELLED_MARKER)
                                         ) -> ToolBlockStatus.CANCELLED
                                         result.success -> ToolBlockStatus.SUCCESS
                                         else -> ToolBlockStatus.FAILED
@@ -134,6 +136,18 @@ object ChatMessageMapper {
                                     thoughtSignature = value.optString("thoughtSignature", "").ifEmpty { null },
                                 )
                             )
+                            extractedSteer?.steeringText?.let { steerText ->
+                                blocks.add(
+                                    AssistantBlock(
+                                        id = "steer_restored_${entity.id}_$toolId",
+                                        kind = "info",
+                                        toolName = "steer",
+                                        toolTitle = "Steering",
+                                        content = ToolResultSteering.formatInfoLabel(listOf(steerText)),
+                                        toolArgs = steerText,
+                                    )
+                                )
+                            }
                         }
                         "mediaRef" -> {
                             if (entity.role != "user") continue

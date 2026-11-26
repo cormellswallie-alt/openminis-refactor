@@ -183,6 +183,7 @@ internal class SubAgentSessionCoordinator(
          * statement of what it was asked to do outside its own transcript.
          */
         title: String,
+        accessMode: com.openminis.app.agent.SubAgentAccessMode = com.openminis.app.agent.SubAgentAccessMode.WORKSPACE_WRITE,
     ): ChatViewModel =
         // [T-android-vm-store-dual-pool] A sub agent is CREATED here, so this is
         // where the CHILD pool is claimed. The tag is sticky, so the read-only
@@ -196,6 +197,7 @@ internal class SubAgentSessionCoordinator(
                 tierUsed = HelperModelTier.PRIMARY,
                 agentName = subAgent.name.takeIf { !subAgent.isBuiltIn },
                 agentInstructions = subAgent.instructions,
+                accessMode = accessMode,
             )
             it.adoptBrowserTabPool(browserTabPool())
         }
@@ -257,6 +259,8 @@ internal class SubAgentSessionCoordinator(
         var toolId = ""
         var title = ""
         var agentName: String? = null
+        var origAccessMode = com.openminis.app.agent.SubAgentAccessMode.WORKSPACE_WRITE
+        var origMaxTurns = hr.MAX_TURNS
         outer@ for (m in messages()) {
             if (m.role != "assistant") continue
             for (b in m.toolBlocks) {
@@ -267,6 +271,10 @@ internal class SubAgentSessionCoordinator(
                 toolId = b.id
                 title = b.toolTitle.ifEmpty { o.optString("title", "") }
                 agentName = o.optString("agent", "").ifEmpty { null }
+                runCatching { hr.parseArgs(b.toolArgs) }.getOrNull()?.let { parsed ->
+                    origAccessMode = parsed.accessMode
+                    parsed.maxTurnsOverride?.let { origMaxTurns = it }
+                }
                 break@outer
             }
         }
@@ -317,7 +325,7 @@ internal class SubAgentSessionCoordinator(
                 currentCoroutineContext().ensureActive()
                 val childVm = withContext(Dispatchers.Main) {
                     createChildViewModel(
-                        childId, parentSid, toolId, job.id, subAgent, hr.MAX_TURNS, title,
+                        childId, parentSid, toolId, job.id, subAgent, origMaxTurns, title, origAccessMode,
                     )
                 }
                 registry.markRunning(job.id, childId) {
@@ -826,11 +834,18 @@ internal class SubAgentSessionCoordinator(
                 queuedBehind = registry.runningChildJobCount + registry.queuedCount(parentSid) - 1,
                 detail = detail,
             )
-            withContext(Dispatchers.Main) {
+            val queuedSnapshot = synchronized(toolBlocks) {
                 val i = toolBlocks.indexOfFirst { it.id == toolId }
                 if (i >= 0) {
                     toolBlocks[i] = toolBlocks[i].copy(content = json, toolStatus = ToolBlockStatus.RUNNING)
-                    publishBlocks(assistantId, currentText, toolBlocks)
+                    ArrayList(toolBlocks)
+                } else {
+                    null
+                }
+            }
+            if (queuedSnapshot != null) {
+                withContext(Dispatchers.Main) {
+                    publishBlocks(assistantId, currentText, queuedSnapshot)
                 }
             }
             AppLogger.info(TAG, "[subagent_task] QUEUED tool=${toolId.take(12)} behind ${registry.runningChildJobCount} running")
@@ -889,10 +904,11 @@ internal class SubAgentSessionCoordinator(
             val pinnedGroupLevel = subAgent.modelGroupId
                 ?.takeIf { subAgent.modelEntryId == null } // [subagent-model-pin]
                 ?.let { providerRepository.group(it) }?.defaultThinkingLevel
-            val level = subAgent.thinkingLevelOverride
+            val level = args.effortOverride
+                ?: subAgent.thinkingLevelOverride
                 ?: pinnedGroupLevel
                 ?: parentRow?.thinkingOverride?.let { ThinkingLevel.decoded(it) }
-            if (level != null && level.isEnabled) {
+            if (level != null && (level.isEnabled || args.effortOverride == ThinkingLevel.OFF)) {
                 chatRepository.dao.updateThinkingOverride(child.id, level.name)
                 seededThinking = level.name
             }
@@ -921,11 +937,12 @@ internal class SubAgentSessionCoordinator(
             ).also {
                 it.helperConfig = HelperConfig(
                     parentSessionId = parentSid, parentToolUseId = toolId, jobId = job.id,
-                    maxTurns = hr.MAX_TURNS, title = title, tierUsed = resolution.tierUsed,
+                    maxTurns = args.maxTurnsOverride ?: hr.MAX_TURNS, title = title, tierUsed = resolution.tierUsed,
                     // [T-sub-agents-v1] Identity + the user's own instructions
                     // for this definition; the built-in carries none.
                     agentName = subAgent.name.takeIf { !subAgent.isBuiltIn },
                     agentInstructions = subAgent.instructions,
+                    accessMode = args.accessMode,
                 )
                 it.adoptBrowserTabPool(browserTabPool())
             }
@@ -957,11 +974,18 @@ internal class SubAgentSessionCoordinator(
                 writeDelegateBlock(toolId, content, status)
                 return
             }
-            val i = toolBlocks.indexOfFirst { it.id == toolId }
-            if (i >= 0) toolBlocks[i] = toolBlocks[i].copy(content = content, toolTitle = toolBlocks[i].toolTitle.ifEmpty { title })
+            val updatedSnapshot = synchronized(toolBlocks) {
+                val i = toolBlocks.indexOfFirst { it.id == toolId }
+                if (i >= 0) {
+                    toolBlocks[i] = toolBlocks[i].copy(content = content, toolTitle = toolBlocks[i].toolTitle.ifEmpty { title })
+                    ArrayList(toolBlocks)
+                } else {
+                    null
+                }
+            }
             withContext(Dispatchers.Main) {
                 writeDelegateBlock(toolId, content, status)
-                if (i >= 0) publishBlocks(assistantId, currentText, toolBlocks)
+                if (updatedSnapshot != null) publishBlocks(assistantId, currentText, updatedSnapshot)
             }
         }
         fun childCurrentTool(): Pair<String, String> {

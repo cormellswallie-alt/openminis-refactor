@@ -189,6 +189,8 @@ object ChatPayloadCodec {
     fun friendlyToolTitle(toolName: String): String = when (toolName) {
         "shell_execute" -> "Execute Shell"
         "file_read" -> "Read File"
+        "file_search" -> "Search Files"
+        "repo_map" -> "Repo Map"
         "file_write" -> "Write File"
         "file_edit" -> "Edit File"
         "browser_use" -> "Browse Web"
@@ -197,6 +199,7 @@ object ChatPayloadCodec {
         "memory_get" -> "Read Memory"
         "web_search" -> "Search Web"
         "ask_user" -> "Ask User"
+        "update_steps" -> "Task Checklist"
         else -> toolName
             .split('_')
             .filter { it.isNotEmpty() }

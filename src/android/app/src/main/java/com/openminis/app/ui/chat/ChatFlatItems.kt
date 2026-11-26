@@ -4,272 +4,19 @@ package com.openminis.app.ui.chat
 // extracted verbatim from ChatScreen.kt: FlatChatItem (sealed), mergeStreamingOverlay,
 // buildFlatChatItems. Full import block copied (unused=warnings); all internal.
 
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.graphics.BitmapFactory
-import android.net.Uri
-import android.provider.OpenableColumns
-import java.io.File
-import androidx.core.content.ContextCompat
-import androidx.compose.foundation.Image
-import androidx.compose.ui.graphics.asAndroidBitmap
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.layer.drawLayer
-import androidx.compose.ui.graphics.rememberGraphicsLayer
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.foundation.gestures.verticalDrag
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.AudioFile
-import androidx.compose.material.icons.filled.FolderZip
-import androidx.compose.material.icons.filled.PictureAsPdf
-import androidx.compose.material.icons.filled.VideoFile
-import androidx.compose.material.icons.automirrored.filled.Article
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.conflate
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.filterNotNull
-import kotlinx.coroutines.flow.sample
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import androidx.compose.runtime.withFrameNanos
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsFocusedAsState
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AppShortcut
-import androidx.compose.material.icons.filled.ArrowCircleUp
-import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.AttachFile
-import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.Extension
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Block
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ChevronLeft
-import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.DataUsage
-import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.Error
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.filled.PhotoLibrary
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Language
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.CloseFullscreen
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Lightbulb
-import androidx.compose.material.icons.filled.Psychology
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.StopCircle
-import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.RadioButtonChecked
-import androidx.compose.material.icons.filled.RadioButtonUnchecked
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import com.openminis.app.BuildConfig
-import com.openminis.app.R
-import com.openminis.app.data.FileMentionIndex
-import com.openminis.app.logging.AppLogger
-import com.openminis.app.ui.components.MinisAlertDialog
-import com.openminis.app.ui.components.MinisMenu
-import com.openminis.app.ui.components.MinisMenuDivider
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Surface
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.TextFieldDefaults
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.compositionLocalOf
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.produceState
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.onPlaced
-import androidx.compose.ui.layout.boundsInWindow
-import androidx.compose.ui.layout.positionInWindow
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onKeyEvent
-import androidx.compose.ui.input.key.type
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.BlendMode
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.pluralStringResource
-import androidx.compose.ui.res.stringResource
-import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.statusBars
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
-import androidx.compose.material.icons.filled.TextFields
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.layout.IntrinsicSize
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.material.icons.filled.Cancel
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.outlined.Public
-import androidx.compose.material.icons.filled.SkipNext
-import androidx.compose.material.icons.filled.SkipPrevious
-import androidx.compose.material.icons.automirrored.filled.NoteAdd
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.EditNote
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.ArrowCircleDown
-import androidx.compose.material.icons.filled.AccountTree
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.text.withStyle
-import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
-import com.openminis.app.offload.OffloadPermissionManager
-import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.m3.Markdown
-import com.mikepenz.markdown.m3.markdownColor
-import com.mikepenz.markdown.m3.markdownTypography
-import org.intellij.markdown.ast.ASTNode
-import org.intellij.markdown.ast.getTextInNode
-import com.openminis.app.data.model.LLMModel
-import com.openminis.app.data.model.ModelEntry
-import com.openminis.app.data.model.ModelGroup
-import com.openminis.app.data.model.ProviderConfig
-import com.openminis.app.data.model.ProviderType
-import com.openminis.app.data.model.RoutingStrategy
 import com.openminis.app.data.model.ThinkingLevel
-import com.openminis.app.data.repository.ChatRepository
-import com.openminis.app.data.repository.MemoryRepository
-import com.openminis.app.data.repository.ProviderRepository
-import com.openminis.app.ui.browser.BrowserSheet
-import com.openminis.app.ui.theme.ChatColors
-import com.openminis.app.ui.components.MinisTextButton
 
 internal sealed class FlatChatItem {
     abstract val key: String
@@ -599,6 +346,67 @@ internal fun streamingOverlaySubset(
 }
 
 /**
+ * Zero-copy random-access view overlaying [streaming] deltas on top of [base] without
+ * cloning the untouched message prefix on every 80ms streaming tick.
+ */
+internal class OverlayMessageListView(
+    private val base: List<ChatMessage>,
+    private val streaming: Map<String, StreamingDelta>,
+) : AbstractList<ChatMessage>() {
+    override val size: Int get() = base.size
+
+    override fun get(index: Int): ChatMessage {
+        val m = base[index]
+        val delta = streaming[m.id] ?: return m
+        return m.copy(
+            content = delta.content,
+            isStreaming = true,
+            toolBlocks = delta.toolBlocks,
+            isAwaitingModelResponse = delta.isAwaitingModelResponse,
+        )
+    }
+}
+
+/**
+ * Collect floating tool blocks across persisted [messages] overlaid with [streaming]
+ * without allocating a copied message list or intermediate filter/flatMap lists.
+ */
+internal fun collectLiveFloatingToolBlocks(
+    messages: List<ChatMessage>,
+    streaming: Map<String, StreamingDelta>,
+): List<AssistantBlock> {
+    val out = ArrayList<AssistantBlock>()
+    for (m in messages) {
+        if (m.role != "assistant") continue
+        val blocks = streaming[m.id]?.toolBlocks ?: m.toolBlocks
+        for (tb in blocks) {
+            if (tb.toolStatus != null && tb.kind != "thinking" && tb.kind != "info") {
+                out.add(tb)
+            }
+        }
+    }
+    return out
+}
+
+/**
+ * Incrementally merge the live tail row keys into a pre-built [frozenKeyIndex].
+ * Returns [frozenKeyIndex] directly (zero allocation) when [liveRows] is empty.
+ */
+internal fun mergeFlatRowKeyIndex(
+    frozenKeyIndex: Map<String, Int>,
+    frozenSize: Int,
+    liveRows: List<FlatChatItem>,
+): Map<String, Int> {
+    if (liveRows.isEmpty()) return frozenKeyIndex
+    val merged = HashMap<String, Int>(frozenKeyIndex.size + liveRows.size)
+    merged.putAll(frozenKeyIndex)
+    for (i in liveRows.indices) {
+        merged[liveRows[i].key] = frozenSize + i
+    }
+    return merged
+}
+
+/**
  * [T-android-fab-up-target] True when this message renders as a real user
  * bubble — something the user actually typed and can navigate back to.
  *
@@ -701,24 +509,8 @@ internal fun buildFlatChatItems(
                 out.add(dedupe(FlatChatItem.ScheduledTaskCardItem(message, sched)))
                 continue
             }
-            // [T-p2-agent-callback] A system-written agent callback renders as
-            // its own card — every one of them, progress and final alike.
-            //
-            // [T-android-subagent-callback-visible] This used to be deduped:
-            // a callback was hidden whenever the transcript still held the
-            // delegate block for that child, since the block already shows
-            // status, tier, elapsed and opens the same detail. Defensible on
-            // its own terms, but it left the parent transcript with no record
-            // that the sub agent reported back AT ALL — a block quietly
-            // changing state is not the same as seeing the hand-off happen
-            // where it happened, in order, among the other turns. With the
-            // block present (the normal case for a delegate_task run) neither
-            // the progress reports nor the final result had any entry in the
-            // conversation, which is the report: "子任务汇报消息没有像 iOS
-            // 一样落一个 UI 入口在消息中". iOS dropped the same dedup in
-            // 8417eb68f (progress) and 7985d161e (final); this is the port.
-            // The child-id scan that fed the dedup walked every message and
-            // block on each flatten and nothing reads it now, so it goes too.
+            // [T-p2-agent-callback] [T-android-subagent-callback-visible] A system-written agent callback
+            // renders as its own card — every one of them, progress and final alike.
             val callback = if (com.openminis.app.agent.jobs.AgentCallback.isCallbackText(message.content))
                 com.openminis.app.agent.jobs.AgentCallback.parse(message.content) else null
             if (callback != null) {
@@ -744,18 +536,9 @@ internal fun buildFlatChatItems(
                 .joinToString("\n\n") { it.content }
             if (parts.isNotEmpty()) parts else message.content
         }
-        // T83: when Resume creates a fresh assistant bubble after the user
-        // stopped a streaming turn, the previous (cancelled) assistant
-        // message is right before this one in the list. Visually they should
-        // read as one continuous turn — suppress the duplicate "Minis"
-        // header. Skip system rows when looking back since they render as
-        // dividers, not as separate speaker turns. iOS achieves this by
-        // reusing the existing ChatMessage in runAgentLoop(resumingAt:);
-        // we reach the same end-result at the render layer.
-        // [T-assistant-header-dedup] An agent callback is written by the
-        // system, not typed by the person, so it does not restart the
-        // speaker sequence: the reply to it sits under the (updated) block
-        // or the callback card without a second avatar header.
+        // T83 [T-assistant-header-dedup] when Resume creates a fresh assistant bubble after the user
+        // stopped a streaming turn, the previous (cancelled) assistant message is right before this one in
+        // the list.
         val prevNonSystem = (idx - 1 downTo 0).asSequence()
             .map { messages[it] }
             .firstOrNull { it.role != "system" && !com.openminis.app.agent.jobs.AgentCallback.isCallbackText(it.content) }
@@ -783,45 +566,9 @@ internal fun buildFlatChatItems(
                 "text" -> {
                     if (block.content.isNotEmpty()) {
                         val isLastText = index == lastTextIdx
-                        // Pattern A: split this text block's content into
-                        // independent markdown fragments so each becomes its
-                        // own LazyColumn item. Frozen prefix fragments are
-                        // anchored separately by LazyList; only the trailing
-                        // live fragment can change height during streaming.
-                        //
-                        // [T-android-defensive-fragment-merge] For a FROZEN
-                        // (non-streaming) message, coalesce adjacent
-                        // plain-text fragments so a long reply produces a
-                        // handful of rows instead of dozens — cuts cold-open
-                        // full-build row count ~8x and eases GC pressure on
-                        // low-memory devices. The live streaming tail message
-                        // keeps fine-grained fragments so only the trailing
-                        // paragraph re-parses per token (Pattern A jank
-                        // optimization preserved). Code fences stay standalone
-                        // either way.
-                        // [T-android-largecontent-guard-position] Apply the
-                        // 32K large-content guard HERE, on the whole block,
-                        // before it is split.
-                        //
-                        // The guard (LargeContentGuard / shouldCollapse) runs
-                        // per FlatChatItem, but for assistant text the items
-                        // are post-split fragments capped at 2000 chars by
-                        // coalesceMarkdownFragments — so for ordinary prose
-                        // nothing reaching it was ever large enough and the
-                        // protection never engaged, no matter how big the
-                        // message. (It still fired for one shape: a single
-                        // >32K paragraph with no blank line, which coalesce
-                        // keeps whole. See LargeContentGuardThresholdTest.)
-                        //
-                        // Emitting ONE un-split item for an oversized frozen
-                        // block is what lets the guard see the real size and
-                        // show its collapsed badge, and it also skips the
-                        // split/coalesce allocation storm over a 200KB string
-                        // that the user has not asked to expand.
-                        //
-                        // Frozen only: collapsing mid-stream would flicker as
-                        // the buffer grows past the threshold, which is the
-                        // same reason shouldCollapse() ignores streaming.
+                        // [T-android-defensive-fragment-merge] [T-android-largecontent-guard-position] Pattern A: split
+                        // this text block's content into independent markdown fragments so each becomes its own LazyColumn
+                        // item.
                         val blockIsStreaming = message.isStreaming && isLastText
                         if (!blockIsStreaming &&
                             block.content.length > LARGE_MESSAGE_THRESHOLD_CHARS
@@ -838,34 +585,8 @@ internal fun buildFlatChatItems(
                             return@forEachIndexed
                         }
                         val rawFragments = splitMarkdownIntoBlockTexts(block.content)
-                        // [T-android-stream-end-reflow-flicker-v18] Preserve
-                        // per-fragment FlatChatItem keys across the
-                        // streaming→idle boundary. Previously the trailing
-                        // text block kept rawFragments only while
-                        // `message.isStreaming==true`; the moment it flipped
-                        // false the fragments coalesced into fewer rows, all
-                        // mdblock:msgId:parentBlockId:N keys for N >= K
-                        // suddenly vanished from the flatItems list. That
-                        // wipe-and-rebuild was the "整个页面像被重刷" the
-                        // user reported — LazyColumn lost every key it was
-                        // using to anchor the viewport, fell back to numeric
-                        // firstVisibleItemIndex, and parked the viewport on
-                        // whatever row happened to take that numeric slot
-                        // (often the previous assistant message).
-                        //
-                        // Fix: keep the live (== last in the list) text block
-                        // on rawFragments regardless of isStreaming. The
-                        // boundary that actually warrants coalesce is "a
-                        // NEWER message exists below this one" — i.e. a
-                        // subsequent user turn pushed this assistant turn
-                        // into history. Until then, the same key set the
-                        // user was scrolled into stays valid.
-                        // [T-android-flatitems-sublist-cme] Index-based scan
-                        // instead of messages.subList(idx+1, size).all{} — a
-                        // subList is a live view sharing the parent's modCount,
-                        // which threw ConcurrentModificationException when the
-                        // backing list changed under it. A plain index loop
-                        // touches no view.
+                        // [T-android-stream-end-reflow-flicker-v18] [T-android-flatitems-sublist-cme] Preserve
+                        // per-fragment FlatChatItem keys across the streaming→idle boundary.
                         val isLastAssistantTurn = idx == messages.lastIndex ||
                             (idx + 1 until messages.size).all { messages[it].role != "assistant" }
                         val fragments = if (isLastText && isLastAssistantTurn) {
@@ -923,23 +644,9 @@ internal fun buildFlatChatItems(
             }
         }
 
-        // Typing indicator: show while streaming and either (a) no visible
-        // content has arrived yet, or (b) we're in the network gap waiting
-        // on the model's next response (e.g. after tool results were sent
-        // back). Mirrors iOS: `isActiveMessage && (!hasVisibleContent || isAwaitingModelResponse)`.
-        //
-        // [T-android-typing-hidden-thinking] "Visible" must mean WILL RENDER,
-        // not merely "exists". Two blocks used to count as content while
-        // drawing nothing, killing the indicator into a blank gap ("thinking
-        // 还没等到内容出现就消失了"):
-        //  - a "thinking" block when the message's thinking level is OFF —
-        //    forced-reasoning models (MiniMax M2, Grok…) still stream
-        //    reasoning_content, but ChatScreen suppresses the row when the
-        //    snapshot level is disabled (T300), so the user saw nothing;
-        //  - a freshly-created "text" block whose content is still empty.
-        // A null thinkingLevel snapshot falls back to the chat's CURRENT
-        // level in the renderer, which this pure builder can't read — treat
-        // it as visible (legacy messages; conservative, old behavior).
+        // [T-android-typing-hidden-thinking] T300 Typing indicator: show while streaming and either (a) no
+        // visible content has arrived yet, or (b) we're in the network gap waiting on the model's next
+        // response (e.g.
         val hasVisibleContent = message.content.isNotEmpty() || blocks.any {
             when (it.kind) {
                 "info" -> false

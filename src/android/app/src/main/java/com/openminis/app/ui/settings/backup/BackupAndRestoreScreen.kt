@@ -64,12 +64,11 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -303,20 +302,20 @@ private fun BackupTab(
     onConfirmChange: (String) -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val selected by vm.selected.collectAsState()
-    val encrypt by vm.encrypt.collectAsState()
-    val maxFileSizeMB by vm.maxFileSizeMB.collectAsState()
+    val selected by vm.selected.collectAsStateWithLifecycle()
+    val encrypt by vm.encrypt.collectAsStateWithLifecycle()
+    val maxFileSizeMB by vm.maxFileSizeMB.collectAsStateWithLifecycle()
     // [T-android-backup-run-controller] The backup's own flag, not the
     // restore/backup union: this tab's Stop button must not appear for a
     // restore running on the other tab.
-    val running by vm.exportRunning.collectAsState()
-    val status by vm.statusText.collectAsState()
-    val error by vm.errorText.collectAsState()
-    val destinations by vm.destinations.collectAsState()
-    val historyRecords by vm.historyRecords.collectAsState()
-    val lastResult by vm.lastResult.collectAsState()
-    val exportReady by vm.exportReady.collectAsState()
-    val saveState by vm.saveState.collectAsState()
+    val running by vm.exportRunning.collectAsStateWithLifecycle()
+    val status by vm.statusText.collectAsStateWithLifecycle()
+    val error by vm.errorText.collectAsStateWithLifecycle()
+    val destinations by vm.destinations.collectAsStateWithLifecycle()
+    val historyRecords by vm.historyRecords.collectAsStateWithLifecycle()
+    val lastResult by vm.lastResult.collectAsStateWithLifecycle()
+    val exportReady by vm.exportReady.collectAsStateWithLifecycle()
+    val saveState by vm.saveState.collectAsStateWithLifecycle()
 
     // [T-android-backup-local-export] Save to Device: SAF CreateDocument. The
     // MIME type drives the extension the picker appends (BackupFormat.MIME_TYPE
@@ -997,18 +996,18 @@ private fun RestoreTab(
     passphrase: String,
     onPassphraseChange: (String) -> Unit,
 ) {
-    val running by vm.isRunning.collectAsState()
-    val status by vm.statusText.collectAsState()
-    val pending by vm.pending.collectAsState()
-    val restoreSelected by vm.restoreSelected.collectAsState()
-    val report by vm.report.collectAsState()
-    val error by vm.errorText.collectAsState()
+    val running by vm.isRunning.collectAsStateWithLifecycle()
+    val status by vm.statusText.collectAsStateWithLifecycle()
+    val pending by vm.pending.collectAsStateWithLifecycle()
+    val restoreSelected by vm.restoreSelected.collectAsStateWithLifecycle()
+    val report by vm.report.collectAsStateWithLifecycle()
+    val error by vm.errorText.collectAsStateWithLifecycle()
 
     // Which destination the user is browsing for a package to restore from.
     var browsing by remember {
         mutableStateOf<com.openminis.app.backup.remote.RcloneRemoteStore.Remote?>(null)
     }
-    val destinations by vm.destinations.collectAsState()
+    val destinations by vm.destinations.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.refreshDestinations() }
 
     val pickLauncher = rememberLauncherForActivityResult(
@@ -1711,9 +1710,9 @@ private fun ServerPackagePicker(
     remote: com.openminis.app.backup.remote.RcloneRemoteStore.Remote,
     onDismiss: () -> Unit,
 ) {
-    val serverPackages by vm.serverPackages.collectAsState()
-    val running by vm.isRunning.collectAsState()
-    val status by vm.statusText.collectAsState()
+    val serverPackages by vm.serverPackages.collectAsStateWithLifecycle()
+    val running by vm.isRunning.collectAsStateWithLifecycle()
+    val status by vm.statusText.collectAsStateWithLifecycle()
 
     AlertDialog(
         shape = androidx.compose.foundation.shape.RoundedCornerShape(androidx.compose.ui.unit.Dp(28f)),
@@ -1962,8 +1961,8 @@ private fun RestoreProgressSection(
     statusText: String?,
     onStart: () -> Unit,
 ) {
-    val progress by vm.restoreProgress.collectAsState()
-    val etaSeconds by vm.restoreEtaSeconds.collectAsState()
+    val progress by vm.restoreProgress.collectAsStateWithLifecycle()
+    val etaSeconds by vm.restoreEtaSeconds.collectAsStateWithLifecycle()
     var confirmStop by rememberSaveable { mutableStateOf(false) }
 
     val p = progress

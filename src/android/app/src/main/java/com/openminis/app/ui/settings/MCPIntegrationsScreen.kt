@@ -35,14 +35,11 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Switch
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -75,7 +72,7 @@ fun MCPIntegrationsScreen(
     // Null when the caller hasn't wired it — the picker affordance hides.
     envVarRepository: com.openminis.app.data.repository.EnvVarRepository? = null,
 ) {
-    val servers by mcpRepository.servers.collectAsState()
+    val servers by mcpRepository.servers.collectAsStateWithLifecycle()
 
     // [T-android-mcp-list-reload-on-appear] MCPRepository reads servers.json
     // only in init() (app launch). A server the agent writes via minis-mcp-cli
@@ -327,7 +324,7 @@ private fun MCPFormTab(
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     // [T-mcp-env-var-picker-android] App env var keys for the STDIO env picker.
     val appEnvEntries by (envVarRepository?.entries
-        ?.collectAsState() ?: remember { mutableStateOf(emptyList<com.openminis.app.data.repository.EnvVarRepository.EnvVarEntry>()) })
+        ?.collectAsStateWithLifecycle() ?: remember { mutableStateOf(emptyList<com.openminis.app.data.repository.EnvVarRepository.EnvVarEntry>()) })
     val appEnvKeys = remember(appEnvEntries) { appEnvEntries.map { it.key } }
     var showEnvVarPicker by remember { mutableStateOf(false) }
     // [T-mcp-http-headers-env-picker-android] Same $$VAR picker offered on the

@@ -14,7 +14,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.Memory
@@ -23,7 +22,6 @@ import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -41,7 +39,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -92,21 +92,33 @@ fun ModelGroupDetailScreen(
     onBack: () -> Unit,
     onAddModels: () -> Unit,
 ) {
-    val config by providerRepository.config.collectAsState()
+    val config by providerRepository.config.collectAsStateWithLifecycle()
     val group = config.modelGroups.find { it.id == groupId }
-    var showDeleteDialog by remember { mutableStateOf(false) }
+    var showDeleteDialog by remember(groupId) { mutableStateOf(false) }
+    var deleted by remember(groupId) { mutableStateOf(false) }
 
-    if (group == null) {
-        onBack()
+    if (group == null && !deleted) {
+        LaunchedEffect(groupId) { onBack() }
         return
     }
+    if (group == null) return
 
-    var name by remember { mutableStateOf(group.name) }
+    var name by remember(groupId) { mutableStateOf(group.name) }
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
-    var strategy by remember { mutableStateOf(group.strategy) }
-    var fallbackStrategy by remember { mutableStateOf(group.fallbackStrategy) }
+    var strategy by remember(groupId) { mutableStateOf(group.strategy) }
+    var fallbackStrategy by remember(groupId) { mutableStateOf(group.fallbackStrategy) }
+    // Persist any unsaved rename even when the user navigates straight back without blurring the field.
+    fun flushPendingRename() {
+        val trimmed = name.trim()
+        if (!deleted && trimmed.isNotEmpty() && trimmed != group.name) {
+            providerRepository.updateGroup(group.copy(name = trimmed))
+        }
+    }
+    DisposableEffect(groupId) {
+        onDispose { flushPendingRename() }
+    }
     // T312: Session Defaults — keyed on group.id so navigating to another
     // group via NavBackStack rebuilds these from the new group's persisted
     // values. Using `group` as key would also re-fire on every config
@@ -119,8 +131,8 @@ fun ModelGroupDetailScreen(
         mutableStateOf(group.contextLimitTokens)
     }
 
-    // Local copy of member IDs for live reorder
-    var memberIds by remember(group.memberEntryIds) { mutableStateOf(group.memberEntryIds.toList()) }
+    // Local copy of member IDs for live reorder (deduplicated so LazyColumn keys never collide).
+    var memberIds by remember(group.memberEntryIds) { mutableStateOf(group.memberEntryIds.distinct()) }
     var entryToRemove by remember { mutableStateOf<String?>(null) }
 
     val lazyListState = rememberLazyListState()
@@ -145,7 +157,10 @@ fun ModelGroupDetailScreen(
                 title = { Text(group.name, fontWeight = FontWeight.SemiBold) },
                 navigationIcon = {
                     ExpressiveNavIconButton(
-                        onClick = onBack,
+                        onClick = {
+                            flushPendingRename()
+                            onBack()
+                        },
                         contentDescription = stringResource(R.string.model_group_detail_back),
                     )
                 },
@@ -176,8 +191,10 @@ fun ModelGroupDetailScreen(
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                             keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
                             fieldModifier = Modifier.onFocusChanged { focusState ->
-                                if (!focusState.isFocused && name.isNotBlank() && name != group.name) {
-                                    providerRepository.updateGroup(group.copy(name = name))
+                                val trimmed = name.trim()
+                                if (!focusState.isFocused && trimmed.isNotEmpty() && trimmed != group.name) {
+                                    name = trimmed
+                                    providerRepository.updateGroup(group.copy(name = trimmed))
                                     coroutineScope.launch {
                                         snackbarHostState.showSnackbar("Name saved")
                                     }
@@ -650,6 +667,7 @@ fun ModelGroupDetailScreen(
             confirmButton = {
                 MinisTextButton(
                     onClick = {
+                        deleted = true
                         providerRepository.removeGroup(groupId)
                         showDeleteDialog = false
                         onBack()

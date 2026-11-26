@@ -8,10 +8,13 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.openminis.app.data.model.ModelOverrides
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -36,15 +39,23 @@ fun AddCustomModelScreen(
     providerRepository: ProviderRepository,
     onBack: () -> Unit,
 ) {
-    val instance = providerRepository.instance(instanceId)
+    val config by providerRepository.config.collectAsStateWithLifecycle()
+    val instance = config.instances.find { it.id == instanceId }
 
     if (instance == null) {
-        onBack()
+        LaunchedEffect(instanceId) { onBack() }
         return
     }
 
-    var modelId by remember { mutableStateOf("") }
-    var displayName by remember { mutableStateOf("") }
+    var modelId by remember(instanceId) { mutableStateOf("") }
+    var displayName by remember(instanceId) { mutableStateOf("") }
+    var supportsThinking by remember(instanceId) { mutableStateOf(false) }
+    var supportsVision by remember(instanceId) { mutableStateOf(false) }
+
+    val trimmedId = modelId.trim()
+    val isDuplicateId = trimmedId.isNotEmpty() && config.modelEntries.any {
+        it.providerInstanceId == instanceId && it.baseModel.id.equals(trimmedId, ignoreCase = true)
+    }
 
     SettingsScaffold(
         title = stringResource(R.string.provider_detail_add_custom_model),
@@ -63,6 +74,14 @@ fun AddCustomModelScreen(
                     singleLine = true,
                     textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
                 )
+                if (isDuplicateId) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = stringResource(R.string.add_custom_model_duplicate_error),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 Spacer(Modifier.height(12.dp))
                 RowLabel(text = stringResource(R.string.add_custom_model_display_name_optional))
                 SectionTextField(
@@ -73,24 +92,47 @@ fun AddCustomModelScreen(
             }
         }
 
+        SettingsSection(
+            header = stringResource(R.string.modeldetail_section_capabilities),
+        ) {
+            SettingsSwitchRow(
+                title = stringResource(R.string.modeldetail_thinking),
+                checked = supportsThinking,
+                onCheckedChange = { supportsThinking = it },
+            )
+            SettingsSwitchRow(
+                title = stringResource(R.string.modeldetail_image_input),
+                checked = supportsVision,
+                onCheckedChange = { supportsVision = it },
+                showDivider = false,
+            )
+        }
+
         Spacer(Modifier.height(20.dp))
         MinisButton(
             onClick = {
-                val name = displayName.ifBlank { modelId }
+                val name = displayName.trim().ifBlank { trimmedId }
                 val model = LLMModel(
-                    id = modelId.trim(),
-                    displayName = name.trim(),
+                    id = trimmedId,
+                    displayName = name,
                     provider = instance.providerType.displayName,
+                    supportsReasoning = if (supportsThinking) true else null,
+                    inputModalities = if (supportsVision) listOf("image") else null,
+                )
+                val overrides = ModelOverrides(
+                    supportsReasoning = if (supportsThinking) true else null,
+                    inputModalities = if (supportsVision) listOf("image") else null,
                 )
                 val entry = ModelEntry(
                     providerInstanceId = instanceId,
                     baseModel = model,
+                    overrides = overrides,
                     isCustom = true,
                 )
                 providerRepository.addEntry(entry)
                 onBack()
             },
-            enabled = modelId.isNotBlank(),
+            enabled = trimmedId.isNotEmpty() && !isDuplicateId,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp),

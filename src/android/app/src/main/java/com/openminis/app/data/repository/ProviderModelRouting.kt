@@ -1,33 +1,40 @@
 package com.openminis.app.data.repository
-import com.openminis.app.data.db.compositeEntryKey
-import com.openminis.app.data.db.toProviderConfig
-import com.openminis.app.data.db.toSnapshot
+
 import com.openminis.app.data.model.ModelEntry
 import com.openminis.app.data.model.ModelGroup
+import com.openminis.app.data.model.ProviderConfig
 import com.openminis.app.data.model.ProviderInstance
 import com.openminis.app.data.model.RoutingStrategy
 import com.openminis.app.data.model.SystemVoiceIds
 import com.openminis.app.data.model.hasImageInput
-import com.openminis.app.data.model.hasVoiceModality
-import com.openminis.app.data.model.isVoiceCandidate
 import com.openminis.app.data.model.isVoiceInputCandidate
 import com.openminis.app.data.model.isVoiceOutputCandidate
-import com.openminis.app.data.model.isVoiceTemplateSeedShape
-import com.openminis.app.data.model.withInferredVoiceModality
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import com.openminis.app.data.repository.ProviderRepository.VoiceInputChoice
 import com.openminis.app.data.repository.ProviderRepository.VoiceOutputChoice
+import kotlin.math.abs
 
-internal fun ProviderRepository.lastUsedVisibleEntryImpl(): ModelEntry? {
-        val id = lastUsedEntryId ?: return null
-        return allVisibleEntries().firstOrNull { it.id == id }
+/**
+ * Pure, JVM-testable model & modality router for [ProviderRepository].
+ * Resolves default models, group members, agent-loop candidates, vision
+ * candidates, and voice input/output routes from [ProviderConfig].
+ */
+internal class ProviderModelRouter(
+    private val configProvider: () -> ProviderConfig,
+    private val ensureConfigLoaded: () -> Unit,
+    private val visibleEntriesProvider: () -> List<ModelEntry>,
+    private val lastUsedEntryIdProvider: () -> String?,
+    private val voiceInputOverrideEntryIdProvider: () -> String?,
+    private val voiceOutputOverrideEntryIdProvider: () -> String?,
+    private val hasAnyCredential: (ProviderInstance) -> Boolean,
+) {
+
+    fun lastUsedVisibleEntry(): ModelEntry? {
+        val id = lastUsedEntryIdProvider() ?: return null
+        return visibleEntriesProvider().firstOrNull { it.id == id }
     }
 
-internal fun ProviderRepository.newestProviderNewestTextEntryImpl(): ModelEntry? {
-        val config = _config.value
+    fun newestProviderNewestTextEntry(): ModelEntry? {
+        val config = configProvider()
         val enabledProviders = config.instances
             .filter { it.isEnabled }
             .sortedByDescending { it.createdAt }
@@ -40,22 +47,13 @@ internal fun ProviderRepository.newestProviderNewestTextEntryImpl(): ModelEntry?
         return null
     }
 
-internal fun ProviderRepository.enabledMemberEntriesImpl(group: ModelGroup): List<ModelEntry> {
-        val config = _config.value
+    /** [T-android-model-absence-grace] Excludes disabled providers and provider-unavailable entries. */
+    fun enabledMemberEntries(group: ModelGroup): List<ModelEntry> {
+        val config = configProvider()
         val enabledIds = config.instances.filter { it.isEnabled }.map { it.id }.toSet()
         return group.memberEntryIds.mapNotNull { entryId ->
             val entry = config.modelEntries.find { it.id == entryId }
-            // [T-android-model-absence-grace] Skip a model the provider has
-            // stopped listing. The entry is deliberately RETAINED (with its
-            // overrides) through the grace window so it can come back intact,
-            // but routing must not pick it meanwhile — the request would go to
-            // a model the endpoint no longer serves. Same treatment as a
-            // disabled provider: filtered here, at the one choke point every
-            // resolve/display path already goes through.
-            if (entry != null &&
-                entry.providerInstanceId in enabledIds &&
-                !entry.isUnavailableFromProvider
-            ) {
+            if (entry != null && entry.providerInstanceId in enabledIds && !entry.isUnavailableFromProvider) {
                 entry
             } else {
                 null
@@ -63,84 +61,47 @@ internal fun ProviderRepository.enabledMemberEntriesImpl(group: ModelGroup): Lis
         }
     }
 
-internal fun ProviderRepository.firstEnabledMemberEntryImpl(group: ModelGroup): ModelEntry? =
+    fun firstEnabledMemberEntry(group: ModelGroup): ModelEntry? =
         enabledMemberEntries(group).firstOrNull()
 
-internal fun ProviderRepository.hasAnyCredentialImpl(instance: ProviderInstance): Boolean {
-        // API-key path, including the keyless-by-design compat endpoints that
-        // [usableApiKey] already models via allowsEmptyAPIKey.
-        if (usableApiKey(instance) != null) return true
-        // [T-android-copilot-not-connected] OAuth path — ask the instance's own
-        // manager FIRST, because not every provider stores its credential in
-        // the shared `oauth_tokens_<id>` blob.
-        //
-        // This used to go straight to the static prefs read below. That read
-        // knows only an instance id, so it cannot dispatch on provider type,
-        // and Copilot — whose credential is the two-tier pair under its own
-        // keys — was reported as having none. The provider was therefore never
-        // constructed and sending a message answered "No provider configured",
-        // on a session whose header showed the model and a green dot.
-        //
-        // The static read stays as the fallback: it covers provider types
-        // `forInstance` deliberately omits (notably gemini), which would
-        // otherwise be misreported as uncredentialed.
-        // [T-oauth-keep-credentials] A token bundle whose refresh was rejected
-        // is kept (never auto-deleted) but is not usable, so routing skips it
-        // just as it skipped the deleted bundle before. (needsReauth is already
-        // false when a manual bearer is stored — that credential still works.)
-        if (com.openminis.app.auth.OAuthManager.needsReauth(context, instance.id)) return false
-        val mgr = com.openminis.app.auth.OAuthManager.forInstance(context, instance)
-        if (mgr != null && mgr.isAuthenticated()) return true
-        return com.openminis.app.auth.OAuthManager.hasStoredCredential(context, instance.id)
-    }
-
-internal fun ProviderRepository.availableMemberEntriesImpl(group: ModelGroup): List<ModelEntry> {
-        val config = _config.value
+    fun availableMemberEntries(group: ModelGroup): List<ModelEntry> {
+        val config = configProvider()
         return group.memberEntryIds.mapNotNull { entryId ->
             val entry = config.modelEntries.find { it.id == entryId } ?: return@mapNotNull null
             if (entry.isHidden) return@mapNotNull null
-            val instance = config.instances.find { it.id == entry.providerInstanceId }
-                ?: return@mapNotNull null
-            if (!instance.isEnabled) return@mapNotNull null
-            if (!hasAnyCredential(instance)) return@mapNotNull null
+            val instance = config.instances.find { it.id == entry.providerInstanceId } ?: return@mapNotNull null
+            if (!instance.isEnabled || !hasAnyCredential(instance)) return@mapNotNull null
             entry
         }
     }
 
-internal fun ProviderRepository.resolveTitleSubEntryImpl(): ModelEntry? {
-        val subGroupId = defaultSubGroupId ?: return null
-        val group = group(subGroupId) ?: return null
-        // [T-android-group-resolve-skip-uncredentialed] Routing decision, so it
-        // needs the credential-aware filter: firstEnabledMemberEntry would hand
-        // back a member whose provider has no credential and title generation
-        // would fail on it instead of using the next usable member.
+    fun resolveTitleSubEntry(): ModelEntry? {
+        val config = configProvider()
+        val subGroupId = config.defaultSubGroupId ?: return null
+        val group = config.modelGroups.find { it.id == subGroupId } ?: return null
         return availableMemberEntries(group).firstOrNull()
     }
 
-internal fun ProviderRepository.isEntryProviderEnabledImpl(entryId: String): Boolean {
-        val config = _config.value
+    fun isEntryProviderEnabled(entryId: String): Boolean {
+        val config = configProvider()
         val entry = config.modelEntries.find { it.id == entryId } ?: return false
         val instance = config.instances.find { it.id == entry.providerInstanceId } ?: return false
         return instance.isEnabled
     }
 
-internal fun ProviderRepository.resolvedAgentLoopEntriesImpl(): List<ModelEntry> {
-        val config = _config.value
+    fun resolvedAgentLoopEntries(): List<ModelEntry> {
+        val config = configProvider()
         val enabledIds = config.instances.filter { it.isEnabled }.map { it.id }.toSet()
         val seen = mutableSetOf<String>()
         val out = mutableListOf<ModelEntry>()
 
         fun consider(entry: ModelEntry) {
-            if (entry.providerInstanceId !in enabledIds) return
-            if (!seen.add(entry.id)) return
-            out.add(entry)
+            if (entry.providerInstanceId in enabledIds && seen.add(entry.id)) out.add(entry)
         }
 
-        // Individual entries first (preserves the order the user arranged in UI)
         for (id in config.agentLoopModelEntryIds) {
             config.modelEntries.find { it.id == id }?.let(::consider)
         }
-        // Then group members, in group order
         for (gid in config.agentLoopGroupIds) {
             val group = config.modelGroups.find { it.id == gid } ?: continue
             for (memberId in group.memberEntryIds) {
@@ -150,146 +111,132 @@ internal fun ProviderRepository.resolvedAgentLoopEntriesImpl(): List<ModelEntry>
         return out
     }
 
-internal fun ProviderRepository.resolveVisionCandidatesImpl(loadBalanceSeed: Int = 0): List<Pair<ProviderInstance, ModelEntry>> {
+    fun resolveVisionCandidates(loadBalanceSeed: Int = 0): List<Pair<ProviderInstance, ModelEntry>> {
         ensureConfigLoaded()
-        val config = _config.value
-
-        fun providerEntry(memberId: String): Pair<ProviderInstance, ModelEntry>? {
-            val entry = config.modelEntries.find { it.id == memberId } ?: return null
-            val inst = config.instances.find { it.id == entry.providerInstanceId } ?: return null
-            if (!inst.isEnabled || !entry.model.hasImageInput) return null
-            return inst to entry
-        }
-
+        val config = configProvider()
         val gid = config.visionGroupId ?: return emptyList()
         val group = config.modelGroups.find { it.id == gid } ?: return emptyList()
-        var members = group.memberEntryIds.mapNotNull { providerEntry(it) }
-        if (group.strategy == RoutingStrategy.loadBalance && members.size > 1) {
-            val offset = kotlin.math.abs(loadBalanceSeed) % members.size
-            members = members.drop(offset) + members.take(offset)
+
+        val members = group.memberEntryIds.mapNotNull { memberId ->
+            enabledEntryMatching(config, memberId) { it.model.hasImageInput }
         }
-        val out = mutableListOf<Pair<ProviderInstance, ModelEntry>>()
-        for (m in members) {
-            if (out.none { it.second.id == m.second.id }) out.add(m)
-        }
-        return out
+        return rotateAndDedupe(members, group.strategy, loadBalanceSeed)
     }
 
-internal fun ProviderRepository.resolveVoiceInputChoiceImpl(): VoiceInputChoice {
+    fun resolveVoiceInputChoice(): VoiceInputChoice {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = configProvider()
 
-        fun systemChoice(memberId: String): VoiceInputChoice = VoiceInputChoice(
+        fun systemChoice(memberId: String) = VoiceInputChoice(
             systemPreferOffline = memberId.endsWith("/${SystemVoiceIds.SYSTEM_ASR_OFFLINE}"),
             entry = null,
         )
 
-        fun providerEntry(memberId: String): Pair<ProviderInstance, ModelEntry>? {
-            val entry = config.modelEntries.find { it.id == memberId } ?: return null
-            val inst = config.instances.find { it.id == entry.providerInstanceId } ?: return null
-            if (!inst.isEnabled || !entry.model.isVoiceInputCandidate) return null
-            return inst to entry
-        }
-
-        voiceInputOverrideEntryId?.let { override ->
+        voiceInputOverrideEntryIdProvider()?.let { override ->
             if (override.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID)) return systemChoice(override)
-            providerEntry(override)?.let { return VoiceInputChoice(null, it) }
-            // Stale override (entry removed) — fall through to the group.
+            enabledEntryMatching(config, override) { it.model.isVoiceInputCandidate }
+                ?.let { return VoiceInputChoice(null, it) }
         }
-        val gid = config.voiceInputGroupId
-        val group = gid?.let { g -> config.modelGroups.find { it.id == g } }
+        val group = config.voiceInputGroupId?.let { g -> config.modelGroups.find { it.id == g } }
         if (group != null) {
             for (memberId in group.memberEntryIds) {
                 if (memberId.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID)) return systemChoice(memberId)
-                providerEntry(memberId)?.let { return VoiceInputChoice(null, it) }
+                enabledEntryMatching(config, memberId) { it.model.isVoiceInputCandidate }
+                    ?.let { return VoiceInputChoice(null, it) }
             }
         }
         return VoiceInputChoice(systemPreferOffline = null, entry = null)
     }
 
-internal fun ProviderRepository.resolveVoiceInputCandidatesImpl(loadBalanceSeed: Int = 0): List<Pair<ProviderInstance, ModelEntry>> {
+    fun resolveVoiceInputCandidates(loadBalanceSeed: Int = 0): List<Pair<ProviderInstance, ModelEntry>> {
         ensureConfigLoaded()
-        val config = _config.value
-
-        fun providerEntry(memberId: String): Pair<ProviderInstance, ModelEntry>? {
-            val entry = config.modelEntries.find { it.id == memberId } ?: return null
-            val inst = config.instances.find { it.id == entry.providerInstanceId } ?: return null
-            if (!inst.isEnabled || !entry.model.isVoiceInputCandidate) return null
-            return inst to entry
-        }
-
+        val config = configProvider()
         val out = mutableListOf<Pair<ProviderInstance, ModelEntry>>()
-        voiceInputOverrideEntryId?.let { override ->
-            // Explicit System override → System engine, no cloud candidates.
+
+        voiceInputOverrideEntryIdProvider()?.let { override ->
             if (override.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID)) return emptyList()
-            providerEntry(override)?.let { out.add(it) }
-            // Stale override (entry removed) — fall through to the group.
+            enabledEntryMatching(config, override) { it.model.isVoiceInputCandidate }?.let { out.add(it) }
         }
-        val gid = config.voiceInputGroupId
-        val group = gid?.let { g -> config.modelGroups.find { it.id == g } }
+        val group = config.voiceInputGroupId?.let { g -> config.modelGroups.find { it.id == g } }
         if (group != null) {
-            var members = group.memberEntryIds
-                .filter { !it.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID) }
-                .mapNotNull { providerEntry(it) }
-            if (group.strategy == RoutingStrategy.loadBalance && members.size > 1) {
-                val offset = kotlin.math.abs(loadBalanceSeed) % members.size
-                members = members.drop(offset) + members.take(offset)
-            }
-            for (m in members) {
+            val members = group.memberEntryIds
+                .filterNot { it.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID) }
+                .mapNotNull { memberId -> enabledEntryMatching(config, memberId) { it.model.isVoiceInputCandidate } }
+            for (m in rotateAndDedupe(members, group.strategy, loadBalanceSeed)) {
                 if (out.none { it.second.id == m.second.id }) out.add(m)
             }
         }
         return out
     }
 
-internal fun ProviderRepository.resolveVoiceOutputChoiceImpl(): VoiceOutputChoice {
+    fun resolveVoiceOutputChoice(): VoiceOutputChoice {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = configProvider()
 
-        fun providerEntry(memberId: String): Pair<ProviderInstance, ModelEntry>? {
-            val entry = config.modelEntries.find { it.id == memberId } ?: return null
-            val inst = config.instances.find { it.id == entry.providerInstanceId } ?: return null
-            if (!inst.isEnabled || !entry.model.isVoiceOutputCandidate) return null
-            return inst to entry
-        }
-
-        voiceOutputOverrideEntryId?.let { override ->
+        voiceOutputOverrideEntryIdProvider()?.let { override ->
             if (override.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID)) {
                 return VoiceOutputChoice(isSystemEngine = true, entry = null)
             }
-            providerEntry(override)?.let { return VoiceOutputChoice(false, it) }
-            // Stale override (entry removed) — fall through to the group.
+            enabledEntryMatching(config, override) { it.model.isVoiceOutputCandidate }
+                ?.let { return VoiceOutputChoice(false, it) }
         }
-        val gid = config.voiceOutputGroupId
-        val group = gid?.let { g -> config.modelGroups.find { it.id == g } }
+        val group = config.voiceOutputGroupId?.let { g -> config.modelGroups.find { it.id == g } }
         if (group != null) {
             for (memberId in group.memberEntryIds) {
                 if (memberId.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID)) {
                     return VoiceOutputChoice(isSystemEngine = true, entry = null)
                 }
-                providerEntry(memberId)?.let { return VoiceOutputChoice(false, it) }
+                enabledEntryMatching(config, memberId) { it.model.isVoiceOutputCandidate }
+                    ?.let { return VoiceOutputChoice(false, it) }
             }
         }
         return VoiceOutputChoice(isSystemEngine = true, entry = null)
     }
 
-internal fun ProviderRepository.activeVoiceGroupMemberIdImpl(output: Boolean): String? {
+    fun activeVoiceGroupMemberId(output: Boolean): String? {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = configProvider()
         val gid = if (output) config.voiceOutputGroupId else config.voiceInputGroupId
         val group = config.modelGroups.find { it.id == gid } ?: return null
         for (memberId in group.memberEntryIds) {
-            // System sentinels are always usable — the on-device engine needs
-            // no instance and is never disabled.
             if (memberId.startsWith(SystemVoiceIds.BUILTIN_PROVIDER_ID)) return memberId
-            val entry = config.modelEntries.find { it.id == memberId } ?: continue
-            val inst = config.instances.find { it.id == entry.providerInstanceId } ?: continue
-            if (!inst.isEnabled) continue
-            val usable = if (output) entry.model.isVoiceOutputCandidate else entry.model.isVoiceInputCandidate
-            if (usable) return memberId
+            val match = enabledEntryMatching(config, memberId) {
+                if (output) it.model.isVoiceOutputCandidate else it.model.isVoiceInputCandidate
+            }
+            if (match != null) return memberId
         }
         return null
     }
 
-internal fun ProviderRepository.resolveVoiceOutputEntryImpl(): Pair<ProviderInstance, ModelEntry>? =
+    fun resolveVoiceOutputEntry(): Pair<ProviderInstance, ModelEntry>? =
         resolveVoiceOutputChoice().entry
+
+    private fun enabledEntryMatching(
+        config: ProviderConfig,
+        entryId: String,
+        predicate: (ModelEntry) -> Boolean,
+    ): Pair<ProviderInstance, ModelEntry>? {
+        val entry = config.modelEntries.find { it.id == entryId } ?: return null
+        val inst = config.instances.find { it.id == entry.providerInstanceId } ?: return null
+        if (!inst.isEnabled || !predicate(entry)) return null
+        return inst to entry
+    }
+
+    private fun rotateAndDedupe(
+        members: List<Pair<ProviderInstance, ModelEntry>>,
+        strategy: RoutingStrategy,
+        seed: Int,
+    ): List<Pair<ProviderInstance, ModelEntry>> {
+        val ordered = if (strategy == RoutingStrategy.loadBalance && members.size > 1) {
+            val offset = abs(seed) % members.size
+            members.drop(offset) + members.take(offset)
+        } else {
+            members
+        }
+        val out = mutableListOf<Pair<ProviderInstance, ModelEntry>>()
+        for (m in ordered) {
+            if (out.none { it.second.id == m.second.id }) out.add(m)
+        }
+        return out
+    }
+}

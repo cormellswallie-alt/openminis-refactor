@@ -63,7 +63,10 @@ internal class FreshProcessShell(
         // The rootfs is the guest's "/", so the same file is visible on both
         // sides without a bind mount.
         val exitDir = File(RootfsManager.getInstance(context).rootfsDir, EXIT_DIR_NAME)
-        runCatching { exitDir.mkdirs(); pruneStaleExitFiles(exitDir) }
+        runCatching {
+            if (!exitDir.isDirectory) exitDir.mkdirs()
+            pruneStaleExitFiles(exitDir)
+        }
         val token = java.util.UUID.randomUUID().toString()
         val statusFile = File(exitDir, token)
         statusHandle = statusFile
@@ -87,7 +90,7 @@ internal class FreshProcessShell(
             return@withContext Pair("[Cancelled]", CANCELLED_EXIT)
         }
 
-        val output = StringBuilder()
+        val output = BoundedHeadTailBuffer()
 
         // [T-android-fresh-stderr-drain] Debug builds keep stderr on its own
         // pipe (see spawn); it MUST be read, or a command that writes 64 KB to
@@ -107,7 +110,7 @@ internal class FreshProcessShell(
         // process and lets EOF end the loop naturally.
         val timedOut = java.util.concurrent.atomic.AtomicBoolean(false)
         val readEof = java.util.concurrent.atomic.AtomicBoolean(false)
-        val watchdog = kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+        val watchdog = launch {
             kotlinx.coroutines.delay(timeout)
             // [T-android-mcp-detached-daemon-hang] Do NOT gate this on
             // `process.isAlive`.
@@ -158,7 +161,7 @@ internal class FreshProcessShell(
         // proot (and the daemon) alone.
         val lastReadAt = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
         val closedOnStatus = java.util.concurrent.atomic.AtomicBoolean(false)
-        val monitor = kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+        val monitor = launch {
             while (!statusFile.exists()) {
                 if (readEof.get()) return@launch
                 kotlinx.coroutines.delay(STATUS_POLL_MS)
@@ -216,7 +219,7 @@ internal class FreshProcessShell(
         val stderrWait = if (closedOnStatus.get()) STDERR_SETTLE_MS else STDERR_DRAIN_WAIT_MS
         if (closedOnStatus.get()) runCatching { process.outputStream.close() }
         stderrDrain?.finish(stderrWait)?.takeIf { it.isNotEmpty() }?.let { err ->
-            if (output.isNotEmpty() && output.last() != '\n') output.append('\n')
+            if (output.isNotEmpty && output.lastCharOrNull() != '\n') output.append('\n')
             output.append(err)
         }
 
@@ -249,63 +252,19 @@ internal class FreshProcessShell(
         Pair(output.toString(), exitCode)
     }
 
-    /** Build the argv and environment, mirroring PersistentShell.startProcess. */
+    /** Build the argv and environment via [PRootLaunchSpec]. */
     private fun spawn(command: String, envVars: Map<String, String>, statusGuestPath: String): Process {
-        val rootfsManager = RootfsManager.getInstance(context)
-        val cmd = mutableListOf<String>()
-        cmd.add(rootfsManager.prootBinary.absolutePath)
-        cmd.add("-0")
-        cmd.add("--link2symlink")
-        cmd.add("-r"); cmd.add(rootfsManager.rootfsDir.absolutePath)
-        cmd.add("-b"); cmd.add("/dev")
-        cmd.add("-b"); cmd.add("/proc")
-        cmd.add("-b"); cmd.add("/sys")
-        cmd.add("-w"); cmd.add("/root")
-        for ((linuxPath, hostPath) in sessionBindMounts) {
-            cmd.add("-b"); cmd.add("$hostPath:$linuxPath")
-        }
-        val handlers = NativeOffloadServer.registeredHandlers
-        if (handlers.isNotEmpty()) {
-            cmd.add("--native-offload=${NativeOffloadServer.socketName}:${handlers.joinToString(",")}")
-        }
-        // [T-android-fake-netlink] Same rtnetlink emulation the pooled shell
-        // gets; the two paths must not disagree about whether the sandbox has
-        // network interfaces.
-        cmd.add("--fake-netlink")
-        // [T-android-shell-fresh-process] Step 4: run the command as its own
-        // process-group leader. No marker, no pgid reporting — the host does
-        // not need to LEARN the group, because on the fresh path the guest
-        // group leader is the direct child of the proot process we already
-        // hold. It only needs the group to EXIST, so that killing reaches the
-        // descendants that would otherwise keep the pipe open.
-        cmd.addAll(ForegroundCommandGroup.wrapForFreshProcess(command, statusGuestPath))
-
-        val debugOffload = com.openminis.app.BuildConfig.DEV_TOOLS
-        val pb = ProcessBuilder(cmd)
+        val pb = PRootLaunchSpec.buildProcessBuilder(
+            context = context,
+            sessionId = sessionId,
+            sessionBindMounts = sessionBindMounts,
+            guestArgs = ForegroundCommandGroup.wrapForFreshProcess(command, statusGuestPath),
+            extraEnv = envVars,
+            useNoSeccomp = useNoSeccomp,
+            redirectErrorStream = !SEPARATE_STDERR,
+            includeFakeNetlink = true,
+        )
         configureStdin(pb)
-        // Separate in debug so proot's [native_offload] lines reach logcat
-        // instead of the output — which is why execute() starts a StderrDrain
-        // whenever SEPARATE_STDERR is set.
-        pb.redirectErrorStream(!SEPARATE_STDERR)
-
-        val env = pb.environment()
-        env["PROOT_TMP_DIR"] = PRootKernel.getProotTmpDir(context).absolutePath
-        if (PRootKernel.nativeLibDir.isNotEmpty()) env["LD_LIBRARY_PATH"] = PRootKernel.nativeLibDir
-        if (PRootKernel.prootLoaderPath.isNotEmpty()) env["PROOT_LOADER"] = PRootKernel.prootLoaderPath
-        if (PRootKernel.prootLoader32Path.isNotEmpty()) env["PROOT_LOADER_32"] = PRootKernel.prootLoader32Path
-        env["TERM"] = "dumb"
-        env["PS1"] = ""
-        env["TZ"] = PRootKernel.posixTz()
-        if (debugOffload) env["MINIS_NOFF_DEBUG"] = "1"
-        env["MINIS_CHAT_SESSION_ID"] = sessionId
-        for ((k, v) in PRootKernel.customEnvironment) env[k] = v
-        // User-configured variables go in as real environment entries rather
-        // than `export` lines written to a shared stdin — one more thing the
-        // warm path had to do that this one does not.
-        for ((k, v) in envVars) env[k] = v
-        if (useNoSeccomp) {
-            env[SeccompFallbackPolicy.NO_SECCOMP_ENV] = SeccompFallbackPolicy.NO_SECCOMP_VALUE
-        }
         return pb.start()
     }
 
@@ -421,9 +380,12 @@ internal class FreshProcessShell(
         return if (v > 1) v else null
     }
 
-    /** Drop status files a killed app left behind; they are tiny but unbounded. */
+    /** Drop status files a killed app left behind; throttled to avoid scanning every command. */
     private fun pruneStaleExitFiles(dir: File) {
-        val cutoff = System.currentTimeMillis() - STALE_EXIT_FILE_MS
+        val now = System.currentTimeMillis()
+        if (now - lastExitPruneMs < EXIT_PRUNE_INTERVAL_MS) return
+        lastExitPruneMs = now
+        val cutoff = now - STALE_EXIT_FILE_MS
         dir.listFiles()?.forEach { if (it.lastModified() < cutoff) it.delete() }
     }
 
@@ -500,18 +462,36 @@ internal class FreshProcessShell(
 
     private var lineBuffer = StringBuilder()
 
-    /** Emit whole lines to [callback], holding a partial trailing line. */
-    private fun feedLines(text: String, callback: (String) -> Unit) {
-        lineBuffer.append(text)
-        var idx = lineBuffer.indexOf("\n")
-        while (idx >= 0) {
-            callback(lineBuffer.substring(0, idx))
-            lineBuffer.delete(0, idx + 1)
-            idx = lineBuffer.indexOf("\n")
-        }
+    /** Emit whole lines to [callback], holding a partial trailing line in O(n) time. */
+    internal fun feedLines(text: String, callback: (String) -> Unit) {
+        feedLinesInto(lineBuffer, text, callback)
     }
 
     companion object {
+        internal fun feedLinesInto(buffer: StringBuilder, text: String, callback: (String) -> Unit) {
+            var start = 0
+            val len = text.length
+            var nl = text.indexOf('\n', start)
+            if (nl < 0) {
+                buffer.append(text)
+                return
+            }
+            if (buffer.isNotEmpty()) {
+                buffer.append(text, 0, nl)
+                callback(buffer.toString())
+                buffer.setLength(0)
+                start = nl + 1
+                nl = text.indexOf('\n', start)
+            }
+            while (nl >= 0) {
+                callback(text.substring(start, nl))
+                start = nl + 1
+                nl = text.indexOf('\n', start)
+            }
+            if (start < len) {
+                buffer.append(text, start, len)
+            }
+        }
         /**
          * [T-android-shell-process-budget] Leads the output when the process
          * could not be spawned at all - nothing ran, so GlobalShellThrottle
@@ -585,6 +565,12 @@ internal class FreshProcessShell(
 
         /** Status files older than this belong to a process that died mid-command. */
         private const val STALE_EXIT_FILE_MS = 60 * 60_000L
+
+        /** Minimum interval between stale exit-file directory sweeps. */
+        private const val EXIT_PRUNE_INTERVAL_MS = 5 * 60_000L
+
+        @Volatile
+        internal var lastExitPruneMs: Long = 0L
 
         /**
          * [T-android-fresh-exit-status-file] Whether the stream may be closed

@@ -28,6 +28,9 @@ fun AgentToolsSettingsScreen(onBack: () -> Unit) {
     var askUserEnabled by remember {
         mutableStateOf(AgentToolSwitch.ASK_USER.isEnabled(context))
     }
+    var taskStepsEnabled by remember {
+        mutableStateOf(AgentToolSwitch.TASK_STEPS.isEnabled(context))
+    }
 
     SettingsScaffold(title = stringResource(R.string.settings_agent_tools), onBack = onBack) {
         SettingsSection(footer = stringResource(R.string.agent_tools_browser_footer)) {
@@ -48,6 +51,17 @@ fun AgentToolsSettingsScreen(onBack: () -> Unit) {
                 onCheckedChange = {
                     askUserEnabled = it
                     AgentToolSwitch.ASK_USER.setEnabled(context, it)
+                },
+                showDivider = false,
+            )
+        }
+        SettingsSection(footer = stringResource(R.string.agent_tools_update_steps_footer)) {
+            SettingsSwitchRow(
+                title = stringResource(R.string.agent_tools_update_steps),
+                checked = taskStepsEnabled,
+                onCheckedChange = {
+                    taskStepsEnabled = it
+                    AgentToolSwitch.TASK_STEPS.setEnabled(context, it)
                 },
                 showDivider = false,
             )

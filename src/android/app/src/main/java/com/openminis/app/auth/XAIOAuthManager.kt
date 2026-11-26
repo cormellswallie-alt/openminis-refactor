@@ -7,8 +7,10 @@ import androidx.browser.customtabs.CustomTabsIntent
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -531,6 +533,9 @@ class XAIOAuthManager(context: Context, instanceId: String) : OAuthManager(conte
      * this as a dismissal.
      */
     private var dismissalObserver: DefaultLifecycleObserver? = null
+    private val dismissalScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    @Volatile
+    private var dismissalDelayJob: Job? = null
 
     private fun armDismissalDetector() {
         disarmDismissalDetector()
@@ -552,7 +557,8 @@ class XAIOAuthManager(context: Context, instanceId: String) : OAuthManager(conte
                 // Give the loopback callback up to 1.5s to land —
                 // covers the race where xAI's redirect arrives a beat
                 // after the Custom Tab dismisses.
-                GlobalScope.launch {
+                dismissalDelayJob?.cancel()
+                dismissalDelayJob = dismissalScope.launch {
                     delay(1500)
                     val server = loginCallbackServer ?: return@launch
                     Log.w(TAG, "App resumed without OAuth callback — treating as user dismissal, stopping server")
@@ -572,6 +578,8 @@ class XAIOAuthManager(context: Context, instanceId: String) : OAuthManager(conte
     }
 
     private fun disarmDismissalDetector() {
+        dismissalDelayJob?.cancel()
+        dismissalDelayJob = null
         val observer = dismissalObserver ?: return
         dismissalObserver = null
         try {

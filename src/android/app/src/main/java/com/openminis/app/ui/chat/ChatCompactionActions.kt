@@ -14,45 +14,31 @@ import com.openminis.app.logging.AppLogger
 import com.openminis.app.data.model.AgentContentPart
 import com.openminis.app.data.model.LLMError
 import com.openminis.app.data.model.LLMMessage
-import com.openminis.app.data.model.hasImageInput
 import com.openminis.app.provider.ImageBudget
-import com.openminis.app.provider.catalogMaxThinkingLevel
-import com.openminis.app.provider.effectiveMaxThinkingLevel
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.yield
 import org.json.JSONObject
 import com.openminis.app.ui.chat.ChatViewModel.CompactProgress
 import com.openminis.app.ui.chat.ChatViewModel.Companion.TAG
 
-internal fun ChatViewModel.contextCalibrationRatio(modelId: String? = currentModel?.id): Double =
-        contextMeter.ratioFor(modelId)
+internal fun ChatViewModel.contextCalibrationRatio(modelId: String? = modelState.currentModel?.id): Double =
+        contextState.contextMeter.ratioFor(modelId)
 
 internal fun ChatViewModel.measureOutboundContextTokens(ratio: Double? = null): Int = contextMeasurement(ratio).measured
 
 internal fun ChatViewModel.contextMeasurement(override: Double? = null): ContextMeterCoordinator.Measurement =
-        contextMeter.measure(effectiveAgentHistoryUncounted(), currentModel?.id, override)
+        contextState.contextMeter.measure(effectiveAgentHistoryUncounted(), modelState.currentModel?.id, override)
 
 /** [CtxMeter] decide — every capacity decision with its inputs, so a field log can replay it. */
     internal fun ChatViewModel.logContextDecision(site: String, m: ContextMeterCoordinator.Measurement, threshold: Int, window: Int, result: String) {
         AppLogger.info(
             TAG,
-            "[CtxMeter] decide site=$site model=${currentModel?.id ?: "?"} history=${m.history} fixed=${m.fixed} " +
+            "[CtxMeter] decide site=$site model=${modelState.currentModel?.id ?: "?"} history=${m.history} fixed=${m.fixed} " +
                 "ratio=${"%.3f".format(m.ratio)}(${m.source}) measured=${m.measured} threshold=$threshold " +
                 "window=$window → $result",
         )
@@ -64,8 +50,8 @@ internal fun ChatViewModel.contextMeasurement(override: Double? = null): Context
      * replaces this with the exact figure before its first request.
      */
     internal fun ChatViewModel.ensureContextFixedTokens() {
-        if (contextMeter.fixedTokens > 0) return
-        contextMeter.fixedTokens = ContextSizeMeter.estimateFixedTokens(buildSystemPrompt(), agentTools)
+        if (contextState.contextMeter.fixedTokens > 0) return
+        contextState.contextMeter.fixedTokens = ContextSizeMeter.estimateFixedTokens(buildSystemPrompt(), agentTools)
     }
 
 /**
@@ -76,7 +62,7 @@ internal fun ChatViewModel.contextMeasurement(override: Double? = null): Context
     internal fun ChatViewModel.publishMeasuredContextUsage() {
         ensureContextFixedTokens()
         val measured = measureOutboundContextTokens()
-        if (measured > 0) _lastTurnContextTokens.value = measured
+        if (measured > 0) contextState.setLastTurnContextTokens(measured)
     }
 
 /**
@@ -95,7 +81,7 @@ internal fun ChatViewModel.contextMeasurement(override: Double? = null): Context
     internal fun ChatViewModel.publishContextUsage(crossingOnly: Boolean) {
         if (isHelper) return
         val usage = ContextUsage.from(
-            usedTokens = _lastTurnContextTokens.value,
+            usedTokens = contextState.lastTurnContextTokens.value,
             windowTokens = effectiveContextWindowTokens(),
         )
         // The glow is derived from [contextUsage] and needs no assignment
@@ -104,28 +90,28 @@ internal fun ChatViewModel.contextMeasurement(override: Double? = null): Context
         if (usage == null) return
 
         val now = System.currentTimeMillis()
-        val crossed = contextTierTracker.observe(usage.tier, now)
+        val crossed = contextState.contextTierTracker.observe(usage.tier, now)
         if (usage.tier == ContextUsage.Tier.NORMAL) return
         if (crossingOnly && !crossed) return
         // Loop end: skip a line the mid-loop path just showed for this tier.
         if (!crossingOnly && !crossed &&
-            contextTierTracker.recentlyFired(usage.tier, now)
+            contextState.contextTierTracker.recentlyFired(usage.tier, now)
         ) return
 
-        contextHintGeneration += 1
-        _contextUsageHint.value = ContextUsageHint(
-            generation = contextHintGeneration,
+        val gen = contextState.nextHintGeneration()
+        contextState.setContextUsageHint(ContextUsageHint(
+            generation = gen,
             text = "",  // resolved at render time — see composerContextUsageText
             highlights = listOf(
                 "${usage.percent}%",
                 TokenCountFormatter.sizePair(usage),
             ),
             tier = usage.tier,
-        )
-        contextTierTracker.markFired(usage.tier, now)
+        ))
+        contextState.contextTierTracker.markFired(usage.tier, now)
         AppLogger.info(
             TAG,
-            "[ContextUsage] hint gen=$contextHintGeneration tier=${usage.tier} " +
+            "[ContextUsage] hint gen=$gen tier=${usage.tier} " +
                 "${usage.percent}% (${usage.usedTokens}/${usage.windowTokens}) " +
                 "crossingOnly=$crossingOnly crossed=$crossed",
         )
@@ -153,23 +139,23 @@ internal fun ChatViewModel.contextMeasurement(override: Double? = null): Context
     internal fun ChatViewModel.announceContextUsageAfterCompaction() {
         if (isHelper) return
         val usage = ContextUsage.from(
-            usedTokens = _lastTurnContextTokens.value,
+            usedTokens = contextState.lastTurnContextTokens.value,
             windowTokens = effectiveContextWindowTokens(),
         ) ?: return
-        contextTierTracker.observe(usage.tier, System.currentTimeMillis())
-        contextHintGeneration += 1
-        _contextUsageHint.value = ContextUsageHint(
-            generation = contextHintGeneration,
+        contextState.contextTierTracker.observe(usage.tier, System.currentTimeMillis())
+        val gen = contextState.nextHintGeneration()
+        contextState.setContextUsageHint(ContextUsageHint(
+            generation = gen,
             text = "",  // resolved at render time — see composerContextUsageText
             highlights = listOf(
                 "${usage.percent}%",
                 TokenCountFormatter.sizePair(usage),
             ),
             tier = usage.tier,
-        )
+        ))
         AppLogger.info(
             TAG,
-            "[ContextUsage] post-compact hint gen=$contextHintGeneration tier=${usage.tier} " +
+            "[ContextUsage] post-compact hint gen=$gen tier=${usage.tier} " +
                 "${usage.percent}% (${usage.usedTokens}/${usage.windowTokens})",
         )
     }
@@ -220,8 +206,8 @@ internal inline fun ChatViewModel.compactAllImpl(
         noinline onFinished: ((Boolean) -> Unit)?,
         markStarted: () -> Unit,
     ) {
-        AppLogger.info(TAG, "[Compact] compactAll() invoked streaming=${_isStreaming.value} compacting=${_isCompacting.value} historySize=${agentHistory.size} anchorOverride=$anchorIdxOverride inLoop=$allowDuringProcessing")
-        if (_isStreaming.value && !allowDuringProcessing) {
+        AppLogger.info(TAG, "[Compact] compactAll() invoked streaming=${runState.isStreaming.value} compacting=${contextState.isCompacting.value} historySize=${agentHistory.size} anchorOverride=$anchorIdxOverride inLoop=$allowDuringProcessing")
+        if (runState.isStreaming.value && !allowDuringProcessing) {
             AppLogger.info(TAG, "[Compact] aborted: stream in progress")
             appendSystemInfo(
                 text = "Cannot compact while a turn is in progress. Stop the current response first.",
@@ -229,7 +215,7 @@ internal inline fun ChatViewModel.compactAllImpl(
             )
             return
         }
-        if (_isCompacting.value) {
+        if (contextState.isCompacting.value) {
             AppLogger.info(TAG, "[Compact] aborted: another compact already in flight")
             appendSystemInfo(
                 text = "A compact is already in progress. Please wait for it to finish.",
@@ -237,7 +223,7 @@ internal inline fun ChatViewModel.compactAllImpl(
             )
             return
         }
-        if (currentProvider == null) {
+        if (modelState.currentProvider == null) {
             appendSystemInfo("No provider configured. Cannot compact.", "compact")
             return
         }
@@ -246,7 +232,7 @@ internal inline fun ChatViewModel.compactAllImpl(
             appendSystemInfo("Nothing to compact — the session is empty.", "compact")
             return
         }
-        val range = compactionHistory.rangeToCompact(history, _cachedLatestMarker, anchorIdxOverride)
+        val range = contextState.compactionHistory.rangeToCompact(history, contextState.cachedLatestMarker, anchorIdxOverride)
         if (range == null) {
             appendSystemInfo("Cannot compact: no persisted messages yet.", "compact")
             return
@@ -260,7 +246,7 @@ internal inline fun ChatViewModel.compactAllImpl(
         // onFinished callback.
         markStarted()
         val compactMeasuredBefore = runCatching { measureOutboundContextTokens() }.getOrDefault(-1)
-        _isCompacting.value = true
+        contextState.setCompacting(true)
         // [T-compact-idle-timeout] The working limit is the per-stream idle
         // timer inside generateCompactSummary; this is only the runaway
         // backstop. Transcript length no longer scales it — under an idle timer
@@ -268,15 +254,15 @@ internal inline fun ChatViewModel.compactAllImpl(
         // total budget off it was what cancelled healthy streams mid-flight.
         val transcriptChars = CompactionSummary.transcript(toCompact).length
         val timeoutMs = COMPACT_MAX_TOTAL_MS
-        compactCallsIssued.set(0)
-        _compactProgress.value = CompactProgress(
+        contextState.compactCallsIssued.set(0)
+        contextState.setCompactProgress(CompactProgress(
             startedAtMs = System.currentTimeMillis(),
             depth = 0,
             callsIssued = 0,
             callBudget = MAX_COMPACT_LLM_CALLS,
             timeoutSeconds = (timeoutMs / 1000L).toInt(),
-            modelName = currentModel?.displayName,
-        )
+            modelName = modelState.currentModel?.displayName,
+        ))
         AppLogger.info(
             TAG,
             "[Compact] starting: ${toCompact.size} entries, ${transcriptChars} transcript chars, " +
@@ -287,26 +273,26 @@ internal inline fun ChatViewModel.compactAllImpl(
             history = history,
             range = range,
             sessionId = { realSessionId.ifEmpty { sessionId } },
-            callsIssued = compactCallsIssued::get,
-            summarize = { summarizeCompaction(toCompact, _compactSummary.value, timeoutMs) },
+            callsIssued = contextState.compactCallsIssued::get,
+            summarize = { summarizeCompaction(toCompact, contextState.compactSummary.value, timeoutMs) },
             publish = { marker ->
                 val projected = CompactionCoordinator.projectDivider(_messages.value, marker)
-                _compactSummary.value = marker.summary
-                _cachedLatestMarker = marker
+                contextState.setCompactSummary(marker.summary)
+                contextState.cachedLatestMarker = marker
                 _messages.value = projected
             },
             showInfo = { appendSystemInfo(it, "compact") },
             finish = { succeeded ->
-                _isCompacting.value = false
-                _compactProgress.value = null
+                contextState.setCompacting(false)
+                contextState.setCompactProgress(null)
                 if (succeeded) runCatching {
                     publishMeasuredContextUsage()
                     announceContextUsageAfterCompaction()
-                    AppLogger.info(TAG, "[CtxMeter] compacted marker=${_cachedLatestMarker?.id?.take(8)} measured $compactMeasuredBefore→${measureOutboundContextTokens()}")
+                    AppLogger.info(TAG, "[CtxMeter] compacted marker=${contextState.cachedLatestMarker?.id?.take(8)} measured $compactMeasuredBefore→${measureOutboundContextTokens()}")
                 }
                 onFinished?.invoke(succeeded)
-                if (succeeded && _promptQueue.value.isNotEmpty()) {
-                    AppLogger.info(TAG, "[Compact] success with ${_promptQueue.value.size} queued prompt(s) — kicking drain")
+                if (succeeded && runState.promptQueue.value.isNotEmpty()) {
+                    AppLogger.info(TAG, "[Compact] success with ${runState.promptQueue.value.size} queued prompt(s) — kicking drain")
                     resumeQueueAfterCancel()
                 }
             },
@@ -318,14 +304,14 @@ internal suspend fun ChatViewModel.summarizeCompaction(
         existing: String?,
         timeoutMs: Long,
     ): String {
-        val strategy = _selectedGroupId.value
+        val strategy = modelState.selectedGroupId.value
             ?.let { gid ->
                 providerRepository.config.value.modelGroups
                     .find { it.id == gid }?.fallbackStrategy
             }
             ?: com.openminis.app.data.model.FallbackStrategy.default
         val tried = mutableSetOf<String>()
-        _activeEntryId.value?.let { tried.add(it) }
+        modelState.activeEntryId.value?.let { tried.add(it) }
         var attempt = 0
         while (true) {
             attempt++
@@ -334,17 +320,17 @@ internal suspend fun ChatViewModel.summarizeCompaction(
                     CompactionSummary.summarize(
                         messages = toCompact,
                         previousSummary = existing,
-                        callsIssued = compactCallsIssued,
+                        callsIssued = contextState.compactCallsIssued,
                         onProgress = { depth, calls ->
-                            _compactProgress.value = _compactProgress.value?.copy(
+                            contextState.setCompactProgress(contextState.compactProgress.value?.copy(
                                 depth = depth,
                                 callsIssued = calls,
-                            )
+                            ))
                         },
                     ) { userMessage ->
-                        val provider = currentProvider
+                        val provider = modelState.currentProvider
                             ?: throw IllegalStateException("No LLM provider available for compaction")
-                        CompactionSummary.request(userMessage, currentModel, provider)
+                        CompactionSummary.request(userMessage, modelState.currentModel, provider)
                     }
                 }.trim()
             } catch (ce: CancellationException) {
@@ -358,16 +344,16 @@ internal suspend fun ChatViewModel.summarizeCompaction(
                     strategy == com.openminis.app.data.model.FallbackStrategy.always
                 val next = if (!worthSwitching) null else {
                     buildFallbackProviders(
-                        currentProvider ?: throw e,
+                        modelState.currentProvider ?: throw e,
                     ).firstOrNull { it.entryId !in tried }
                 }
                 if (next == null) throw e
                 tried.add(next.entryId)
-                val from = currentModel?.displayName ?: "?"
+                val from = modelState.currentModel?.displayName ?: "?"
                 withContext(Dispatchers.Main) {
                     adoptFallbackCandidate(next)
-                    _compactProgress.value = _compactProgress.value
-                        ?.copy(modelName = next.provider.model.displayName)
+                    contextState.setCompactProgress(contextState.compactProgress.value
+                        ?.copy(modelName = next.provider.model.displayName))
                 }
                 AppLogger.warning(
                     TAG,
@@ -378,21 +364,21 @@ internal suspend fun ChatViewModel.summarizeCompaction(
                 // Each candidate gets its own call budget; otherwise
                 // the first model's spent attempts would starve the
                 // replacement before it issues a single request.
-                compactCallsIssued.set(0)
+                contextState.compactCallsIssued.set(0)
             }
         }
     }
 
 internal fun ChatViewModel.revertCompactImpl() {
-        if (_isStreaming.value) {
+        if (runState.isStreaming.value) {
             appendSystemInfo("Cannot revert compact while a response is in progress.", "compact")
             return
         }
-        if (_isCompacting.value) {
+        if (contextState.isCompacting.value) {
             appendSystemInfo("Cannot revert compact while compaction is in progress.", "compact")
             return
         }
-        val current = _cachedLatestMarker ?: run {
+        val current = contextState.cachedLatestMarker ?: run {
             appendSystemInfo("Nothing to revert — no compact marker on this session.", "compact")
             return
         }
@@ -410,8 +396,8 @@ internal fun ChatViewModel.revertCompactImpl() {
                 }
                 is CompactionCoordinator.RevertResult.Removed -> result.previous
             }
-            _cachedLatestMarker = next
-            _compactSummary.value = next?.summary
+            contextState.cachedLatestMarker = next
+            contextState.setCompactSummary(next?.summary)
 
             // Rebuild UI from DB so the previous marker's divider re-emerges
             // (or all dividers vanish if there are no remaining markers).
@@ -427,7 +413,7 @@ internal fun ChatViewModel.revertCompactImpl() {
             // marker, so divider position falls back to the previous one
             // (or disappears entirely). loadSession() launches its own
             // viewModelScope job, so call from the Main thread.
-            pendingRevertLogMarker = current.id.take(8)
+            contextState.pendingRevertLogMarker = current.id.take(8)
             withContext(Dispatchers.Main) {
                 reloadSessionFromDb()
             }
@@ -491,7 +477,7 @@ internal fun ChatViewModel.offloadLargestPartForOverflow(): Boolean =
         val result = RequestImageBudget.apply(messages) {
             java.io.File(context.filesDir, "minis-sessions/$activeSessionId/attachments")
         } ?: return messages
-        _requestBudgetEvent.tryEmit(result.plan)
+        contextState.emitRequestBudgetEvent(result.plan)
         val plan = result.plan
         AppLogger.info(
             TAG,
@@ -507,20 +493,20 @@ internal fun ChatViewModel.offloadLargestPartForOverflow(): Boolean =
      * cannot fix.
      */
     internal fun ChatViewModel.effectiveAgentHistory(): List<LLMMessage> =
-        compactionHistory.dropOrphanedToolParts(effectiveAgentHistoryUncounted(), activeSessionId)
+        contextState.compactionHistory.dropOrphanedToolParts(effectiveAgentHistoryUncounted(), activeSessionId)
 
 internal fun ChatViewModel.personaReminderIsDue(contextTokens: Int): Boolean {
         val (due, updatedLast) = ChatSystemPromptAssembler.evaluatePersonaReminderDue(
             contextTokens = contextTokens,
-            lastReminderTokens = lastPersonaReminderContextTokens,
+            lastReminderTokens = contextState.lastPersonaReminderContextTokens,
             history = agentHistory,
         )
-        if (!due) lastPersonaReminderContextTokens = updatedLast
+        if (!due) contextState.lastPersonaReminderContextTokens = updatedLast
         return due
     }
 
 internal fun ChatViewModel.appendPersonaReminderToHistory(contextTokens: Int) {
-        val hasGlobal = _memoryEnabled.value && memoryRepository?.loadGlobalMemoryFragment() != null
+        val hasGlobal = runState.memoryEnabled.value && memoryRepository?.loadGlobalMemoryFragment() != null
         val reminder = ChatSystemPromptAssembler.personaReminderText(hasGlobal)
         val idx = agentHistory.size
         agentHistory.add(
@@ -530,7 +516,7 @@ internal fun ChatViewModel.appendPersonaReminderToHistory(contextTokens: Int) {
                 contentParts = listOf(AgentContentPart.Text(reminder)),
             )
         )
-        lastPersonaReminderContextTokens = contextTokens
+        contextState.lastPersonaReminderContextTokens = contextTokens
         val sid = activeSessionId
         viewModelScope.launch(Dispatchers.IO) {
             val partsJson = ChatPayloadCodec.singleTextPartsJson(reminder)
@@ -543,13 +529,13 @@ internal fun ChatViewModel.appendPersonaReminderToHistory(contextTokens: Int) {
     }
 
 internal fun ChatViewModel.effectiveAgentHistoryUncounted(): List<LLMMessage> =
-        compactionHistory.outbound(agentHistory, _compactSummary.value, _cachedLatestMarker, ::currentWarmUpBudget)
+        contextState.compactionHistory.outbound(agentHistory, contextState.compactSummary.value, contextState.cachedLatestMarker, ::currentWarmUpBudget)
 
 internal fun ChatViewModel.currentWarmUpBudget(): Int? = warmUpBudget(
         window = effectiveContextWindowTokens(),
         compactThreshold = currentContextPolicy()?.first?.compactThreshold,
         ratio = contextCalibrationRatio(),
-        fixedTokens = contextMeter.fixedTokens,
+        fixedTokens = contextState.contextMeter.fixedTokens,
     )
 
 /**
@@ -625,13 +611,10 @@ internal fun ChatViewModel.currentWarmUpBudget(): Int? = warmUpBudget(
 
 internal fun ChatViewModel.compactAndSendPendingImpl(alsoEnableAutoCompact: Boolean = false) {
         if (alsoEnableAutoCompact) setAutoCompactEnabled(true)
-        _showCompactBeforeSendPrompt.value = false
-        val text = pendingSendText ?: return
-        pendingSendText = null
-        val prefill = pendingSendPrefill
-        pendingSendPrefill = emptyList()
-        val headless = pendingSendHeadless
-        pendingSendHeadless = false
+        val pending = contextState.takePendingSend()
+        val text = pending.text ?: return
+        val prefill = pending.prefill
+        val headless = pending.headless
         viewModelScope.launch {
             val ok = awaitCompaction()
             if (!ok) {
@@ -642,23 +625,16 @@ internal fun ChatViewModel.compactAndSendPendingImpl(alsoEnableAutoCompact: Bool
     }
 
 internal fun ChatViewModel.sendPendingWithoutCompactingImpl() {
-        _showCompactBeforeSendPrompt.value = false
-        val text = pendingSendText ?: return
-        pendingSendText = null
-        val prefill = pendingSendPrefill
-        pendingSendPrefill = emptyList()
-        val headless = pendingSendHeadless
-        pendingSendHeadless = false
+        val pending = contextState.takePendingSend()
+        val text = pending.text ?: return
+        val prefill = pending.prefill
+        val headless = pending.headless
         sendMessage(text, skipContextCheck = true, headless = headless, prefill = prefill)
     }
 
 internal fun ChatViewModel.cancelCompactBeforeSendImpl() {
-        _showCompactBeforeSendPrompt.value = false
-        // Only the user's own text goes back into the composer.
-        if (!pendingSendHeadless) pendingSendText?.let { _inputText.value = it }
-        pendingSendText = null
-        pendingSendPrefill = emptyList()
-        pendingSendHeadless = false
+        val pending = contextState.takePendingSend()
+        if (!pending.headless) pending.text?.let { draftStore.setInputText(it) }
     }
 
 /**
@@ -704,7 +680,7 @@ internal fun ChatViewModel.cancelCompactBeforeSendImpl() {
             ContextPolicy.CheckResult.OK -> InLoopContextAction.PROCEED
 
             ContextPolicy.CheckResult.NEEDS_COMPACT -> {
-                val canCompact = compactionsSoFar < maxInLoopCompactions && !lastInLoopCompactionMadeNoProgress
+                val canCompact = compactionsSoFar < maxInLoopCompactions && !contextState.lastInLoopCompactionMadeNoProgress
                 if (!canCompact) return settleWithoutCompacting(m, window, compactionsSoFar)
                 // NOTE: deliberately NOT gated on AutoCompactPrefs. That flag
                 // governs the SEND-time decision (compact silently vs. ask
@@ -727,7 +703,7 @@ internal fun ChatViewModel.cancelCompactBeforeSendImpl() {
                 // progress (parity with iOS) and settles like one: still
                 // sendable if it fits, or once on the raw estimate.
                 if (!ok) {
-                    lastInLoopCompactionMadeNoProgress = true
+                    contextState.lastInLoopCompactionMadeNoProgress = true
                     return settleWithoutCompacting(m, window, compactionsSoFar)
                 }
                 // [T-ctx-measure-outbound] The next iteration re-measures the
@@ -737,11 +713,11 @@ internal fun ChatViewModel.cancelCompactBeforeSendImpl() {
                 // recorded is whether this pass actually shrank the request —
                 // one that did not is not retried.
                 val after = measureOutboundContextTokens()
-                lastInLoopCompactionMadeNoProgress = after >= tokens
+                contextState.lastInLoopCompactionMadeNoProgress = after >= tokens
                 AppLogger.info(
                     TAG,
                     "[AutoCompact] mid-loop compact result: measured $tokens → $after" +
-                        if (lastInLoopCompactionMadeNoProgress) " (no progress — will not retry)" else "",
+                        if (contextState.lastInLoopCompactionMadeNoProgress) " (no progress — will not retry)" else "",
                 )
                 InLoopContextAction.COMPACTED
             }
@@ -777,20 +753,20 @@ internal fun ChatViewModel.cancelCompactBeforeSendImpl() {
             window = window,
             canCompact = false,
             ratio = m.ratio,
-            uncalibratedSendUsed = contextMeter.sentPastExtrapolatedLimit,
+            uncalibratedSendUsed = contextState.contextMeter.sentPastExtrapolatedLimit,
         )
         return when (step) {
             ContextPolicy.InLoopStep.SEND_WITHIN_WINDOW -> {
                 AppLogger.info(
                     TAG,
                     "[AutoCompact] above threshold after $compactionsSoFar compaction(s) " +
-                        "(noProgress=$lastInLoopCompactionMadeNoProgress) but within the window " +
+                        "(noProgress=${contextState.lastInLoopCompactionMadeNoProgress}) but within the window " +
                         "(${m.measured} / $window) — sending",
                 )
                 InLoopContextAction.PROCEED
             }
             ContextPolicy.InLoopStep.SEND_UNCALIBRATED_ONCE -> {
-                contextMeter.sentPastExtrapolatedLimit = true
+                contextState.contextMeter.sentPastExtrapolatedLimit = true
                 AppLogger.warning(
                     TAG,
                     "[AutoCompact] calibrated size over the window but the raw estimate fits " +
@@ -845,8 +821,8 @@ internal fun ChatViewModel.cancelCompactBeforeSendImpl() {
      * previous behaviour.
      */
     internal fun ChatViewModel.offloadScanStartIndex(): Int {
-        if (_compactSummary.value.isNullOrBlank()) return 0
-        val marker = _cachedLatestMarker ?: return 0
+        if (contextState.compactSummary.value.isNullOrBlank()) return 0
+        val marker = contextState.cachedLatestMarker ?: return 0
         if (marker.version < 2) return 0
         val anchorId = marker.lastCompactedMessageId?.takeIf { it.isNotEmpty() } ?: return 0
         val anchorIdx = agentHistory.indexOfLast { it.dbMessageId == anchorId }
@@ -854,7 +830,7 @@ internal fun ChatViewModel.cancelCompactBeforeSendImpl() {
     }
 
 internal fun ChatViewModel.offloadWarmUpScanPlan(): Pair<List<Int>, Set<String>> =
-        compactionHistory.offloadWarmUpScanPlan(agentHistory, _compactSummary.value, _cachedLatestMarker)
+        contextState.compactionHistory.offloadWarmUpScanPlan(agentHistory, contextState.compactSummary.value, contextState.cachedLatestMarker)
 
 /**
      * Offload candidate descriptor. `msgIdx` and `partIdx` index back into

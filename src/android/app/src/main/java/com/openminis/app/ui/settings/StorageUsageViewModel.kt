@@ -137,20 +137,40 @@ internal class StorageUsageViewModel(
         val shellSize: Long = 0L,
         val dbSize: Long = 0L,
         val logsCachesSize: Long = 0L,
+        val orphanSize: Long = 0L,
+        val orphanDirCount: Int = 0,
+        val deviceFreeBytes: Long = 0L,
         val rows: List<SessionStorageInfo> = emptyList(),
         val isClearingLogs: Boolean = false,
+        val isOptimizing: Boolean = false,
+        val searchQuery: String = "",
+        val sortBySize: Boolean = true,
         val selecting: Boolean = false,
         val selectedIds: Set<String> = emptySet(),
         val batchBusy: Boolean = false,
     ) {
         val totalSessionSize: Long get() = SessionStorageRows.total(rows)
+        val totalAppSize: Long get() = shellSize + dbSize + totalSessionSize + logsCachesSize + orphanSize
         val selectedSize: Long get() = rows.filter { it.id in selectedIds }.sumOf { it.totalSize }
+        val filteredRows: List<SessionStorageInfo>
+            get() {
+                val q = searchQuery.trim().lowercase()
+                val base = if (q.isEmpty()) rows else rows.filter {
+                    (it.title ?: "Untitled").lowercase().contains(q) || it.id.lowercase().contains(q)
+                }
+                return if (sortBySize) {
+                    SessionStorageRows.sorted(base)
+                } else {
+                    base.sortedWith(compareBy<SessionStorageInfo> { (it.title ?: "Untitled").lowercase() }.thenBy { it.id })
+                }
+            }
     }
 
-    /** Outcome of a batch action, shown once as a toast. */
+    /** Outcome of a batch or optimization action, shown once as a toast. */
     sealed interface BatchResult {
         data class Cleared(val sessions: Int, val freed: Long, val failedPaths: List<String>) : BatchResult
         data class Deleted(val sessions: Int, val freed: Long) : BatchResult
+        data class Optimized(val dbReclaimed: Long, val orphanFreed: Long, val orphanDirsRemoved: Int) : BatchResult
     }
 
     private val _state = MutableStateFlow(UiState())
@@ -171,6 +191,7 @@ internal class StorageUsageViewModel(
             val started = System.currentTimeMillis()
             val scanned = withContext(Dispatchers.IO) {
                 val allSessions = repo.dao.listSessions()
+                val knownIds = allSessions.mapTo(HashSet()) { it.id }
                 val parentOf = allSessions.associate { it.id to it.parentSessionId }
                 val rows = aggregateSessionStorage(allSessions, storage).map { (session, minis, media) ->
                     SessionStorageInfo(
@@ -181,15 +202,26 @@ internal class StorageUsageViewModel(
                         childCount = SessionTree.membersOf(session.id, parentOf).size - 1,
                     )
                 }
+                val orphanSummary = storage.findOrphanDiskEntries(knownIds)
                 UiState(
                     isLoading = false,
                     shellSize = SessionStorage.directorySize(File(appContext.filesDir, "alpine-rootfs")),
                     dbSize = databaseSize(appContext),
                     logsCachesSize = LogsAndCachesCleaner.size(appContext),
+                    orphanSize = orphanSummary.totalBytes,
+                    orphanDirCount = orphanSummary.dirCount,
+                    deviceFreeBytes = com.openminis.app.data.db.DatabaseMaintenance.usableSpaceBytes(appContext.filesDir),
                     rows = SessionStorageRows.sorted(rows),
                 )
             }
-            _state.update { scanned.copy(selecting = it.selecting, selectedIds = it.selectedIds) }
+            _state.update {
+                scanned.copy(
+                    selecting = it.selecting,
+                    selectedIds = it.selectedIds,
+                    searchQuery = it.searchQuery,
+                    sortBySize = it.sortBySize,
+                )
+            }
             AppLogger.info(
                 TAG,
                 "full scan: ${scanned.rows.size} sessions in ${System.currentTimeMillis() - started}ms",
@@ -236,12 +268,56 @@ internal class StorageUsageViewModel(
         if (_state.value.isClearingLogs) return
         _state.update { it.copy(isClearingLogs = true) }
         viewModelScope.launch {
-            val size = withContext(Dispatchers.IO) {
+            val (size, freeBytes) = withContext(Dispatchers.IO) {
                 LogsAndCachesCleaner.clear(appContext)
-                LogsAndCachesCleaner.size(appContext)
+                LogsAndCachesCleaner.size(appContext) to
+                    com.openminis.app.data.db.DatabaseMaintenance.usableSpaceBytes(appContext.filesDir)
             }
-            _state.update { it.copy(isClearingLogs = false, logsCachesSize = size) }
+            _state.update { it.copy(isClearingLogs = false, logsCachesSize = size, deviceFreeBytes = freeBytes) }
         }
+    }
+
+    /**
+     * Compact SQLite (`VACUUM` + WAL truncate) and sweep orphaned residual
+     * session/media directories whose database rows no longer exist.
+     */
+    fun optimizeStorage() {
+        if (_state.value.isOptimizing) return
+        _state.update { it.copy(isOptimizing = true) }
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                val knownIds = repo.dao.listSessions().mapTo(HashSet()) { it.id }
+                val orphanSweep = storage.sweepOrphanDiskEntries(knownIds)
+                val dbCompact = com.openminis.app.data.db.DatabaseMaintenance.compact(appContext)
+                val remainingOrphans = storage.findOrphanDiskEntries(knownIds)
+                val freeBytes = com.openminis.app.data.db.DatabaseMaintenance.usableSpaceBytes(appContext.filesDir)
+                Triple(dbCompact, orphanSweep, Triple(remainingOrphans, dbCompact.afterBytes, freeBytes))
+            }
+            val (dbCompact, orphanSweep, refreshed) = outcome
+            val (remainingOrphans, newDbSize, freeBytes) = refreshed
+            _state.update {
+                it.copy(
+                    isOptimizing = false,
+                    dbSize = newDbSize,
+                    orphanSize = remainingOrphans.totalBytes,
+                    orphanDirCount = remainingOrphans.dirCount,
+                    deviceFreeBytes = freeBytes,
+                )
+            }
+            _result.value = BatchResult.Optimized(
+                dbReclaimed = dbCompact.reclaimedBytes,
+                orphanFreed = orphanSweep.bytesFreed,
+                orphanDirsRemoved = orphanSweep.dirsRemoved,
+            )
+        }
+    }
+
+    fun setSearchQuery(query: String) {
+        _state.update { it.copy(searchQuery = query) }
+    }
+
+    fun toggleSortMode() {
+        _state.update { it.copy(sortBySize = !it.sortBySize) }
     }
 
     // ─── Multi-select ──────────────────────────────────────────────────────

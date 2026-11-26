@@ -2,7 +2,6 @@ package com.openminis.app.ui.chat
 
 import com.openminis.app.data.model.LLMError
 import com.openminis.app.data.model.LLMModel
-import com.openminis.app.data.model.effectiveInputModalities
 
 /**
  * [T-android-image-input-preflight] Pre-send modality check for image

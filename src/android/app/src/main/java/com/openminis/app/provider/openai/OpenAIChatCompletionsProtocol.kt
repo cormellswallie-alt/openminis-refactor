@@ -362,13 +362,16 @@ internal object OpenAIChatCompletionsProtocol {
 
     fun parseUsage(usage: JSONObject): LLMUsage {
         val promptTokens = usage.optInt("prompt_tokens", 0)
-        val cacheRead = usage.optJSONObject("prompt_tokens_details")
-            ?.optInt("cached_tokens")?.takeIf { it > 0 }
+        val promptDetails = usage.optJSONObject("prompt_tokens_details")
+        val cacheRead = promptDetails?.optInt("cached_tokens")?.takeIf { it > 0 }
             ?: usage.optInt("prompt_cache_hit_tokens", 0).takeIf { it > 0 }
+        val cacheCreation = promptDetails?.optInt("cache_write_tokens", 0)?.takeIf { it > 0 }
+            ?: usage.optInt("cache_creation_input_tokens", 0).takeIf { it > 0 }
         val freshInput = cacheRead?.let { (promptTokens - it).takeIf { d -> d >= 0 } } ?: promptTokens
         return LLMUsage(
             inputTokens = freshInput,
             outputTokens = usage.optInt("completion_tokens", 0),
+            cacheCreationInputTokens = cacheCreation,
             cacheReadInputTokens = cacheRead,
             latestContextTokens = promptTokens,
         )
@@ -509,7 +512,7 @@ internal class ChatCompletionsStreamSession(
             val toolCalls = delta?.optJSONArray("tool_calls")
             if (toolCalls != null) {
                 for (i in 0 until toolCalls.length()) {
-                    val tc = toolCalls.getJSONObject(i)
+                    val tc = toolCalls.optJSONObject(i) ?: continue
                     val idx = tc.optInt("index", 0)
                     val acc = toolCallAccumulators.getOrPut(idx) { ToolCallAccumulator() }
 
@@ -568,11 +571,17 @@ internal class ChatCompletionsStreamSession(
             if (fin.visible.isNotEmpty()) emit(LLMStreamChunk.Text(fin.visible))
         }
 
-        for ((_, acc) in toolCallAccumulators) {
-            if (acc.id.isNotEmpty() && acc.name.isNotEmpty()) {
+        for ((idx, acc) in toolCallAccumulators) {
+            if (acc.name.isNotEmpty()) {
+                val effectiveId = acc.id.ifEmpty { "call_idx_$idx" }
+                if (!acc.started) {
+                    acc.started = true
+                    android.util.Log.d("ToolChain[Provider]", "→ ToolUseStart (synthesized) id=$effectiveId name=${acc.name}")
+                    emit(LLMStreamChunk.ToolUseStart(effectiveId, acc.name))
+                }
                 val args = try { JSONObject(acc.args.toString()) } catch (_: Exception) { JSONObject() }
-                android.util.Log.d("ToolChain[Provider]", "→ ToolCallComplete id=${acc.id} name=${acc.name} args=${args.toString().take(300)}")
-                emit(LLMStreamChunk.ToolCallComplete(acc.id, acc.name, args))
+                android.util.Log.d("ToolChain[Provider]", "→ ToolCallComplete id=$effectiveId name=${acc.name} args=${args.toString().take(300)}")
+                emit(LLMStreamChunk.ToolCallComplete(effectiveId, acc.name, args))
             }
         }
 

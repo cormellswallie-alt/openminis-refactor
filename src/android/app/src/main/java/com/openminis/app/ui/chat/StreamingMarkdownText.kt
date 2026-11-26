@@ -4,25 +4,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.res.stringResource
 import com.openminis.app.R
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.clickable
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -31,7 +20,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -48,30 +36,22 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.draw.shadow
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asAndroidBitmap
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.openminis.app.ui.DisplayBitmapLimits.limitDisplaySize
 import com.openminis.app.sandbox.PRootKernel
 import com.openminis.app.ui.theme.ChatColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.conflate
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
@@ -308,35 +288,15 @@ internal fun MdText(
     isAtomicSelectionUnit: Boolean = false,
     textAlign: TextAlign? = null,
 ) {
-    // [T-android-stream-live-redraw-loop] The latest TextLayoutResult lives in
-    // a plain holder, NOT snapshot state. It used to be a MutableState that
-    // onTextLayout overwrote with a fresh object on every layout pass, and
-    // three things subscribed to it: the shard `remember` below (composition
-    // scope), and both drawBehind modifiers (draw scope). Every layout
-    // therefore invalidated draw AND recomposed this composable, and on a
-    // live streaming block that kept the frame pipeline busy between the
-    // 500 ms publishes — measured on a Pixel 4a as record(draw) 18 ms p50 on
-    // a 2–8k-char block and ~93 % of frames over budget.
-    //
-    // Reading the holder from draw is safe: layout runs before draw within a
-    // frame, and a text/size change already invalidates this node's draw, so
-    // the drawBehind lambdas always see the current result when they run.
+    // [T-android-stream-live-redraw-loop] The latest TextLayoutResult lives in a plain holder, NOT
+    // snapshot state.
     val layoutResultHolder = remember { arrayOfNulls<androidx.compose.ui.text.TextLayoutResult>(1) }
     // Composition only needs to know when the layout changed in a way the
     // selection shard cares about: different text, size, or line count.
     // Identical re-layouts (same text, same geometry) do not bump it.
     var layoutGen by remember { androidx.compose.runtime.mutableIntStateOf(0) }
-    // MinisTextKit registration: when this MdText is inside a markdown
-    // fragment that supplied a shard id (LocalShardId) AND a controller
-    // (LocalMinisSelectionController), publish a TextShard so the controller
-    // can hit-test, highlight, and copy through this text node.
-    // Use a single-cell array (no snapshot state) — coordinatesProvider's
-    // closure reads the current value lazily, so this doesn't need to
-    // invalidate any composable when the layout coords change. The
-    // previous mutableStateOf wrapper turned every onGloballyPositioned
-    // pass into a state write, forcing this MdText to recompose on every
-    // scroll frame even when no selection was active — measurable
-    // contributor to scroll jank.
+    // MinisTextKit registration: when this MdText is inside a markdown fragment that supplied a shard
+    // id (LocalShardId) AND a controller (LocalMinisSelectionController), publish a TextShard so…
     val layoutCoordinatesHolder = remember { arrayOfNulls<androidx.compose.ui.layout.LayoutCoordinates>(1) }
     val baseShardId = LocalShardId.current
     // [T-android-markdown-longtext-selection-broken] Disambiguate this MdText
@@ -395,31 +355,13 @@ internal fun MdText(
     // default (LocalAppendOnlyFade=false) so cold-loaded history and
     // completed messages render fully opaque without per-frame work.
     val fadeEnabled = LocalAppendOnlyFade.current
-    // [T-android-stream-fade-seed] Was fade on from this MdText's FIRST
-    // composition? Only then is the text it first receives genuinely new
-    // (a paragraph that appeared as the live tail). A block rendered opaque
-    // that only LATER became the live tail — the reported case: a bullet
-    // list that was not the last block until its next item's text landed —
-    // already showed its text; a controller created at that flip must adopt
-    // it, not re-fade it from alpha 0.
-    //
-    // Keyless remember on purpose: it must capture the value at birth and
-    // keep it, so a later flip cannot rewrite history.
+    // [T-android-stream-fade-seed] Was fade on from this MdText's FIRST composition?
     val fadeFromBirth = remember { fadeEnabled }
     val fadeController = if (fadeEnabled) rememberFadeController() else null
     if (fadeController != null) {
-        // Ingest synchronously during composition (not in a LaunchedEffect):
-        // the moment a recomposition delivers grown text, slice the new
-        // suffix into fade ranges so the SAME frame renders them at α=0.
-        // Deferring to a LaunchedEffect committed the opaque text first,
-        // making the fade invisible. ingest() is a cheap prefix-diff and
-        // no-ops when text is unchanged, so calling it every compose is safe.
-        //
-        // [T-android-stream-fade-reentry] A controller's first text is only
-        // "new" if this node has never shown it. Re-entering a chat mid-stream,
-        // or scrolling the streaming message out and back, recreates the node
-        // from scratch; FadeShownText remembers what it showed, so only the
-        // text beyond that fades.
+        // [T-android-stream-fade-reentry] Ingest synchronously during composition (not in a
+        // LaunchedEffect): the moment a recomposition delivers grown text, slice the new suffix into fade
+        // ranges so the SAME frame renders them at α=0.
         val fadeKey = baseShardId?.let { "${it.messageId}/${it.shardId}" }
         if (!fadeController.hasSeenText) {
             val plan = fadeBirthPlan(fadeFromBirth, fadeKey?.let { FadeShownText.get(it) } ?: emptyList(), text.text)
@@ -445,16 +387,8 @@ internal fun MdText(
         if (fadeKey != null) FadeShownText.put(fadeKey, text.text)
         FadeFrameDriver(fadeController)
     }
-    // [T-android-stream-fade-relayout] The fade is a MASK drawn over the
-    // fading words, not a per-frame rewrite of the AnnotatedString. The old
-    // overlay() rebuilt the whole string with alpha spans every frame, which
-    // made Text re-lay-out and re-record the ENTIRE live paragraph per vsync
-    // (measured: record(draw) 8→18 ms as the block grew 2k→8k chars, ~93 % of
-    // frames over budget for the whole stream). Layer order matters: the
-    // OUTER graphicsLayer owns the per-frame mask re-record; the INNER one
-    // holds the text and is never re-recorded while the fade runs. Reading
-    // the controller's snapshot state inside drawWithContent invalidates only
-    // the outer layer — no recomposition, no re-layout.
+    // [T-android-stream-fade-relayout] The fade is a MASK drawn over the fading words, not a per-frame
+    // rewrite of the AnnotatedString.
     val fadeMaskColor = ChatColors.background
     val fadeMaskModifier = if (fadeController != null) {
         Modifier
@@ -532,26 +466,8 @@ internal fun MdText(
         overflow = overflow,
         inlineContent = inlineContent,
         textAlign = textAlign,
-        // [T-android-md-lineheight-trim] Spend `lineHeight` BETWEEN lines only,
-        // not above the first or below the last.
-        //
-        // Compose's default splits the leading (lineHeight - fontSize = 8sp at
-        // our 24/16) evenly around EVERY line, including the outer edges — so a
-        // paragraph carries ~4sp of invisible space below its last baseline and
-        // the same above its first. That slack is inside the Text node, so no
-        // caller can see or subtract it, and it silently inflated every gap
-        // measured between a text block and its neighbour.
-        //
-        // Concretely it broke the spacing contract documented on
-        // ChatUserMessageUI (`user.bottom(4) + spacedBy(2) + header.top(10) = 16`)
-        // in ONE direction: the Assistant→User boundary measured ~34dp on a
-        // Pixel 6 against ~21dp for User→Assistant, because only the former has
-        // a markdown paragraph on the near side. The fixed-value arithmetic was
-        // right; it just never accounted for leading it could not see.
-        //
-        // Trim(FirstLineTop + LastLineBottom) removes only the OUTER half-leadings.
-        // Inter-line spacing inside a paragraph is untouched, so body text reads
-        // exactly as before — this is not a density change.
+        // [T-android-md-lineheight-trim] Spend `lineHeight` BETWEEN lines only, not above the first or
+        // below the last.
         style = LocalTextStyle.current.merge(
             TextStyle(
                 lineHeightStyle = LineHeightStyle(
@@ -621,21 +537,7 @@ internal fun MdText(
                     val lineStart = if (line == startLine) startOffset else result.getLineStart(line)
                     val lineEnd = if (line == endLine) endOffset else result.getLineEnd(line)
                     if (lineEnd <= lineStart) continue
-                    // T299: walk per-character via getBoundingBox and take
-                    // min(left)/max(right) directly. T265 used
-                    // getPathForRange(lineStart, lineEnd).getBounds() which
-                    // was correct for bidi-pure runs but regressed when an
-                    // inline code span itself contains an internal space and
-                    // sits inside CJK prose (e.g. prose like "put it next to
-                    // `Hermes Agent notes.md` and `Minis tutorial.md`"). The
-                    // path returned for that range can include zero-width
-                    // sub-paths at run boundaries; getBounds()'s union then
-                    // expands left to a coordinate from a sibling run, which
-                    // ends up painted behind the surrounding prose instead
-                    // of the code. Per-character boxes are immune to that
-                    // because each box is a single character's tight
-                    // rectangle. iOS uses fillBackgroundRectArray which has
-                    // the same per-glyph guarantee.
+                    // T299 T265 walk per-character via getBoundingBox and take min(left)/max(right) directly.
                     var left = Float.POSITIVE_INFINITY
                     var right = Float.NEGATIVE_INFINITY
                     for (offset in lineStart until lineEnd) {
@@ -686,22 +588,8 @@ internal fun MdText(
  * When the stream finishes ([isStreaming] flips to false), the final value
  * is published immediately so the user never sees a truncated last frame.
  */
-// Adaptive streaming throttle, mirrors iOS CollectionViewMessageListV3
-// `flushStreamingLayout` (100 ms when auto-scrolling, 3 s when away). On
-// Android we don't have direct access to the chat-level scroll state from
-// here, so substitute "doc length" as a proxy: long documents already cost
-// more per parse pass, so amortize them by sampling less often. Crashes
-// observed on Pixel 6 traced to ICU `RegexPattern::matcher` allocations
-// piling up under Scudo (OOM at ~140s of streaming) — slowing parses on
-// large bodies cuts native allocation pressure dramatically.
-//
-// [T-android-stream-flush-dualpath] Time-throttle tiers ported verbatim from
-// iOS AIChatViewModel+SSEStream (the `throttle` ladder): the time path is one
-// half of the dual-path flush — the other half is the newline fast-path below.
-// Tiers scale with total length to hold the Pixel 4a ANR / Pixel 6 Scudo-OOM
-// line on dense streams while keeping short replies responsive.
-//   < 500  : 200ms   < 2000 : 300ms   < 32K : 500ms
-//   < 64K  : 1000ms  < 128K : 1500ms  else  : 2000ms
+// [T-android-stream-flush-dualpath] Adaptive streaming throttle, mirrors iOS
+// CollectionViewMessageListV3 `flushStreamingLayout` (100 ms when auto-scrolling, 3 s when away).
 internal fun streamingThrottleFor(content: String): Long = when {
     content.length < 500 -> 200L
     content.length < 2_000 -> 300L
@@ -771,19 +659,9 @@ private fun StreamingMarkdownTextBody(
 
     ShardSubIndexScope {
         Column(modifier = modifier) {
-            // [T-android-stream-fade] Last block during a live stream gets
-            // LocalAppendOnlyFade=true so MdText fades in newly-appended
-            // word ranges (mirrors iOS TextFadeAnimator). Every other block
-            // — completed prefix, non-streaming sessions — renders opaque.
-            // [T-android-stream-fade-seed] Every block goes through the SAME
-            // composable shape while streaming — a provider whose VALUE says
-            // whether it is the live tail — rather than an if/else that wraps
-            // only the last block. The two branches were different groups, so
-            // whenever `lastIdx` shifted (a trailing block re-parsed away, the
-            // list before it became last) Compose disposed and rebuilt the
-            // whole subtree: every MdText lost its fade controller and its
-            // already-visible text re-faded from alpha 0. Gated on isStreaming
-            // so frozen history composes exactly as before.
+            // [T-android-stream-fade] [T-android-stream-fade-seed] Last block during a live stream gets
+            // LocalAppendOnlyFade=true so MdText fades in newly-appended word ranges (mirrors iOS
+            // TextFadeAnimator).
             val lastIdx = blocks.size - 1
             if (isStreaming) {
                 blocks.forEachIndexed { idx, block ->
@@ -1052,38 +930,12 @@ private fun MarkdownBlockBody(
     isStreaming: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    // [T-android-freeze-edge-carryover] The live branch's most recent parse
-    // and the text it was for, held ABOVE the live/frozen switch. The list key
-    // (mdblock:<msg>:<block>:<index>) does not include isStreaming, so this
-    // composable — and this remember — survive the flip.
-    //
-    // Why the cache deposit alone was not enough: the VM flushes on newline,
-    // so a real model routinely lands a table's last row and the blank line
-    // after it in ONE publish. The fragment then goes from "4 rows, live"
-    // straight to "5 rows, frozen" — its final text is never composed live,
-    // the deposit is keyed to the 4-row text, and the frozen lookup misses.
-    // The miss then paints the plain-text preview for as long as the
-    // off-main parse takes: tens of ms on a small table, visibly longer on a
-    // wide one with Default contended by a running agent. That is the flash.
-    //
-    // A plain holder, not snapshot state: written from the parse coroutine,
-    // read in composition, must not invalidate anything by itself.
+    // [T-android-freeze-edge-carryover] The live branch's most recent parse and the text it was for,
+    // held ABOVE the live/frozen switch.
     val liveCarry = remember { arrayOf<Pair<String, List<MdBlock>>?>(null) }
-    // For frozen blocks, parse once per distinct fragment text PROCESS-WIDE
-    // ([MarkdownParseCaches.blocks]) — scroll-away/return and session re-entry
-    // are cache hits instead of fresh main-thread parses. remember() keeps the
-    // per-composition lookup free.
-    //
-    // [T-android-coldload-offmain-parse] Cold-load split: a cache HIT (or a
-    // small fragment) still renders synchronously — no flicker on
-    // scroll-back / re-entry, and small parses are sub-ms. A cache MISS on a
-    // BIG fragment must NOT parse in composition: on session open the
-    // viewport's fragments all miss at once and the synchronous
-    // parseMarkdownBlocksBlocking + inline scans froze the main thread for
-    // seconds (tester log: 3.5–8.5s on a 33K-char message; the streaming
-    // breaker/degrade only cover isStreaming=true). Those parse off-main
-    // with a bounded plain-text preview in the meantime — same structure as
-    // the live branch below.
+    // [T-android-coldload-offmain-parse] For frozen blocks, parse once per distinct fragment text
+    // PROCESS-WIDE ([MarkdownParseCaches.blocks]) — scroll-away/return and session re-entry are cache
+    // hits instead of fresh main-thread…
     if (!isStreaming) {
         val cached = remember(rawText) {
             MarkdownParseCaches.cachedBlocks(rawText)
@@ -1092,18 +944,6 @@ private fun MarkdownBlockBody(
                 ?: liveCarry[0]?.takeIf { it.first == rawText }?.second
         }
         // [T-android-longtext-anr] Synchronous render ONLY on a real cache HIT.
-        // The old `|| rawText.length <= COLD_PARSE_OFFMAIN_THRESHOLD_CHARS` clause
-        // let a small fragment parse (block-split + per-block inline regex) on the
-        // main thread during composition. Individually sub-ms, but on session open
-        // the first screen holds ~20 messages split into dozens of small fragments;
-        // when the parallel viewport prewarm (ChatScreen) loses the race, every one
-        // of those misses parsed synchronously in the same frame and the aggregate
-        // froze the main thread for 30s+ → ANR (minis-2026-07-09-anr.log: all hang
-        // stacks in Matcher/Pattern via the inline parser, right after first compose).
-        // A cold MISS now always goes off-main with a plain-text preview, bounding
-        // the first-frame main-thread cost to cheap Text layouts regardless of how
-        // many fragments miss at once. Cache HITs (scroll-back, re-entry, prewarmed
-        // rows) stay synchronous and flicker-free.
         if (cached != null) {
             Column(modifier = modifier) {
                 cached.forEach { RenderBlock(it) }
@@ -1188,18 +1028,7 @@ private fun MarkdownBlockBody(
         }
         return
     }
-    // Live (streaming tail) block.
-    //
-    // [T-android-stream-flush-dualpath] Throttling moved UP to the message
-    // accumulation layer (ChatViewModel.updateAssistantMessage) where the
-    // dual-path (time OR newline+chars) flush actually accumulates across the
-    // high-frequency token calls. The earlier per-fragment throttle here was
-    // structurally broken: streaming text is split into many short-lived
-    // fragment items, so this produceState (and its lastFlushMs accumulator)
-    // reset on every fragment rebuild and never throttled at all — diagnostics
-    // showed every tick flushing. `rawText` arriving here is already paced by
-    // the VM, so the fragment just renders it directly; parse stays off-main
-    // below.
+    // [T-android-stream-flush-dualpath] Live (streaming tail) block.
     val displayContent by produceState(initialValue = rawText, rawText) {
         snapshotFlow { rawText }.conflate().collect { value = it }
     }
@@ -1237,28 +1066,9 @@ private fun MarkdownBlockBody(
                 } else {
                     it.lastOrNull()?.let { last -> MarkdownParseCaches.prewarm(listOf(last), mdColors) }
                 }
-                // [T-android-review-p1-fixes] F2(a): deposit the live parse
-                // into the blocks cache so the freeze edge (isStreaming →
-                // false recomposes into the frozen branch with this exact
-                // text) HITs synchronously — no plain-text preview flash, no
-                // off-main re-parse.
-                //
-                // [T-android-freeze-edge-flash] This used to be gated on
-                // `length > COLD_PARSE_OFFMAIN_THRESHOLD_CHARS`, on the
-                // reasoning that a small fragment would parse sub-ms
-                // synchronously at freeze anyway. That was true once. The ANR
-                // fix above (T-android-longtext-anr) then made EVERY cold
-                // miss go off-main behind a plain-text preview, and nobody
-                // revisited this gate — so a fragment under 2000 chars was
-                // guaranteed to miss at freeze and flash its raw markdown.
-                // A 462-char weather table did exactly that: rendered, went
-                // to `| 城市 | ... |---|` pipes for one parse, came back.
-                //
-                // Every tick deposits now, but each tick REMOVES the previous
-                // tick's entry first: one live entry per fragment, so the
-                // stream leaves no trail of intermediate texts in the LRU.
-                // Both ops are O(1) and the sizer is key length, so a
-                // replacement is budget-neutral to within one tick's growth.
+                // [T-android-review-p1-fixes] [T-android-freeze-edge-flash] F2(a): deposit the live parse into the
+                // blocks cache so the freeze edge (isStreaming → false recomposes into the frozen branch with this
+                // exact text) HITs synchronously — no plain-text…
                 liveDepositKey[0]?.let { prev ->
                     if (prev != displayContent) MarkdownParseCaches.removeBlocks(prev)
                 }
@@ -1273,28 +1083,10 @@ private fun MarkdownBlockBody(
         // to if this fragment freezes before its final text was ever live.
         liveCarry[0] = displayContent to computed
     }
-    // [T-android-stream-grow-anim] No height/scroll animation here. We tried
-    // animateContentSize to ease the bottom-pinned item's exposed height into a
-    // smooth viewport follow, but diagnostics showed the live fragment's
-    // composable identity is NOT stable across parse ticks (markdown re-blocks
-    // every tick — blocks.size flips 1↔2, last-block position churns), so the
-    // animation reset to initialH=0 almost every tick and "popped from zero"
-    // instead of gliding, AND dragged single-frame cost to ~750–950ms (Davey).
-    // Net regression. The smooth feel comes from reverseLayout's native bottom
-    // pin (no jump, no extra layout cost) plus the per-word fade. A genuine
-    // iOS-style continuous flow would require token-incremental rendering of the
-    // streaming tail, not a height animation on an unstable item.
+    // [T-android-stream-grow-anim] No height/scroll animation here.
     Column(modifier = modifier) {
-        // Wrap the last block in LocalAppendOnlyFade=true so MdText fades in
-        // newly-appended words. [T-android-streaming-incremental-inline] Also
-        // flag it as the LIVE tail so its Paragraph inline/math parse goes
-        // through the incremental (frozen-prefix + fresh-suffix) path — this is
-        // the only block whose raw grows every tick.
-        // [T-android-stream-fade-seed] Same shape for every block — see the
-        // matching note in StreamingMarkdownTextBody. This is the live
-        // fragment, so there is no frozen path to protect; the provider is
-        // always present and only its VALUE tracks the tail. Flipping a
-        // value recomposes consumers; changing the group shape disposed them.
+        // [T-android-streaming-incremental-inline] [T-android-stream-fade-seed] Wrap the last block in
+        // LocalAppendOnlyFade=true so MdText fades in newly-appended words.
         val lastIdx = blocks.size - 1
         blocks.forEachIndexed { idx, block ->
             val isLast = idx == lastIdx

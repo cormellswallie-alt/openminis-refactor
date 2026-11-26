@@ -173,7 +173,7 @@ jobs:
         working-directory: src/android
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest --stacktrace
+          ./gradlew :app:verifyCodeQuality :app:testDebugUnitTest --stacktrace
 
       - name: Assemble APK
         working-directory: src/android

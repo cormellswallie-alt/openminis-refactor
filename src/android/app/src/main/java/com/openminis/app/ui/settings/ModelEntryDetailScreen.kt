@@ -1,7 +1,6 @@
 package com.openminis.app.ui.settings
 
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.KeyboardOptions
@@ -12,7 +11,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,32 +51,32 @@ fun ModelEntryDetailScreen(
     providerRepository: ProviderRepository,
     onBack: () -> Unit,
 ) {
-    val config by providerRepository.config.collectAsState()
+    val config by providerRepository.config.collectAsStateWithLifecycle()
     val entry = config.modelEntries.find { it.id == entryId && it.providerInstanceId == instanceId }
     val instance = config.instances.find { it.id == instanceId }
 
     if (entry == null) {
-        onBack()
+        LaunchedEffect(entryId) { onBack() }
         return
     }
 
     val baseModel = entry.baseModel
     val overrides = entry.overrides
 
-    var modelId by remember { mutableStateOf(baseModel.id) }
-    var displayName by remember { mutableStateOf(overrides.displayName ?: baseModel.displayName) }
-    var displayNameTouched by remember { mutableStateOf(false) }
-    var maxOutputTokensText by remember { mutableStateOf(overrides.maxOutputTokens?.toString() ?: "") }
-    var contextWindowText by remember { mutableStateOf(overrides.contextWindow?.toString() ?: "") }
-    var thinkingEnabled by remember {
+    var modelId by remember(entryId) { mutableStateOf(baseModel.id) }
+    var displayName by remember(entryId) { mutableStateOf(overrides.displayName ?: baseModel.displayName) }
+    var displayNameTouched by remember(entryId) { mutableStateOf(false) }
+    var maxOutputTokensText by remember(entryId) { mutableStateOf(overrides.maxOutputTokens?.toString() ?: "") }
+    var contextWindowText by remember(entryId) { mutableStateOf(overrides.contextWindow?.toString() ?: "") }
+    var thinkingEnabled by remember(entryId) {
         mutableStateOf(overrides.supportsReasoning ?: baseModel.supportsReasoning ?: false)
     }
     // [T-model-override-silent-drop] "Did the user touch this control?" — the
     // only thing that distinguishes a deliberate choice from an untouched
     // default on a control with no empty state. See the save block below.
-    var thinkingTouched by remember { mutableStateOf(false) }
-    var isHidden by remember { mutableStateOf(entry.isHidden) }
-    var showQuickTest by remember { mutableStateOf(false) }
+    var thinkingTouched by remember(entryId) { mutableStateOf(false) }
+    var isHidden by remember(entryId) { mutableStateOf(entry.isHidden) }
+    var showQuickTest by remember(entryId) { mutableStateOf(false) }
 
     // Modality state — derive from override-or-base so the toggles reflect
     // what the model actually supports today, then let the user flip from
@@ -101,17 +101,17 @@ fun ModelEntryDetailScreen(
             ?: baseModel.effectiveOutputModalities
             ?: emptyList()
         ).map { it.normalizeModalityName() }
-    var imageInput by remember { mutableStateOf("image" in effectiveInput) }
-    var pdfInput by remember { mutableStateOf("pdf" in effectiveInput) }
-    var audioInput by remember { mutableStateOf("audio" in effectiveInput) }
-    var videoInput by remember { mutableStateOf("video" in effectiveInput) }
-    var imageOutput by remember { mutableStateOf("image" in effectiveOutput) }
-    var audioOutput by remember { mutableStateOf("audio" in effectiveOutput) }
+    var imageInput by remember(entryId) { mutableStateOf("image" in effectiveInput) }
+    var pdfInput by remember(entryId) { mutableStateOf("pdf" in effectiveInput) }
+    var audioInput by remember(entryId) { mutableStateOf("audio" in effectiveInput) }
+    var videoInput by remember(entryId) { mutableStateOf("video" in effectiveInput) }
+    var imageOutput by remember(entryId) { mutableStateOf("image" in effectiveOutput) }
+    var audioOutput by remember(entryId) { mutableStateOf("audio" in effectiveOutput) }
     // One flag per dimension, not per switch: the override is a LIST covering
     // the whole dimension, so touching any one switch is a statement about the
     // whole set and the entire list must then be recorded.
-    var inputModalitiesTouched by remember { mutableStateOf(false) }
-    var outputModalitiesTouched by remember { mutableStateOf(false) }
+    var inputModalitiesTouched by remember(entryId) { mutableStateOf(false) }
+    var outputModalitiesTouched by remember(entryId) { mutableStateOf(false) }
 
     SettingsScaffold(
         title = stringResource(R.string.model_entry_model_detail),
@@ -169,13 +169,16 @@ fun ModelEntryDetailScreen(
                         outputModalitiesTouched = outputModalitiesTouched,
                     )
                     val updated = if (entry.isCustom) {
-                        entry.copy(baseModel = baseModel.copy(id = modelId), overrides = newOverrides, isHidden = isHidden)
+                        val trimmedId = modelId.trim()
+                        if (trimmedId.isEmpty()) return@MinisButton
+                        entry.copy(baseModel = baseModel.copy(id = trimmedId), overrides = newOverrides, isHidden = isHidden)
                     } else {
                         entry.copy(overrides = newOverrides, isHidden = isHidden)
                     }
                     providerRepository.updateEntry(updated)
                     onBack()
                 },
+                enabled = !entry.isCustom || modelId.isNotBlank(),
                 modifier = Modifier.padding(end = 8.dp),
             ) { Text(stringResource(R.string.common_save)) }
         },
@@ -219,7 +222,7 @@ fun ModelEntryDetailScreen(
                 RowLabel(text = stringResource(R.string.modeldetail_context_window))
                 SectionTextField(
                     value = contextWindowText,
-                    onValueChange = { contextWindowText = it.filter { c -> c.isDigit() } },
+                    onValueChange = { contextWindowText = it.filter { c -> c.isDigit() }.take(9) },
                     placeholder = baseModel.contextWindow?.toString()
                         ?: stringResource(R.string.modeldetail_provider_default),
                     singleLine = true,
@@ -229,7 +232,7 @@ fun ModelEntryDetailScreen(
                 RowLabel(text = stringResource(R.string.model_entry_max_output_tokens))
                 SectionTextField(
                     value = maxOutputTokensText,
-                    onValueChange = { maxOutputTokensText = it.filter { c -> c.isDigit() } },
+                    onValueChange = { maxOutputTokensText = it.filter { c -> c.isDigit() }.take(9) },
                     placeholder = baseModel.maxOutputTokens?.toString()
                         ?: stringResource(R.string.modeldetail_provider_default),
                     singleLine = true,

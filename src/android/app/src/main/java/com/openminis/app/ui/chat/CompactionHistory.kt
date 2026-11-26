@@ -164,19 +164,8 @@ internal class CompactionHistory {
             } else {
                 emptyList()
             }
-            // [T-ctx-warmup-fit] Warm-up turns are optional context — the summary
-            // covers them. Drop them oldest-first when keeping them all would
-            // leave the request over the compact line (see trimWarmUpToFit).
-            // Decided ONCE per marker, then reused: re-deciding every request
-            // slid the warm-up window one turn per message (measured on the
-            // iOS twin), changing the request prefix every turn and defeating
-            // prompt caching. Fixed per marker, the prefix is stable, the
-            // request grows normally, and compaction fires at the line.
-            // [T-ctx-warmup-trim-undecided] Cache only a REAL decision. When no
-            // budget could be computed yet (no entry, unknown window, fixed
-            // tokens not seeded) the trim passes the warm-up through unchanged;
-            // caching drop=0 then would pin "keep everything" for this marker
-            // forever, even once the budget is known and says it does not fit.
+            // [T-ctx-warmup-fit] [T-ctx-warmup-trim-undecided] Warm-up turns are optional context — the
+            // summary covers them.
             val warmUp = warmUpDropByMarker[marker.id]?.let { drop ->
                 preAnchorPruned.drop(minOf(drop, preAnchorPruned.size))
             } ?: trimWarmUpToFit(preAnchorPruned, postAnchor, summaryWrappedText, warmUpBudget).let { trim ->
@@ -203,24 +192,7 @@ internal class CompactionHistory {
                     result.addAll(postAnchor.subList(0, firstUserOffset))
                 }
                 val target = postAnchor[firstUserOffset]
-                // Prepend `<context-summary>...` to the user turn.
-                //
-                // [T-android-compact-summary-dropped] `content` alone is NOT
-                // enough. Every persisted message carries contentParts (its
-                // partsJson round-trips into a Text part), and the provider
-                // serializers prefer parts when they exist — the Responses
-                // API builder emits `textParts.joinToString("")` for a user
-                // turn and never reads `msg.content`. So injecting into
-                // `content` only meant the summary was assembled, logged
-                // (summaryChars=734 in CompactDiag) and then silently dropped
-                // on the way to the wire: the model got neither the compacted
-                // detail nor the summary standing in for it. Measured on
-                // device — the post-compact request carried 27 rows exactly as
-                // the slice log predicted, with no `<context-summary>`
-                // anywhere in the body.
-                //
-                // Update BOTH representations so the summary survives whichever
-                // one a given provider reads.
+                // [T-android-compact-summary-dropped] Prepend `<context-summary>...` to the user turn.
                 val injectedParts = if (target.contentParts.isEmpty()) {
                     target.contentParts
                 } else {
@@ -390,16 +362,7 @@ internal class CompactionHistory {
         val orphanedResults = toolResultIds - toolUseIds
         val orphanedUses = HashSet(toolUseIds - toolResultIds)
 
-        // [T-android-compact-orphan-toolcall] IN-FLIGHT EXEMPTION (iOS
-        // 5d346dc2e). The tool_uses in the FINAL assistant message are not
-        // orphans while the loop sits between "model asked for tools" and
-        // "results appended" — agentHistory legitimately looks unpaired for
-        // that whole window (the assistant turn is appended at ~7500 and its
-        // tool results only at ~7517). Any snapshot taken inside that gap would
-        // otherwise carry fabricated "interrupted" results for tools that were
-        // about to run normally, telling the model its tools had failed.
-        // Trailing unanswered calls need no repair anyway: a request ending on
-        // an assistant tool_use is exactly what the API expects mid-round.
+        // [T-android-compact-orphan-toolcall] IN-FLIGHT EXEMPTION (iOS 5d346dc2e).
         val last = history.lastOrNull()
         if (last != null && last.role == LLMMessage.Role.ASSISTANT) {
             for (part in last.contentParts) {
@@ -511,18 +474,8 @@ internal class CompactionHistory {
                 i -= 1
                 continue
             }
-            // [T-android-compact-orphan-toolcall] A user message CARRYING a
-            // tool result is the second half of a round, not the start of one.
-            // This walk-back's whole premise is that `role == USER` marks a
-            // round boundary — but tool results are themselves persisted as
-            // USER messages (see the agentHistory.add at the end of the tool
-            // dispatch loop), so stopping on one cuts between an assistant's
-            // tool_use and its own tool_result. The call is then discarded with
-            // pre-history while the result survives in preAnchor and goes out
-            // alone, which every OpenAI-compatible provider answers with
-            //     400 No tool call found for function call output with call_id …
-            // and, since the slice is recomputed identically on every retry and
-            // fallback, the session wedges permanently. Port of iOS c7f6a299e.
+            // [T-android-compact-orphan-toolcall] A user message CARRYING a tool result is the second half of
+            // a round, not the start of one.
             if (msg.contentParts.any { it is AgentContentPart.ToolResult }) {
                 i -= 1
                 continue

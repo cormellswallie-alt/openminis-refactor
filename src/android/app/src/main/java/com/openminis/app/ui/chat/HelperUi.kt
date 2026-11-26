@@ -1,6 +1,5 @@
 package com.openminis.app.ui.chat
 
-import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -28,7 +27,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Check
@@ -47,26 +45,24 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.outlined.StopCircle
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
 import com.openminis.app.ui.theme.MaterialShapes
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import com.openminis.app.ui.theme.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -94,7 +90,9 @@ import com.openminis.app.agent.jobs.HelperRunner
 import com.openminis.app.debug.HeadlessChatRunner
 import com.openminis.app.ui.theme.ChatColors
 import com.openminis.app.ui.DisplayBitmapLimits
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import com.openminis.app.ui.components.DecorativeSpinner
 
@@ -1154,13 +1152,15 @@ internal fun HelperDetailContent(block: AssistantBlock) {
                 }
             }
         }
-        // 3. latest screenshot
+        // 3. latest screenshot (decoded off-main to avoid scroll/sheet frame drops)
         latestImagePath?.let { path ->
-            val bmp = remember(path) { DisplayBitmapLimits.decodeFileBounded(path) }
-            if (bmp != null) {
+            val bmp by produceState<android.graphics.Bitmap?>(initialValue = null, path) {
+                value = withContext(Dispatchers.IO) { DisplayBitmapLimits.decodeFileBounded(path) }
+            }
+            bmp?.let { decoded ->
                 AgentDetailCard(title = stringResource(R.string.agent_detail_latest_screenshot), icon = toolIconFor("read_image")) {
                     Image(
-                        bitmap = bmp.asImageBitmap(), contentDescription = null, contentScale = ContentScale.FillWidth,
+                        bitmap = decoded.asImageBitmap(), contentDescription = null, contentScale = ContentScale.FillWidth,
                         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).border(0.5.dp, ChatColors.separator.copy(alpha = 0.5f), RoundedCornerShape(6.dp)),
                     )
                 }
@@ -1354,10 +1354,10 @@ fun AgentTranscriptScreen(sessionId: String, onBack: () -> Unit) {
     val vm = remember(sessionId) {
         HeadlessChatRunner.viewModelFor(context, sessionId, ChatViewModelStore.PoolKind.CHILD)
     }
-    val isStreaming by vm.isStreaming.collectAsState()
-    val jobs by AgentJobRegistry.jobs.collectAsState()
+    val isStreaming by vm.isStreaming.collectAsStateWithLifecycle()
+    val jobs by AgentJobRegistry.jobs.collectAsStateWithLifecycle()
     val job = jobs.values.firstOrNull { it.runSessionId == sessionId }
-    val sessionTitle by vm.sessionTitle.collectAsState()
+    val sessionTitle by vm.sessionTitle.collectAsStateWithLifecycle()
     val title = remember(sessionTitle) { HelperRunner.stripChildSessionTitlePrefix(context, sessionTitle) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(isStreaming) { while (isStreaming) { delay(1000); now = System.currentTimeMillis() } }
@@ -1442,9 +1442,9 @@ fun AgentTranscriptScreen(sessionId: String, onBack: () -> Unit) {
         //
         // `toolBlocks` is the child's own blocks, so prev/next paging inside
         // the sheet walks THIS transcript and cannot wander into the parent's.
-        val selectedId by vm.selectedToolDetailId.collectAsState()
-        val transcriptMessages by vm.messages.collectAsState()
-        val transcriptStreaming by vm.streamingById.collectAsState()
+        val selectedId by vm.selectedToolDetailId.collectAsStateWithLifecycle()
+        val transcriptMessages by vm.messages.collectAsStateWithLifecycle()
+        val transcriptStreaming by vm.streamingById.collectAsStateWithLifecycle()
         val transcriptToolBlocks = remember(transcriptMessages, transcriptStreaming) {
             buildFlatChatItems(
                 if (transcriptStreaming.isEmpty()) transcriptMessages
@@ -1500,14 +1500,14 @@ internal fun HelperTranscript(
      */
     onOpenCallback: (AgentCallback) -> Unit = {},
 ) {
-    val messages by vm.messages.collectAsState()
-    val streaming by vm.streamingById.collectAsState()
+    val messages by vm.messages.collectAsStateWithLifecycle()
+    val streaming by vm.streamingById.collectAsStateWithLifecycle()
     // [T-android-usage-capsule-tint] The capsule is tap-to-reveal here too.
     // This renderer showed it unconditionally, so a child transcript carried a
     // permanent stats line under every reply while the main chat kept it
     // hidden — the same easter egg behaving differently depending on which
     // screen you were on.
-    val revealedUsage by vm.revealedUsageIds.collectAsState()
+    val revealedUsage by vm.revealedUsageIds.collectAsStateWithLifecycle()
     val items = remember(messages, streaming) {
         val merged = if (streaming.isEmpty()) messages else mergeStreamingOverlay(messages, streaming)
         buildFlatChatItems(merged)

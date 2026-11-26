@@ -1,6 +1,7 @@
 package com.openminis.app.ui.chat
 
 import android.content.Context
+import com.openminis.app.agent.ReadOnlyCommandGuard
 import com.openminis.app.agent.jobs.HelperRunner
 import com.openminis.app.agent.shell.BashismDetector
 import com.openminis.app.agent.shell.BashismReminder
@@ -12,6 +13,8 @@ import com.openminis.app.data.repository.MemoryRepository
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.data.repository.SkillRepository
 import com.openminis.app.sandbox.ExecutionCoordinator
+import com.openminis.app.sandbox.RootfsManager
+import com.openminis.app.sandbox.ShellExecutionStrategy
 import com.openminis.app.sandbox.ShellExitCode
 import com.openminis.app.terminal.MinisOpenUrlBroker
 import com.openminis.app.terminal.MinisUrlMarker
@@ -19,19 +22,24 @@ import com.openminis.app.tools.AgentToolSwitch
 import com.openminis.app.tools.AskUserTool
 import com.openminis.app.tools.FileEditTool
 import com.openminis.app.tools.FileReadTool
+import com.openminis.app.tools.FileSearchTool
 import com.openminis.app.tools.FileWriteTool
 import com.openminis.app.tools.MemoryTools
 import com.openminis.app.tools.ReadImageTool
+import com.openminis.app.tools.RepoMapTool
 import com.openminis.app.tools.ToolExecutionResult
+import com.openminis.app.tools.UpdateStepsTool
 import com.openminis.app.tools.VisionGroupResolver
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.io.File
+import java.util.UUID
 
 internal class ChatToolDispatcher(
     private val context: Context,
@@ -48,10 +56,18 @@ internal class ChatToolDispatcher(
     private val publishQuestionnaire: (PendingQuestionnaire) -> Unit,
     private val clearQuestionnaire: (PendingQuestionnaire) -> Unit,
     private val recordMemory: (MemoryToolRecord) -> Unit,
+    private val publishStepChecklist: (UpdateStepsTool.StepChecklist) -> Unit = {},
+    private val blocksFileWriteTools: () -> Boolean = { false },
+    private val enforcesReadOnlyShell: () -> Boolean = { false },
 ) {
     companion object {
         const val SHELL_TIMEOUT_MAX_SEC = 3600
         private const val BASH_MISSING_SENTINEL = 119
+        internal const val SHELL_LIVE_MAX_LINES = 50
+        internal const val SHELL_LIVE_PUBLISH_INTERVAL_MS = 150L
+
+        internal fun buildHostStagedBashCommand(guestScriptPath: String): String =
+            "command -v bash >/dev/null 2>&1 || exit $BASH_MISSING_SENTINEL; exec bash $guestScriptPath"
     }
 
     private val askUserMutex = Mutex()
@@ -81,12 +97,24 @@ internal class ChatToolDispatcher(
                 }
                 result
             }
-            FileWriteTool.NAME -> FileWriteTool.execute(argsJson, fsSessionId(), context).also {
-                if (it.success) maybeReloadSkillsForPath(argsJson)
-            }
-            FileEditTool.NAME -> FileEditTool.execute(argsJson, fsSessionId(), context).also {
-                if (it.success) maybeReloadSkillsForPath(argsJson)
-            }
+            FileSearchTool.NAME -> FileSearchTool.execute(argsJson, fsSessionId(), context)
+            RepoMapTool.NAME -> RepoMapTool.execute(argsJson, fsSessionId(), context)
+            FileWriteTool.NAME ->
+                if (blocksFileWriteTools()) {
+                    readOnlyRefusal(FileWriteTool.NAME)
+                } else {
+                    FileWriteTool.execute(argsJson, fsSessionId(), context).also {
+                        if (it.success) maybeReloadSkillsForPath(argsJson)
+                    }
+                }
+            FileEditTool.NAME ->
+                if (blocksFileWriteTools()) {
+                    readOnlyRefusal(FileEditTool.NAME)
+                } else {
+                    FileEditTool.execute(argsJson, fsSessionId(), context).also {
+                        if (it.success) maybeReloadSkillsForPath(argsJson)
+                    }
+                }
             // T178: pass sessionId + context so read_image routes through
             // resolveSessionHostPath like file_read/write/edit do — without
             // these, the tool consults the global last-writer-wins
@@ -117,6 +145,16 @@ internal class ChatToolDispatcher(
                     executeAskUserTool(argsJson, toolId, toolBlocks, assistantId, publishBlocks)
                 } else {
                     toolDisabledResult(AskUserTool.NAME)
+                }
+            UpdateStepsTool.NAME ->
+                if (!isHelper() && AgentToolSwitch.TASK_STEPS.isEnabled(context)) {
+                    val (checklist, result) = UpdateStepsTool.execute(argsJson)
+                    if (checklist != null) {
+                        publishStepChecklist(checklist)
+                    }
+                    result
+                } else {
+                    toolDisabledResult(UpdateStepsTool.NAME)
                 }
             "memory_write" -> executeMemoryWriteTool(argsJson)
             // [T-sub-agents-v1] One tool, five actions. The legacy names are
@@ -168,9 +206,11 @@ internal class ChatToolDispatcher(
         )
         try {
             withContext(Dispatchers.Main) {
-                val idx = toolBlocks.indexOfFirst { it.id == toolId }
-                if (idx >= 0 && spec.toolTitle.isNotBlank()) {
-                    toolBlocks[idx] = toolBlocks[idx].copy(toolTitle = spec.toolTitle)
+                synchronized(toolBlocks) {
+                    val idx = toolBlocks.indexOfFirst { it.id == toolId }
+                    if (idx >= 0 && spec.toolTitle.isNotBlank()) {
+                        toolBlocks[idx] = toolBlocks[idx].copy(toolTitle = spec.toolTitle)
+                    }
                 }
                 publishQuestionnaire(pending)
                 publishBlocks()
@@ -302,6 +342,25 @@ internal class ChatToolDispatcher(
             "bash /tmp/.minis-exec-\$\$.sh; rc=\$?; rm -f /tmp/.minis-exec-\$\$.sh; exit \$rc )"
     }
 
+    /**
+     * Under [ShellExecutionStrategy.FRESH_PROCESS], write the bash script directly from
+     * the host into `<rootfs>/tmp/.minis-exec-<uuid>.sh` and run `exec bash <guestPath>`.
+     * This avoids guest subshell + `printf | base64 -d` + `rm` (3-4 fewer ptrace execves
+     * per bash command) while keeping the exact M5 `exit 119` vanished-bash sentinel.
+     */
+    private fun stageHostBashScript(script: String): Pair<String, File>? {
+        if (!ShellExecutionStrategy.supportsHostStagedBash(ExecutionCoordinator.executionStrategy)) return null
+        return runCatching {
+            val tmpDir = File(RootfsManager.getInstance(context).rootfsDir, "tmp")
+            if (!tmpDir.isDirectory) tmpDir.mkdirs()
+            val filename = ".minis-exec-${UUID.randomUUID()}.sh"
+            val hostFile = File(tmpDir, filename)
+            val normalized = if (script.endsWith("\n")) script else script + "\n"
+            hostFile.writeText(normalized, Charsets.UTF_8)
+            buildHostStagedBashCommand("/tmp/$filename") to hostFile
+        }.getOrNull()
+    }
+
     private suspend fun executeShellCommand(
         argsJson: String,
         toolId: String,
@@ -326,6 +385,17 @@ internal class ChatToolDispatcher(
             if (command.isBlank()) {
                 return ToolExecutionResult("Error: 'command' is required", false, toolTitle = toolTitle)
             }
+            if (enforcesReadOnlyShell()) {
+                val guard = ReadOnlyCommandGuard.check(command)
+                if (!guard.allowed) {
+                    return ToolExecutionResult(
+                        "Blocked in read-only / Plan mode: ${guard.reason} " +
+                            "Use read-only inspection commands only, or finish your plan so the user can approve switching to Code mode.",
+                        false,
+                        toolTitle = toolTitle,
+                    )
+                }
+            }
 
             // [T-android-overlay-finalize item 1] Removed the
             // shell-specific status hack ("shell: $toolTitle"). Since the
@@ -340,21 +410,30 @@ internal class ChatToolDispatcher(
             // allowing other concurrent tasks to use it during the wait period.
             if (delaySec > 0) {
                 for (remaining in delaySec downTo 1) {
-                    val idx = toolBlocks.indexOfFirst { it.id == toolId }
-                    if (idx >= 0) {
-                        val mm = remaining / 60
-                        val ss = remaining % 60
-                        val countdown = if (mm > 0) String.format("%d:%02d", mm, ss) else "${ss}s"
-                        toolBlocks[idx] = toolBlocks[idx].copy(content = "⏳ Waiting $countdown before executing...")
+                    val mm = remaining / 60
+                    val ss = remaining % 60
+                    val countdown = if (mm > 0) String.format("%d:%02d", mm, ss) else "${ss}s"
+                    val updated = synchronized(toolBlocks) {
+                        val idx = toolBlocks.indexOfFirst { it.id == toolId }
+                        if (idx >= 0) {
+                            toolBlocks[idx] = toolBlocks[idx].copy(content = "⏳ Waiting $countdown before executing...")
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    if (updated) {
                         withContext(Dispatchers.Main) {
                             publishBlocks()
                         }
                     }
                     kotlinx.coroutines.delay(1000)
                 }
-                val idx = toolBlocks.indexOfFirst { it.id == toolId }
-                if (idx >= 0) {
-                    toolBlocks[idx] = toolBlocks[idx].copy(content = "")
+                synchronized(toolBlocks) {
+                    val idx = toolBlocks.indexOfFirst { it.id == toolId }
+                    if (idx >= 0) {
+                        toolBlocks[idx] = toolBlocks[idx].copy(content = "")
+                    }
                 }
             }
 
@@ -376,6 +455,8 @@ internal class ChatToolDispatcher(
             var bashReminder: String? = null
             val originalCommand = command
             var bashScript: String? = null   // set when we bash-wrapped; enables M5 self-heal retry
+            var stagedBashFile: File? = null
+            var stagedBashCommand: String? = null
             if (bashism.needsBash) {
                 val executor = OnDemandBash.Executor { c, t ->
                     ExecutionCoordinator.execute(sessionId = dispatchSessionId, command = c, timeout = t, fsSessionId = fsSessionId()).exitCode
@@ -383,12 +464,17 @@ internal class ChatToolDispatcher(
                 when (val outcome = OnDemandBash.ensureBash(context, executor)) {
                     is OnDemandBash.Outcome.Available -> {
                         if (bashism.mustSwitchInterpreter) {
-                            // §3.2 M3: self-write the script in the guest (base64,
-                            // single line, self-cleaning) and run it under bash.
-                            // The `command -v bash || exit 119` guard detects a
-                            // bash that vanished after our cache check (M5) so we
-                            // can self-heal below instead of failing.
-                            command = wrapForBash(command)
+                            // Prefer host-staged script on FRESH_PROCESS to avoid extra
+                            // guest ptrace execves (subshell/base64/rm); fall back to
+                            // base64 wrapForBash on WARM_SHELL or staging failure.
+                            val staged = stageHostBashScript(command)
+                            if (staged != null) {
+                                command = staged.first
+                                stagedBashCommand = staged.first
+                                stagedBashFile = staged.second
+                            } else {
+                                command = wrapForBash(command)
+                            }
                             bashScript = originalCommand // remember for self-heal retry
                         }
                         // T1-only (script invokes bash itself) → run as-is under sh.
@@ -398,52 +484,50 @@ internal class ChatToolDispatcher(
                 }
             }
 
-            var result = ExecutionCoordinator.execute(
-                sessionId = dispatchSessionId,
-                fsSessionId = fsSessionId(),
-                command = command,
-                timeout = timeoutSec * 1000L,
-                lineCallback = lc@{ rawLine ->
-                    // Strip any OSC MinisOpenURL markers emitted by
-                    // /usr/local/bin/minis-open and forward the captured
-                    // URLs to the broker so the chat screen can present the
-                    // in-app preview. Lines that were *entirely* a marker
-                    // (nothing visible afterwards) are dropped so the tool
-                    // output doesn't grow blank rows.
-                    val (cleanedLine, capturedUrls) = MinisUrlMarker.extract(rawLine)
-                    for (raw in capturedUrls) MinisOpenUrlBroker.offer(raw)
-                    if (cleanedLine.isEmpty() && rawLine.isNotEmpty()) return@lc
-
-                    val idx = toolBlocks.indexOfFirst { it.id == toolId }
-                    if (idx >= 0) {
-                        val current = toolBlocks[idx].content
-                        val updated = if (current.isEmpty()) cleanedLine else "$current\n$cleanedLine"
-                        // Keep last 50 lines for display
-                        val trimmed = updated.lines().takeLast(50).joinToString("\n")
-                        toolBlocks[idx] = toolBlocks[idx].copy(content = trimmed)
-                        scope.launch(Dispatchers.Main) {
-                            publishBlocks()
-                        }
-                    }
-                },
+            val liveStream = ShellLiveOutputStream(
+                toolId = toolId,
+                toolBlocks = toolBlocks,
+                scope = scope,
+                publishBlocks = publishBlocks,
             )
 
-            // [T-bash-on-demand] M5 self-heal: our bash wrapper returns sentinel
-            // 119 when bash vanished (user apk del'd) after we cached it
-            // available. Re-probe + reinstall once and rerun THIS command under
-            // bash inline, so it still succeeds instead of failing.
-            // Accept both the raw sentinel (119) and the wait(2)-encoded status
-            // (119 << 8 = 30464) the coordinator may surface.
-            if ((result.exitCode == BASH_MISSING_SENTINEL ||
-                    result.exitCode == (BASH_MISSING_SENTINEL shl 8)) && bashScript != null) {
-                OnDemandBash.markDisappeared()
-                val executor = OnDemandBash.Executor { c, t ->
-                    ExecutionCoordinator.execute(sessionId = dispatchSessionId, command = c, timeout = t, fsSessionId = fsSessionId()).exitCode
+            val result = try {
+                val initialResult = ExecutionCoordinator.execute(
+                    sessionId = dispatchSessionId,
+                    fsSessionId = fsSessionId(),
+                    command = command,
+                    timeout = timeoutSec * 1000L,
+                    lineCallback = liveStream::onLine,
+                )
+
+                // [T-bash-on-demand] M5 self-heal: sentinel 119 (or wait(2)-encoded 119<<8)
+                // signals bash vanished after being cached available — reinstall once and retry.
+                if ((initialResult.exitCode == BASH_MISSING_SENTINEL ||
+                        initialResult.exitCode == (BASH_MISSING_SENTINEL shl 8)) && bashScript != null) {
+                    OnDemandBash.markDisappeared()
+                    val executor = OnDemandBash.Executor { c, t ->
+                        ExecutionCoordinator.execute(sessionId = dispatchSessionId, command = c, timeout = t, fsSessionId = fsSessionId()).exitCode
+                    }
+                    val healed = OnDemandBash.ensureBash(context, executor)
+                    command = if (healed is OnDemandBash.Outcome.Available) {
+                        stagedBashCommand ?: wrapForBash(bashScript!!)
+                    } else {
+                        bashScript!!
+                    }
+                    liveStream.resetForRetry()
+                    ExecutionCoordinator.execute(
+                        sessionId = dispatchSessionId,
+                        command = command,
+                        timeout = timeoutSec * 1000L,
+                        lineCallback = liveStream::onLine,
+                        fsSessionId = fsSessionId(),
+                    )
+                } else {
+                    initialResult
                 }
-                val healed = OnDemandBash.ensureBash(context, executor)
-                command = if (healed is OnDemandBash.Outcome.Available) wrapForBash(bashScript!!) else bashScript!!
-                result = ExecutionCoordinator.execute(
-                    sessionId = dispatchSessionId, command = command, timeout = timeoutSec * 1000L, fsSessionId = fsSessionId())
+            } finally {
+                liveStream.finish()
+                runCatching { stagedBashFile?.delete() }
             }
 
             // Also scrub markers from the aggregated one-shot output and
@@ -494,6 +578,8 @@ internal class ChatToolDispatcher(
                 toolTitle = toolTitle,
                 timedOut = timedOut,
             )
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (e: Exception) {
             ToolExecutionResult("Error: ${e.message}", false)
         }
@@ -506,6 +592,14 @@ internal class ChatToolDispatcher(
      * to retry, so a refusal ends the attempt instead of provoking a loop. The
      * user is not shown an error — they turned the tool off on purpose.
      */
+    private fun readOnlyRefusal(name: String): ToolExecutionResult =
+        ToolExecutionResult(
+            "Blocked: `$name` is disabled in read-only / Plan mode. " +
+                "Do not attempt file mutations right now — complete your read-only analysis or plan first.",
+            false,
+            toolTitle = "$name (read-only)",
+        )
+
     private fun toolDisabledResult(name: String): ToolExecutionResult =
         ToolExecutionResult(
             "The $name tool is disabled in this app's settings and cannot be used. " +
@@ -573,6 +667,8 @@ internal class ChatToolDispatcher(
                 imageFilePath = persistentImagePath,
                 imageLinuxPath = linuxImagePath,
             )
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (e: Exception) {
             ToolExecutionResult("Error: ${e.message}", false)
         }
@@ -654,15 +750,21 @@ internal class ChatToolDispatcher(
             return MemoryTools.ToolResult(disabledMessage, false, disabledTitle)
         }
         val result = MemoryTools.executeMemoryWrite(argsJson, repo)
-        val content = try {
-            JSONObject(argsJson).optString("content", "")
-        } catch (_: Exception) { "" }
+        val parsed = runCatching { JSONObject(argsJson) }.getOrNull()
+        val action = parsed?.optString("action", "save")?.trim()?.lowercase() ?: "save"
+        val content = parsed?.optString("content", "").orEmpty()
+        val isSave = action == "save" || action.isEmpty()
+        val preview = if (isSave) {
+            content.lines().firstOrNull { it.isNotBlank() }?.take(100) ?: result.output.take(100)
+        } else {
+            result.output.lines().firstOrNull { it.isNotBlank() }?.take(100) ?: ""
+        }
         recordMemory(MemoryToolRecord(
             title = result.toolTitle,
             isWrite = true,
-            preview = content.lines().firstOrNull { it.isNotBlank() }?.take(100) ?: "",
+            preview = preview,
             output = result.output,
-            writtenContent = content,
+            writtenContent = if (isSave) content else "",
         ))
         return result
     }

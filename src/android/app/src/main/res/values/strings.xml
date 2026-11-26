@@ -2345,4 +2345,69 @@
     <string name="questionnaire_expand_sheet">Expand</string>
     <string name="thinking_header_streaming">Thinking</string>
     <string name="thinking_header_done">Thought Process</string>
+
+    <!-- Mid-loop ToolResult Steering -->
+    <string name="chat_steer_toggle_label">Steer</string>
+    <string name="chat_steer_banner_active_streaming">Live steering ON · text attaches to next tool result</string>
+    <string name="chat_steer_banner_active_idle">Live steering ON · sends while running inject into tool results</string>
+    <string name="chat_steer_banner_staged">%1$d steering note(s) queued for next tool result</string>
+    <string name="chat_steer_disable_cd">Turn off live steering</string>
+    <string name="chat_steer_remove_note_cd">Remove steering note</string>
+    <string name="slash_steer_on">Live tool-result steering: ON</string>
+    <string name="slash_steer_off">Live tool-result steering: OFF</string>
+
+    <!-- Live Task Checklist (update_steps) -->
+    <string name="agent_tools_update_steps">Live Task Checklist (update_steps)</string>
+    <string name="agent_tools_update_steps_footer">Allow the model to maintain a pinned, collapsible multi-step checklist in chat while working on complex tasks.</string>
+    <string name="steps_banner_title">Task checklist</string>
+    <string name="steps_banner_all_done">All %1$d steps completed</string>
+    <string name="steps_expand_cd">Expand checklist</string>
+    <string name="steps_collapse_cd">Collapse checklist</string>
+    <string name="steps_dismiss_cd">Hide checklist</string>
+
+    <!-- Plan / Code Dual Execution Mode -->
+    <string name="chat_plan_toggle_label">Plan</string>
+    <string name="chat_plan_banner_active">Plan Mode · read-only exploration</string>
+    <string name="chat_plan_approve_button">Approve &amp; Run</string>
+    <string name="chat_plan_approve_prompt">Plan approved. Proceed to implement the changes in Code mode.</string>
+    <string name="chat_plan_exit_cd">Exit Plan Mode</string>
+    <string name="slash_plan_on">Plan Mode: ON (read-only exploration)</string>
+    <string name="slash_plan_off">Plan Mode: OFF (full Code execution)</string>
+
+    <!-- Model Config Fixes -->
+    <string name="add_custom_model_duplicate_error">A model with this ID already exists for this provider.</string>
+    <string name="provider_detail_url_saved_toast">Endpoint settings saved</string>
+    <string name="provider_oauth_connected">Connected</string>
+    <string name="provider_oauth_not_connected">Not connected</string>
+    <string name="provider_list_no_api_key">No API key</string>
+
+    <!-- Storage Module Upgrade -->
+    <string name="storage_total_used_label">Total used: %1$s</string>
+    <string name="storage_device_free_label">Free: %1$s</string>
+    <string name="storage_overview_orphans">Residual Files (%1$d)</string>
+    <string name="storage_optimize_button">Optimize Database &amp; Clean Residuals</string>
+    <string name="storage_optimizing_status">Optimizing storage…</string>
+    <string name="storage_optimize_footer">Compacts the SQLite database (VACUUM + WAL truncate) to reclaim deleted pages and removes orphaned leftover session directories.</string>
+    <string name="storage_optimize_result">Optimization complete: reclaimed %1$s (%2$d residual folder(s) cleaned)</string>
+    <string name="storage_search_sessions_placeholder">Search sessions…</string>
+    <string name="storage_sort_by_size">Size</string>
+    <string name="storage_sort_by_name">Name</string>
+    <string name="storage_row_files_part">Files %1$s</string>
+    <string name="storage_row_media_part">Media %1$s</string>
+    <string name="storage_row_subagents_part">%1$d sub-agent(s)</string>
+    <string name="common_clear">Clear</string>
+
+    <!-- Settings Feature Tutorial & Searchable Guide -->
+    <string name="settings_tutorial_button_title">Feature Guide &amp; Tutorials</string>
+    <string name="settings_tutorial_button_subtitle">Search and learn every feature, slash command, memory, sub-agent &amp; tool</string>
+    <string name="tutorial_screen_title">Feature Guide</string>
+    <string name="tutorial_search_placeholder">Search features, /commands, @mentions…</string>
+    <string name="tutorial_result_count">%1$d feature(s)</string>
+    <string name="tutorial_expand_all">Expand all</string>
+    <string name="tutorial_collapse_all">Collapse all</string>
+    <string name="tutorial_no_results_title">No matching features</string>
+    <string name="tutorial_no_results_subtitle">Try searching /plan, /steer, /handoff, @diff, memory, or OAuth.</string>
+    <string name="tutorial_reset_filters">Clear search &amp; filters</string>
+    <string name="tutorial_section_what">What it does</string>
+    <string name="tutorial_section_how">How to use</string>
 </resources>

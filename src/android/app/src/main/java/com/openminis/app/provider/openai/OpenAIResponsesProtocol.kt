@@ -377,12 +377,15 @@ internal object OpenAIResponsesProtocol {
 
     fun parseUsage(usage: JSONObject): LLMUsage {
         val inputTokens = usage.optInt("input_tokens", 0)
-        val cacheRead = usage.optJSONObject("input_tokens_details")
-            ?.optInt("cached_tokens")?.takeIf { it > 0 }
+        val inputDetails = usage.optJSONObject("input_tokens_details")
+        val cacheRead = inputDetails?.optInt("cached_tokens")?.takeIf { it > 0 }
+        val cacheCreation = inputDetails?.optInt("cache_write_tokens", 0)?.takeIf { it > 0 }
+            ?: usage.optInt("cache_creation_input_tokens", 0).takeIf { it > 0 }
         val freshInput = cacheRead?.let { (inputTokens - it).takeIf { d -> d >= 0 } } ?: inputTokens
         return LLMUsage(
             inputTokens = freshInput,
             outputTokens = usage.optInt("output_tokens", 0),
+            cacheCreationInputTokens = cacheCreation,
             cacheReadInputTokens = cacheRead,
             latestContextTokens = inputTokens,
         )

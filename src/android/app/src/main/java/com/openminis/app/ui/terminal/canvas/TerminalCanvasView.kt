@@ -27,7 +27,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.sp
 import com.openminis.app.ui.terminal.emulator.CursorShape
 import com.openminis.app.ui.terminal.emulator.TerminalCell
-import com.openminis.app.ui.terminal.emulator.TerminalColor
 import com.openminis.app.ui.terminal.emulator.TerminalEmulator
 import com.openminis.app.ui.terminal.emulator.TerminalPalette
 import com.openminis.app.ui.terminal.emulator.TextAttributes

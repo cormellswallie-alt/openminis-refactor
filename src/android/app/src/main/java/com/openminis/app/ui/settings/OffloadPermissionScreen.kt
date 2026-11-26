@@ -16,7 +16,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -57,7 +57,7 @@ fun OffloadPermissionScreen(
 
     var showResetConfirm by remember { mutableStateOf(false) }
 
-    val configEnabled by com.openminis.app.config.MinisConfigPermissionStore.enabled.collectAsState()
+    val configEnabled by com.openminis.app.config.MinisConfigPermissionStore.enabled.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
 
@@ -80,7 +80,7 @@ fun OffloadPermissionScreen(
             delay(1000)
         }
     }
-    val shizukuSnap by ShizukuManager.snapshot.collectAsState()
+    val shizukuSnap by ShizukuManager.snapshot.collectAsStateWithLifecycle()
 
     SettingsScaffold(
         title = stringResource(R.string.perm_title),

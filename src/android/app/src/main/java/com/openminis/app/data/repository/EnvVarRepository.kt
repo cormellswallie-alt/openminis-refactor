@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.Collections
 import java.util.UUID
 
 /**
@@ -40,6 +41,11 @@ class EnvVarRepository(private val context: Context) {
 
     private val _entries = MutableStateFlow<List<EnvVarEntry>>(emptyList())
     val entries: StateFlow<List<EnvVarEntry>> = _entries.asStateFlow()
+
+    private val cacheLock = Any()
+
+    @Volatile
+    private var cachedDict: Map<String, String>? = null
 
     private val encryptedPrefs: SharedPreferences by lazy {
         // T-android-keystore-aead-fail: self-healing wrapper.
@@ -73,12 +79,19 @@ class EnvVarRepository(private val context: Context) {
     fun add(key: String, value: String, note: String = ""): Boolean {
         val normalizedKey = key.trim().uppercase()
         if (!isValidKey(normalizedKey)) return false
-        if (isDuplicateKey(normalizedKey)) return false
+        val sanitized = sanitizeValue(value)
 
-        val entry = EnvVarEntry(key = normalizedKey, note = note.trim())
-        _entries.value = _entries.value + entry
-        encryptedPrefs.edit().putString(normalizedKey, sanitizeValue(value)).apply()
-        saveMetadata()
+        synchronized(cacheLock) {
+            if (isDuplicateKey(normalizedKey)) return false
+
+            val entry = EnvVarEntry(key = normalizedKey, note = note.trim())
+            _entries.value = _entries.value + entry
+            encryptedPrefs.edit().putString(normalizedKey, sanitized).apply()
+            cachedDict = cachedDict?.let { existing ->
+                Collections.unmodifiableMap(LinkedHashMap(existing).apply { put(normalizedKey, sanitized) })
+            }
+            saveMetadata()
+        }
         Log.i(TAG, "Added env var: $normalizedKey")
         return true
     }
@@ -86,52 +99,85 @@ class EnvVarRepository(private val context: Context) {
     fun update(id: String, newKey: String, newValue: String, newNote: String = ""): Boolean {
         val normalizedKey = newKey.trim().uppercase()
         if (!isValidKey(normalizedKey)) return false
+        val sanitized = sanitizeValue(newValue)
+        val oldKey: String
 
-        val current = _entries.value.find { it.id == id } ?: return false
+        synchronized(cacheLock) {
+            val current = _entries.value.find { it.id == id } ?: return false
 
-        // Check for duplicate (excluding self)
-        if (isDuplicateKey(normalizedKey, excludeId = id)) return false
+            // Check for duplicate (excluding self)
+            if (isDuplicateKey(normalizedKey, excludeId = id)) return false
+            oldKey = current.key
 
-        // Delete old Keychain entry if key changed
-        if (current.key != normalizedKey) {
-            encryptedPrefs.edit().remove(current.key).apply()
+            // Delete old Keychain entry if key changed
+            if (current.key != normalizedKey) {
+                encryptedPrefs.edit().remove(current.key).apply()
+            }
+
+            // Update metadata
+            _entries.value = _entries.value.map {
+                if (it.id == id) it.copy(key = normalizedKey, note = newNote.trim()) else it
+            }
+
+            // Save new value
+            encryptedPrefs.edit().putString(normalizedKey, sanitized).apply()
+            cachedDict = cachedDict?.let { existing ->
+                Collections.unmodifiableMap(
+                    LinkedHashMap(existing).apply {
+                        if (current.key != normalizedKey) remove(current.key)
+                        put(normalizedKey, sanitized)
+                    },
+                )
+            }
+            saveMetadata()
         }
-
-        // Update metadata
-        _entries.value = _entries.value.map {
-            if (it.id == id) it.copy(key = normalizedKey, note = newNote.trim()) else it
-        }
-
-        // Save new value
-        encryptedPrefs.edit().putString(normalizedKey, sanitizeValue(newValue)).apply()
-        saveMetadata()
-        Log.i(TAG, "Updated env var: ${current.key} → $normalizedKey")
+        Log.i(TAG, "Updated env var: $oldKey → $normalizedKey")
         return true
     }
 
     fun delete(id: String) {
-        val entry = _entries.value.find { it.id == id } ?: return
-        encryptedPrefs.edit().remove(entry.key).apply()
-        _entries.value = _entries.value.filter { it.id != id }
-        saveMetadata()
-        Log.i(TAG, "Deleted env var: ${entry.key}")
+        val deletedKey: String
+        synchronized(cacheLock) {
+            val entry = _entries.value.find { it.id == id } ?: return
+            deletedKey = entry.key
+            encryptedPrefs.edit().remove(entry.key).apply()
+            _entries.value = _entries.value.filter { it.id != id }
+            cachedDict = cachedDict?.let { existing ->
+                Collections.unmodifiableMap(LinkedHashMap(existing).apply { remove(entry.key) })
+            }
+            saveMetadata()
+        }
+        Log.i(TAG, "Deleted env var: $deletedKey")
     }
 
-    fun getValue(key: String): String? = encryptedPrefs.getString(key, null)
+    fun getValue(key: String): String? {
+        val dict = ensureCache()
+        dict[key]?.let { return it }
+        return if (_entries.value.any { it.key == key }) null else encryptedPrefs.getString(key, null)
+    }
 
     /**
-     * Returns all env vars as a Map<String, String> for sandbox injection.
-     * Reads directly from storage to be thread-safe.
+     * Returns all env vars as an immutable Map<String, String> for sandbox injection.
+     * Served from an in-memory cache kept in sync with [add]/[update]/[delete] to avoid
+     * decrypting EncryptedSharedPreferences on every shell command.
      */
-    fun allAsDict(): Map<String, String> {
-        val result = mutableMapOf<String, String>()
-        for (entry in _entries.value) {
-            val value = encryptedPrefs.getString(entry.key, null)
-            if (value != null) {
-                result[entry.key] = value
+    fun allAsDict(): Map<String, String> = ensureCache()
+
+    private fun ensureCache(): Map<String, String> {
+        cachedDict?.let { return it }
+        synchronized(cacheLock) {
+            cachedDict?.let { return it }
+            val result = LinkedHashMap<String, String>()
+            for (entry in _entries.value) {
+                val value = encryptedPrefs.getString(entry.key, null)
+                if (value != null) {
+                    result[entry.key] = value
+                }
             }
+            val immutable = Collections.unmodifiableMap(result)
+            cachedDict = immutable
+            return immutable
         }
-        return result
     }
 
     // -- Metadata Persistence --

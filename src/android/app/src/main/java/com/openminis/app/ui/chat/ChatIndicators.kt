@@ -17,7 +17,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -141,7 +141,7 @@ internal fun CompactProgressIndicator(
 
 @Composable
 internal fun TypingIndicator() {
-    val soulMeta by com.openminis.app.agent.SoulStore.cachedMetadata.collectAsState()
+    val soulMeta by com.openminis.app.agent.SoulStore.cachedMetadata.collectAsStateWithLifecycle()
     val soulName = soulMeta.name.trim().ifEmpty { "Minis" }
 
     Surface(

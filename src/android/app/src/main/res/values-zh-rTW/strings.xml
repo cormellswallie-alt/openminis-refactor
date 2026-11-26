@@ -2141,4 +2141,69 @@
     <string name="questionnaire_expand_sheet">展開填寫</string>
     <string name="thinking_header_streaming">深度思考中</string>
     <string name="thinking_header_done">思維鏈</string>
+
+    <!-- Mid-loop ToolResult Steering -->
+    <string name="chat_steer_toggle_label">糾偏</string>
+    <string name="chat_steer_banner_active_streaming">過程糾偏已開啟 · 傳送文字將隨下次工具結果無中斷注入</string>
+    <string name="chat_steer_banner_active_idle">過程糾偏已開啟 · 執行期間傳送文字將隨工具結果注入</string>
+    <string name="chat_steer_banner_staged">已暫存 %1$d 則糾偏 · 將隨下次工具結果自動注入</string>
+    <string name="chat_steer_disable_cd">關閉過程糾偏</string>
+    <string name="chat_steer_remove_note_cd">移除此則糾偏</string>
+    <string name="slash_steer_on">過程工具結果糾偏：已開啟</string>
+    <string name="slash_steer_off">過程工具結果糾偏：已關閉</string>
+
+    <!-- Live Task Checklist (update_steps) -->
+    <string name="agent_tools_update_steps">即時任務清單 (update_steps)</string>
+    <string name="agent_tools_update_steps_footer">允許模型在執行複雜多步驟任務時，於聊天頂部顯示可展開的即時進度清單。</string>
+    <string name="steps_banner_title">任務清單</string>
+    <string name="steps_banner_all_done">全部 %1$d 個步驟已完成</string>
+    <string name="steps_expand_cd">展開任務清單</string>
+    <string name="steps_collapse_cd">收合任務清單</string>
+    <string name="steps_dismiss_cd">隱藏任務清單</string>
+
+    <!-- Plan / Code Dual Execution Mode -->
+    <string name="chat_plan_toggle_label">規劃</string>
+    <string name="chat_plan_banner_active">規劃模式 · 僅允許唯讀排查與方案設計</string>
+    <string name="chat_plan_approve_button">核准執行</string>
+    <string name="chat_plan_approve_prompt">方案已核准，請切換為程式碼模式並按規劃開始實施改動。</string>
+    <string name="chat_plan_exit_cd">退出規劃模式</string>
+    <string name="slash_plan_on">規劃模式：已開啟（唯讀探索與方案設計）</string>
+    <string name="slash_plan_off">規劃模式：已關閉（恢復程式碼編輯執行）</string>
+
+    <!-- Model Config Fixes -->
+    <string name="add_custom_model_duplicate_error">此供應商下已存在相同 ID 的模型。</string>
+    <string name="provider_detail_url_saved_toast">介面位址設定已儲存</string>
+    <string name="provider_oauth_connected">已連線</string>
+    <string name="provider_oauth_not_connected">未連線</string>
+    <string name="provider_list_no_api_key">未填寫金鑰</string>
+
+    <!-- Storage Module Upgrade -->
+    <string name="storage_total_used_label">應用程式已佔用：%1$s</string>
+    <string name="storage_device_free_label">裝置可用：%1$s</string>
+    <string name="storage_overview_orphans">無主殘留目錄（%1$d）</string>
+    <string name="storage_optimize_button">整理資料庫並清理殘留檔案</string>
+    <string name="storage_optimizing_status">正在最佳化儲存空間…</string>
+    <string name="storage_optimize_footer">執行 SQLite 資料庫 VACUUM 壓縮與 WAL 截斷歸還已刪空間，並清理無對應工作階段的殘留磁碟目錄。</string>
+    <string name="storage_optimize_result">儲存最佳化完成：共釋放 %1$s（清理 %2$d 個殘留目錄）</string>
+    <string name="storage_search_sessions_placeholder">搜尋工作階段名稱…</string>
+    <string name="storage_sort_by_size">按體積</string>
+    <string name="storage_sort_by_name">按名稱</string>
+    <string name="storage_row_files_part">檔案 %1$s</string>
+    <string name="storage_row_media_part">媒體 %1$s</string>
+    <string name="storage_row_subagents_part">%1$d 個子代理</string>
+    <string name="common_clear">清除</string>
+
+    <!-- Settings Feature Tutorial & Searchable Guide -->
+    <string name="settings_tutorial_button_title">功能教學與使用指南</string>
+    <string name="settings_tutorial_button_subtitle">詳細介紹全部功能、斜線指令、記憶、子代理與工具，支援關鍵字快速定位</string>
+    <string name="tutorial_screen_title">功能教學</string>
+    <string name="tutorial_search_placeholder">搜尋功能、/指令、@提及或關鍵字…</string>
+    <string name="tutorial_result_count">共 %1$d 項功能</string>
+    <string name="tutorial_expand_all">全部展開</string>
+    <string name="tutorial_collapse_all">全部收合</string>
+    <string name="tutorial_no_results_title">找不到相符功能</string>
+    <string name="tutorial_no_results_subtitle">試試搜尋 /plan、糾偏、/handoff、@diff、記憶、子代理或中轉設定。</string>
+    <string name="tutorial_reset_filters">清除搜尋與篩選</string>
+    <string name="tutorial_section_what">功能作用</string>
+    <string name="tutorial_section_how">使用方法</string>
 </resources>

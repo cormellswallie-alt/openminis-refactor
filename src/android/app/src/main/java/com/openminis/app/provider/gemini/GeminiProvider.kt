@@ -30,6 +30,7 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import com.openminis.app.provider.failOnSilentEmptyCompletion
 import com.openminis.app.provider.thinking.ThinkingRuleResolver
 
@@ -37,7 +38,7 @@ class GeminiProvider(
     private val apiKey: String,
     override var model: LLMModel = LLMModel.gemini25Flash,
     private val basePath: String = OFFICIAL_BASE_PATH,
-    private val isOAuth: Boolean = false,
+    val isOAuth: Boolean = false,
     private val customUserAgent: String? = null,
 ) : LLMProvider {
     override val name = "Google"
@@ -45,6 +46,10 @@ class GeminiProvider(
     private val resolvedBasePath: String = normalizeGeminiBasePath(basePath)
     private val isCustomEndpoint: Boolean =
         !resolvedBasePath.lowercase().contains("generativelanguage.googleapis.com")
+    private val toolCallSeq = AtomicLong(0L)
+
+    internal fun nextToolCallId(): String =
+        "gemini_${System.nanoTime()}_${toolCallSeq.incrementAndGet()}"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -153,10 +158,12 @@ class GeminiProvider(
             var line: String?
             while (reader.readLine().also { line = it } != null) {
                 val l = line ?: continue
-                if (!l.startsWith("data: ")) continue
-                val payload = l.removePrefix("data: ")
+                if (!l.startsWith("data:")) continue
+                val payload = l.removePrefix("data:").trimStart()
+                if (payload.isEmpty() || payload == "[DONE]") continue
 
                 val json = try { JSONObject(payload) } catch (_: Exception) { continue }
+                parseSseError(json, payload)?.let { throw it }
 
                 if (!started) {
                     send(LLMStreamChunk.Started)
@@ -175,7 +182,7 @@ class GeminiProvider(
                 // Extract function calls from streaming response
                 val functionCalls = extractFunctionCalls(json)
                 for ((fcName, fcArgs, fcSig) in functionCalls) {
-                    val toolId = "gemini_${System.nanoTime()}"
+                    val toolId = nextToolCallId()
                     send(LLMStreamChunk.ToolUseStart(toolId, fcName))
                     // [T-android-gemini3-thoughtsig / #179] Carry the part's
                     // thoughtSignature through so it can be persisted and replayed
@@ -693,6 +700,32 @@ class GeminiProvider(
             is Number -> runCatching { JSONObject.numberToString(value) }.getOrDefault("null")
             is Boolean -> value.toString()
             else -> JSONObject.quote(value.toString())
+        }
+
+        /**
+         * Map a Gemini mid-stream SSE `{"error": {...}}` frame onto [LLMError] so
+         * transient outages / rate limits trigger group fallback instead of silently
+         * completing as an empty `end_turn`.
+         */
+        internal fun parseSseError(json: JSONObject, rawPayload: String): LLMError? {
+            val err = json.optJSONObject("error") ?: return null
+            val code = err.optInt("code", 0)
+            val status = err.safeOptString("status", "").uppercase()
+            val msg = err.safeOptString("message", "").ifEmpty { rawPayload.take(300) }
+            return when {
+                code == 401 || code == 403 || status == "UNAUTHENTICATED" || status == "PERMISSION_DENIED" ->
+                    LLMError.InvalidApiKey("Gemini API error $code: $msg")
+                code == 429 || status == "RESOURCE_EXHAUSTED" ->
+                    LLMError.RateLimited()
+                code in setOf(500, 502, 503, 504, 529) ||
+                    status == "UNAVAILABLE" || status == "INTERNAL" || status == "DEADLINE_EXCEEDED" ->
+                    LLMError.TransientError(
+                        "Gemini API error $code: $msg",
+                        httpStatus = code.takeIf { it > 0 } ?: 503,
+                    )
+                else ->
+                    LLMError.ProviderError("Gemini API error $code: $msg", httpStatus = code.takeIf { it > 0 })
+            }
         }
 
         /** Exposed for tests and for any other endpoint speaking this protocol. */

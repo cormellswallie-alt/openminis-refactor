@@ -2,6 +2,7 @@ package com.openminis.app.sandbox
 
 import android.util.Log
 import java.io.File
+import java.io.FileInputStream
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
@@ -77,9 +78,26 @@ object GlobalShellThrottle {
     private const val POLL_MS = 250L
     private const val MAX_RETRY_BACKOFF_MS = 5_000L
 
+    /** Short TTL (< [POLL_MS]) so bursts arriving together share one /proc scan while poll retries always re-scan. */
+    private const val PROC_CACHE_TTL_MS = 150L
+    @Volatile
+    private var cachedProcCount: Int = 0
+    @Volatile
+    private var cachedProcCountAtMs: Long = Long.MIN_VALUE
+
+    private fun defaultProcessCounter(): Int {
+        val now = System.nanoTime() / 1_000_000
+        val age = now - cachedProcCountAtMs
+        if (age in 0 until PROC_CACHE_TTL_MS) return cachedProcCount
+        val fresh = countDescendants(File("/proc"), android.os.Process.myPid())
+        cachedProcCount = fresh
+        cachedProcCountAtMs = now
+        return fresh
+    }
+
     /** Counts this app's live child processes. Swapped out in tests. */
     @Volatile
-    internal var processCounter: () -> Int = { countDescendants(File("/proc"), android.os.Process.myPid()) }
+    internal var processCounter: () -> Int = ::defaultProcessCounter
 
     /** Clock in ms. Swapped out in tests (virtual time). */
     @Volatile
@@ -234,11 +252,13 @@ object GlobalShellThrottle {
      * a process that exits mid-walk is simply missed.
      */
     internal fun countDescendants(procRoot: File, rootPid: Int): Int {
-        val parentOf = HashMap<Int, Int>()
-        procRoot.listFiles()?.forEach { dir ->
-            val pid = dir.name.toIntOrNull() ?: return@forEach
-            val stat = runCatching { File(dir, "stat").readText() }.getOrNull() ?: return@forEach
-            parseParentPid(stat)?.let { parentOf[pid] = it }
+        val names = procRoot.list() ?: return 0
+        val parentOf = HashMap<Int, Int>(names.size)
+        val buf = ByteArray(256)
+        for (name in names) {
+            val pid = parsePositivePid(name) ?: continue
+            val ppid = readParentPid(File(File(procRoot, name), "stat"), buf) ?: continue
+            parentOf[pid] = ppid
         }
         val children = HashMap<Int, MutableList<Int>>()
         for ((pid, ppid) in parentOf) children.getOrPut(ppid) { ArrayList() }.add(pid)
@@ -254,6 +274,61 @@ object GlobalShellThrottle {
         return count
     }
 
+    private fun parsePositivePid(name: String): Int? {
+        val len = name.length
+        if (len == 0) return null
+        var value = 0
+        for (i in 0 until len) {
+            val d = name[i] - '0'
+            if (d !in 0..9) return null
+            value = value * 10 + d
+        }
+        return value
+    }
+
+    private fun readParentPid(statFile: File, buf: ByteArray): Int? {
+        val n = try {
+            FileInputStream(statFile).use { it.read(buf) }
+        } catch (_: Exception) {
+            return null
+        }
+        if (n <= 0) return null
+        var close = -1
+        for (i in n - 1 downTo 0) {
+            if (buf[i] == ')'.code.toByte()) {
+                close = i
+                break
+            }
+        }
+        if (close < 0) {
+            return if (n == buf.size) runCatching { parseParentPid(statFile.readText()) }.getOrNull() else null
+        }
+        var i = close + 1
+        while (i < n && buf[i] == ' '.code.toByte()) i++
+        if (i >= n) return if (n == buf.size) runCatching { parseParentPid(statFile.readText()) }.getOrNull() else null
+        while (i < n && buf[i] != ' '.code.toByte()) i++
+        while (i < n && buf[i] == ' '.code.toByte()) i++
+        val start = i
+        var ppid = 0
+        while (i < n) {
+            val d = (buf[i].toInt() and 0xFF) - '0'.code
+            if (d !in 0..9) break
+            ppid = ppid * 10 + d
+            i++
+        }
+        if (i == start) {
+            return if (n == buf.size) runCatching { parseParentPid(statFile.readText()) }.getOrNull() else null
+        }
+        if (i == n && n == buf.size) {
+            return runCatching { parseParentPid(statFile.readText()) }.getOrNull()
+        }
+        if (i < n) {
+            val term = buf[i].toInt() and 0xFF
+            if (term != ' '.code && term != '\n'.code && term != '\r'.code && term != '\t'.code) return null
+        }
+        return ppid
+    }
+
     /**
      * `/proc/<pid>/stat` is "pid (comm) state ppid ...". comm may contain
      * spaces and parentheses, so fields are read after the LAST ')'.
@@ -261,7 +336,25 @@ object GlobalShellThrottle {
     internal fun parseParentPid(stat: String): Int? {
         val close = stat.lastIndexOf(')')
         if (close < 0) return null
-        val fields = stat.substring(close + 1).trim().split(' ')
-        return fields.getOrNull(1)?.toIntOrNull()
+        var i = close + 1
+        val len = stat.length
+        while (i < len && stat[i] == ' ') i++
+        if (i >= len) return null
+        while (i < len && stat[i] != ' ') i++
+        while (i < len && stat[i] == ' ') i++
+        val start = i
+        var ppid = 0
+        while (i < len) {
+            val d = stat[i] - '0'
+            if (d !in 0..9) break
+            ppid = ppid * 10 + d
+            i++
+        }
+        if (i == start) return null
+        if (i < len) {
+            val term = stat[i]
+            if (term != ' ' && term != '\n' && term != '\r' && term != '\t') return null
+        }
+        return ppid
     }
 }

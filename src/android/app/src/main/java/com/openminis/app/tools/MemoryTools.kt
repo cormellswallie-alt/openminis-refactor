@@ -106,14 +106,39 @@ object MemoryTools {
     fun executeMemoryWrite(inputJson: String, repository: MemoryRepository): ToolResult {
         return try {
             val obj = JSONObject(inputJson)
+            val action = obj.optString("action", "save").trim().lowercase()
             val content = obj.optString("content", "")
             val toolTitle = obj.optString("tool_title", "memory_write")
+            val type = obj.optString("type", "").takeIf { it.isNotBlank() }
+            val topicKey = obj.optString("topic_key", "").takeIf { it.isNotBlank() }
+            val importance = obj.optInt("importance", 3).coerceIn(1, 5)
+            val tags = buildList {
+                val tagsArr = obj.optJSONArray("tags")
+                if (tagsArr != null) {
+                    for (i in 0 until tagsArr.length()) {
+                        tagsArr.optString(i, "").takeIf { it.isNotBlank() }?.let { add(it) }
+                    }
+                } else {
+                    obj.optString("tags", "")
+                        .split(',', ';')
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+                        .forEach { add(it) }
+                }
+            }
 
-            if (content.isBlank()) {
+            if (action == "save" && content.isBlank()) {
                 ToolResult("Error: Missing required 'content' parameter", false, toolTitle)
             } else {
-                val result = repository.writeMemory(content)
-                val success = result.startsWith("Memory saved")
+                val result = repository.writeMemory(
+                    content = content,
+                    type = type,
+                    tags = tags,
+                    importance = importance,
+                    topicKey = topicKey,
+                    action = action,
+                )
+                val success = !result.startsWith("Error")
                 ToolResult(result, success, toolTitle)
             }
         } catch (e: Exception) {
@@ -126,9 +151,11 @@ object MemoryTools {
             val obj = JSONObject(inputJson)
             val keywords = obj.optString("keywords", "")
             val scope = obj.optString("scope", "all")
+            val typeFilter = obj.optString("type", "").takeIf { it.isNotBlank() }
+            val limit = obj.optInt("limit", 8).coerceIn(1, 20)
             val toolTitle = obj.optString("tool_title", "memory_get")
 
-            val result = repository.getMemory(keywords, scope)
+            val result = repository.getMemory(keywords, scope, typeFilter = typeFilter, limit = limit)
             ToolResult(result, true, toolTitle)
         } catch (e: Exception) {
             ToolResult("Error: ${e.message}", false)

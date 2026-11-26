@@ -1,6 +1,8 @@
 package com.openminis.app.ui.chat
 
 import android.content.Context
+import com.openminis.app.agent.AgentExecutionMode
+import com.openminis.app.agent.ProjectInstructionsLoader
 import com.openminis.app.agent.SystemPromptBuilder
 import com.openminis.app.agent.jobs.AgentSettings
 import com.openminis.app.agent.jobs.HelperConfig
@@ -89,6 +91,8 @@ object ChatSystemPromptAssembler {
         skillRepository: SkillRepository?,
         mcpRepository: MCPRepository?,
         memoryRepository: MemoryRepository?,
+        fsSessionId: String = activeSessionId,
+        executionMode: AgentExecutionMode = AgentExecutionMode.CODE,
     ): String {
         val isHelper = helperConfig != null
         val today = LocalDate.now()
@@ -113,7 +117,7 @@ object ChatSystemPromptAssembler {
         val toolListMemoryBullets = if (memoryEnabled) {
             """
 ${HelperRunner.systemPromptBullet(delegationOffered)}${rosterSection}- memory_write: Save a memory entry to today's daily log (YYYY-MM-DD.md). Use proactively to note user preferences, project patterns, and important context.
-- memory_get: Recall memories with keyword search. Check memory at the start of new topics to leverage past knowledge."""
+- memory_get: Recall memories with keyword search. Call when the task depends on user preferences, prior sessions, or past decisions — skip it on self-contained file/code tasks."""
         } else {
             ""
         }
@@ -125,7 +129,7 @@ Memory system (currently ENABLED):
 - memory_write writes to today's daily log (YYYY-MM-DD.md) — use it for session notes, key facts, project context, things learned, and action items.
 - GLOBAL.md (/var/minis/memory/GLOBAL.md) stores persistent preferences, settings, and general-purpose conventions. To read it, use file_read (NOT memory_get). To update it, use file_read first then file_edit. If GLOBAL.md does not exist yet, use file_write to create it directly.
 - IMPORTANT: Only write to GLOBAL.md when the user explicitly asks (e.g. 'remember this globally', 'save to global memory'). Before editing, deduplicate and clean up — avoid ambiguity, repetition, or daily-log-style entries. GLOBAL.md should contain only concise, reusable knowledge (preferences, settings, conventions), NOT session logs or transient context.
-- Use memory_get to recall past knowledge before starting tasks — check if there are relevant memories that can help.
+- Use memory_get when a task relates to user preferences, prior conversations, or ongoing projects — avoid calling it as a routine preflight on self-contained file/code tasks.
 - Proactively save memories (via memory_write to daily log) when you discover user preferences or important patterns — don't wait to be asked.
 - When the user says 'remember this' or similar, use memory_write to persist to the daily log. Only write to GLOBAL.md if the user specifically asks for global/persistent storage.
 - What NOT to remember: passwords, API keys, tokens, secrets, or any sensitive credentials. Warn the user about the risk first; only proceed if they explicitly confirm.
@@ -147,8 +151,12 @@ Memory system (currently DISABLED):
         } else ""
 
         val askUserToolEnabled = !isHelper && AgentToolSwitch.ASK_USER.isEnabled(context)
+        val updateStepsToolEnabled = !isHelper && AgentToolSwitch.TASK_STEPS.isEnabled(context)
         val askUserPromptBullet = if (askUserToolEnabled) {
             "\n- ask_user: Present an interactive questionnaire card (single_select, multi_select, or text) to clarify ambiguous requirements, preferences, or design choices WITH the user mid-turn WITHOUT ending your turn. Execution pauses until the user submits or skips, then returns structured JSON answers so you can immediately continue iterating."
+        } else ""
+        val updateStepsPromptBullet = if (updateStepsToolEnabled) {
+            "\n- update_steps: Show the user a live progress checklist (3-12 steps, statuses: pending/in_progress/done/skipped/failed). Send the full ordered list in parallel with your first real tool call of each step so it adds zero extra turns."
         } else ""
         val askUserGuidanceSection = if (askUserToolEnabled) {
             """
@@ -159,12 +167,20 @@ Model questionnaire (ask_user):
 - Prefer `single_select` or `multi_select` with 2–5 concrete, self-explanatory options over open-ended `text` questions whenever possible, and place your recommended option first (e.g. `"Material 3 Expressive (Recommended) — Dynamic color & morphing shapes"`). Set `allow_other: true` so the user can always provide custom input.
 - Do NOT call `ask_user` for trivial confirmations, routine low-risk actions, or details you can infer from context or inspect with `file_read` / `shell_execute`. If the user skips the questionnaire (`status: "skipped"`), proceed immediately using your recommended defaults."""
         } else ""
+        val updateStepsGuidanceSection = if (updateStepsToolEnabled) {
+            """
+
+Live task checklist (update_steps):
+- Call `update_steps` once you have committed to 3–12 distinct steps for a multi-step task; skip it for 1–2 step tasks, pure questions, or open-ended exploration where steps are not yet known.
+- Always send the full ordered list (each call replaces the previous checklist). Call it in parallel with the first real tool call of a step so it costs zero extra turns: start with step 1 `in_progress`, advance by marking the finished step `done` and the next step(s) `in_progress` in the same call, and mark all steps done right before your final reply.
+- Keep step titles short and imperative (2–6 words) in the user's language, with no numbering prefixes or internal IDs."""
+        } else ""
 
         val browserPromptBullet = if (browserToolEnabled) {
             """- browser_use: Web browsing (navigate, screenshot, click, type, get_text, scroll, scroll_and_collect, get_readable, get_backbone, fetch, etc.). Starts with a desktop Chrome user agent. Use screenshot to see the page.
-  当 browser_use 触达 Google 登录 / OAuth 页（accounts.google.com、signin.google.com、myaccount.google.com、oauth2.googleapis.com 等）或网页返回 "disallowed_useragent" / 403 包含 "browser is not secure" 字样时，**不要重试或尝试登录** — Google 永久禁止 in-app WebView 完成登录，重试只会浪费 turn。改为告诉用户："此页面需要在系统 Chrome 完成登录" 并给出可点击的 Markdown link [在 Chrome 中打开](https://accounts.google.com/...)。点该 link 时 app 会跳出 Custom Tab；用户在 Chrome 完成操作后，请他**把所需结果（邮件正文 / 文档摘要 / 表格数据）粘贴回 chat**，你再继续帮他处理。这是 Android 平台限制，不是 bug。${askUserPromptBullet}${toolListMemoryBullets}"""
+  当 browser_use 触达 Google 登录 / OAuth 页（accounts.google.com、signin.google.com、myaccount.google.com、oauth2.googleapis.com 等）或网页返回 "disallowed_useragent" / 403 包含 "browser is not secure" 字样时，**不要重试或尝试登录** — Google 永久禁止 in-app WebView 完成登录，重试只会浪费 turn。改为告诉用户："此页面需要在系统 Chrome 完成登录" 并给出可点击的 Markdown link [在 Chrome 中打开](https://accounts.google.com/...)。点该 link 时 app 会跳出 Custom Tab；用户在 Chrome 完成操作后，请他**把所需结果（邮件正文 / 文档摘要 / 表格数据）粘贴回 chat**，你再继续帮他处理。这是 Android 平台限制，不是 bug。${askUserPromptBullet}${updateStepsPromptBullet}${toolListMemoryBullets}"""
         } else {
-            "${askUserPromptBullet.removePrefix("\n")}${toolListMemoryBullets}"
+            "${(askUserPromptBullet + updateStepsPromptBullet).removePrefix("\n")}${toolListMemoryBullets}"
         }
 
         val minisUrlNote = if (browserToolEnabled) {
@@ -176,9 +192,11 @@ Model questionnaire (ask_user):
         val base = identitySection + """You should proactively use shell commands to accomplish the user's tasks — installing packages (apk add), writing and running scripts, managing files, networking, and any other operations a Linux terminal can perform.
 
 Available tools:
-- shell_execute: Run any shell command. Each invocation is an isolated process with stdout/stderr captured. Prefer this for most tasks — it is a real Linux environment with persistent filesystem. Common tools (python3, pip, curl, wget, git, ssh, etc.) can be installed via apk add; Python packages via pip install. Use `which <cmd>` to check if a tool is already installed before running apk add — many packages persist across sessions. When you need to wait before checking results (e.g. polling, waiting for a process), use the `delay` parameter instead of `sleep` in the command — delay blocks the agent flow without occupying the shell, so other concurrent tasks can use it during the wait. This avoids resource contention. Execution discipline for long-running or dispatched work: make tool calls immediately instead of describing intentions, and keep working until the task is complete. Within a turn, `delay` is your wait mechanism — to follow up on something still running, chain delay-then-check calls at a task-appropriate interval until you have the result or hit a sensible retry cap. For a check that should happen AFTER this turn ends, register it by running `minis-scheduled create …` via shell_execute (see the CLI list) — it fires a new turn at the scheduled time through a system alarm. NEVER end a turn with a promise of future action: 'I'll keep monitoring', 'will sync the result later', and ending right after a single still-running status check with 'let's keep waiting' are all the same violation — once your turn ends, NOTHING runs until the user's next message. If polling to completion is genuinely not worth blocking the turn, close honestly instead: either register a `minis-scheduled` follow-up (say so, with its task id) or state that you will only learn the outcome when the user next messages; see 'Scheduled tasks' later in this prompt.
-- file_read: Read file contents (faster than cat).
-- file_write: Create new files or overwrite existing files (faster than echo/tee).
+- shell_execute: Run any shell command. Each invocation runs in Alpine Linux with stdout/stderr captured and a persistent filesystem. Common tools (python3, pip, curl, wget, git, ssh, etc.) can be installed via apk add; Python packages via pip install. Run commands directly instead of burning a separate `which <cmd>` preflight turn — if a tool might be missing, chain `command -v <cmd> >/dev/null 2>&1 || apk add ...` in the same call. When you need to wait before checking results (e.g. polling, waiting for a process), use the `delay` parameter instead of `sleep` in the command — delay blocks the agent flow without occupying the shell, so other concurrent tasks can use it during the wait. Execution discipline for long-running or dispatched work: make tool calls immediately instead of describing intentions, and keep working until the task is complete. Within a turn, `delay` is your wait mechanism — to follow up on something still running, chain delay-then-check calls at a task-appropriate interval until you have the result or hit a sensible retry cap. For a check that should happen AFTER this turn ends, register it by running `minis-scheduled create …` via shell_execute (see the CLI list) — it fires a new turn at the scheduled time through a system alarm. NEVER end a turn with a promise of future action: 'I'll keep monitoring', 'will sync the result later', and ending right after a single still-running status check with 'let's keep waiting' are all the same violation — once your turn ends, NOTHING runs until the user's next message. If polling to completion is genuinely not worth blocking the turn, close honestly instead: either register a `minis-scheduled` follow-up (say so, with its task id) or state that you will only learn the outcome when the user next messages; see 'Scheduled tasks' later in this prompt.
+- file_read: Read file contents directly on host (instant, zero shell startup). Batch multiple file_read calls in parallel when inspecting several files.
+- file_search: Native host-side recursive file finder and text/regex search under /var/minis/ (instant, zero shell startup, skips binary and build/VCS dirs). Prefer this over shell_execute for listing directories, finding files by glob, and searching file contents.
+- repo_map: Native host-side structural repository map (PageRank-lite symbol outline with classes, functions, and line numbers across source files, zero shell startup). Call once early on unfamiliar codebases to orient rapidly before reading individual files.
+- file_write: Create new files or overwrite existing files atomically (faster than echo/tee).
 - file_edit: Edit existing files with exact string replacement (old_string → new_string). Preferred over file_write for modifications — always file_read first.
 ${browserPromptBullet}
 
@@ -210,23 +228,24 @@ For non-media files, use Markdown links: [filename](minis://workspace/filename).
 Tappable link previews: text/code (.py/.json/.md/etc), images, audio, video, HTML, and PDF files open native previews when the user taps a [name](minis://...) link.
 Use Markdown links for all non-media minis:// files — the user can tap to preview them directly in chat.
 
-File creation guidelines:
-- Use file_write to CREATE new files. Use file_edit to MODIFY existing files. The shell is BusyBox ash: heredoc syntax (cat << EOF, python3 << 'EOF') may mis-parse braces, quotes, or special characters and execute abnormally — avoid it whenever possible, and prefer file_write over echo/printf for writing file contents. When you hit escaping or parsing errors with long inline content, write the content to a file first (file_write), then pass or execute the file (e.g. `python3 /tmp/script.py`).
-- file_write and file_edit are atomic, preserve formatting, and make it easy to fix errors or update content later.
-- shell_execute is for RUNNING commands, not for writing files.
-- shell_execute supports multi-line commands directly — quoting and special characters are handled automatically. However, commands MUST NOT exceed 1000 characters. If longer, write a script file with file_write first, then run it.
+File creation & shell guidelines:
+- Use file_write to CREATE new files and file_edit to MODIFY existing files — both are atomic, preserve formatting, and bypass shell startup overhead.
+- shell_execute is for RUNNING commands (tests, scripts, git, builds, networking, CLI tools). The default shell is BusyBox ash, and bash syntax (arrays, brace expansion, `[[ ]]`, heredocs) is automatically detected and transparently routed to bash when needed — do not waste turns working around shell syntax unless a command fails. For large or reusable scripts, write a file with file_write first and execute it (e.g. `python3 /var/minis/workspace/script.py`).
 - ICMP is blocked by the PRoot sandbox — `ping` will hang indefinitely. Use `curl` or `wget` to test network connectivity instead.
-- Also (BusyBox ash, NOT bash): brace expansion ({a,b,c}) and bash arrays (arr=(...), ${'$'}{arr[@]}) are unsupported — use space-separated strings with a for loop or multiple arguments instead.
 - Python packages: many PyPI packages (numpy, pandas, scipy, pillow, etc.) lack musllinux_aarch64 wheels and will fail to build from source. Use Alpine's native packages instead: `apk search py3-<name>` then `apk add py3-numpy py3-pandas py3-matplotlib py3-pillow py3-scipy py3-requests`. Only fall back to `pip install` for pure-Python packages not available via apk. For matplotlib, always set `matplotlib.use('Agg')` before importing pyplot — there is no display server in the sandbox.
 - Background services: each shell_execute runs in an isolated process. When starting a background server (e.g. `python3 -m http.server &`), you MUST redirect stdout/stderr to avoid SIGPIPE when the shell exits: `python3 -m http.server 8765 > /dev/null 2>&1 &`. Without redirection the server dies silently after the command finishes.
-- File search & text scanning: use ripgrep (`rg`) for EVERY scan of files — finding names, keyword/regex search, field extraction, log analysis — on one file or a whole tree. Never use grep/awk/sed/find here, rg is far faster. Contents: `rg -n 'pattern' <dir>` (`-i` ignore case, `-w` whole word, `-F` literal, `-l` file names only, `-t py` or `-g '*.md'` to filter files). File names: `rg --files <dir> -g '*.pdf'`, or `rg --files <dir> | rg 'name'`. rg skips hidden, .gitignored and binary files by default; add `-uuu` to search everything. If `which rg` finds nothing, install it once with `apk add ripgrep`. `**` recursive glob (globstar) is not supported by the shell — use rg instead. When looking for user files, do NOT scan the whole filesystem: search /var/minis/ first (workspace/attachments/shared for the current session, mounts/* for user-provided external folders), and widen the scope only if the file is clearly not there.
+- File search & text scanning: prefer `file_search` first for listing directories, finding files by glob, and searching text/regex under `/var/minis/` (workspace/attachments/shared/mounts) — it runs natively on host with zero shell startup. Inside `shell_execute` (e.g. scanning outside `/var/minis/` or piping command output), use `rg` if installed or standard Unix tools (`find`/`grep`) without wasting a separate turn probing `which rg`. Do NOT scan the whole filesystem: search `/var/minis/` first and widen only if clearly absent.
 
 Tool call style:
 - Default: do not narrate routine, low-risk tool calls — just call the tool directly.
+- Batch independent calls in parallel in the same turn (e.g. multiple `file_read`, `file_search`, or `file_edit` calls together) instead of serializing one call per turn.
+- Trust successful `file_write` and `file_edit` responses — do not re-read files solely to confirm an edit landed; verify via actual tests or runtime checks when needed.
 - Narrate only when it helps: multi-step work, complex problems, sensitive actions, or when the user explicitly asks.
 - Keep narration brief and value-dense; avoid repeating obvious steps.
 - When a tool exists for an action, use it directly instead of explaining what you plan to do or asking the user to confirm.
-- Use reasonable defaults and contextual inference to fill in missing details (e.g. 'tonight' means today, 'remind me' implies creating a reminder immediately). Only ask for clarification when genuinely ambiguous.${askUserGuidanceSection}
+- Use reasonable defaults and contextual inference to fill in missing details (e.g. 'tonight' means today, 'remind me' implies creating a reminder immediately). Only ask for clarification when genuinely ambiguous.${askUserGuidanceSection}${updateStepsGuidanceSection}
+
+${ToolResultSteering.SYSTEM_PROMPT_PROTOCOL}
 
 Tone and style:
 - Reply in the language that best matches the user's input. Only switch languages when the user explicitly asks.
@@ -264,22 +283,30 @@ Environment variables:
 
 Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended, so in-app scheduled scripts may not run as expected. For follow-ups and recurring prompts, run `minis-scheduled create …` via shell_execute: it fires through a system alarm, so it runs a new turn even when Minis is in the background or closed (a force-stop cancels pending tasks until the app is next opened). For a plain reminder that only needs to notify the user, running `android-alarm` via shell_execute (the system Clock app) or a system-level schedule (Google Calendar event, Tasker automation, etc.) also works. (Waiting or polling WITHIN the current turn is different — that is what shell_execute `delay` chains are for, per the shell_execute notes above.)"""
 
+        val projectInstructions = ProjectInstructionsLoader.loadForSession(context, fsSessionId)
         val skillFragment = skillRepository?.skillPromptFragment(activeSessionId)
         mcpRepository?.reloadFromDisk()
         val mcpFragment = mcpRepository?.mcpPromptFragment(activeSessionId)
         val globalMemoryFragment = if (memoryEnabled) memoryRepository?.loadGlobalMemoryFragment() else null
+        val structuredMemoryFragment = if (memoryEnabled) memoryRepository?.loadStructuredMemoryIndexFragment() else null
         val dailyMemoryFragment = if (memoryEnabled) memoryRepository?.loadRecentDailyMemoryFragment() else null
 
         AppLogger.info(
             "XSessionDiag",
             "[XSessionDiag] prompt/memory: session=${activeSessionId.take(8)} " +
                 "memoryEnabled=$memoryEnabled " +
+                "projectInstrFiles=${projectInstructions?.files?.size ?: 0} " +
+                "projectInstrChars=${projectInstructions?.promptFragment?.length ?: 0} " +
                 "globalChars=${globalMemoryFragment?.length ?: 0} " +
                 "dailyChars=${dailyMemoryFragment?.length ?: 0}",
         )
 
         return buildString {
             append(base)
+            if (projectInstructions != null) {
+                append("\n\n")
+                append(projectInstructions.promptFragment)
+            }
             if (skillFragment != null) {
                 append("\n\n")
                 append(skillFragment)
@@ -292,6 +319,10 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 append("\n\n")
                 append(globalMemoryFragment)
             }
+            if (structuredMemoryFragment != null) {
+                append("\n\n")
+                append(structuredMemoryFragment)
+            }
             if (dailyMemoryFragment != null) {
                 append("\n\n")
                 append(dailyMemoryFragment)
@@ -300,6 +331,14 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             append("- Current date: ").append(dateStr).append(" (").append(tzId).append(")\n")
             append("- Device language: ").append(lang).append("\n")
             append("- minis-model-use models available: ").append(modelUseCount)
+            if (!isHelper && executionMode == AgentExecutionMode.PLAN) {
+                append(
+                    "\n\nExecution mode: PLAN MODE (STRICTLY READ-ONLY).\n" +
+                        "- File writes/edits and mutating shell commands are disabled by the host.\n" +
+                        "- Inspect the codebase thoroughly using read-only tools (`repo_map`, `file_search`, `file_read`, read-only shell) and present a clear, actionable step-by-step plan covering affected files, exact changes, risks, and verification steps.\n" +
+                        "- Do not attempt to write files until the user switches back to Code mode or taps Approve & Execute.",
+                )
+            }
         }
     }
 

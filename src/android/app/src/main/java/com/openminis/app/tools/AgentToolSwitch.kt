@@ -27,6 +27,9 @@ enum class AgentToolSwitch(val key: String, val defaultValue: Boolean) {
 
     /** ask_user — interactive mid-turn model questionnaire, on by default. */
     ASK_USER("agent.tools.ask_user.enabled", true),
+
+    /** update_steps — live task checklist bar, on by default. */
+    TASK_STEPS("agent.tools.update_steps.enabled", true),
     ;
 
     fun isEnabled(context: Context): Boolean =
@@ -50,6 +53,7 @@ enum class AgentToolSwitch(val key: String, val defaultValue: Boolean) {
             // replayed call from an older transcript.
             "subagent_task", "delegate_task", "agent_status" -> AGENTS
             "ask_user" -> ASK_USER
+            "update_steps" -> TASK_STEPS
             else -> null
         }
 

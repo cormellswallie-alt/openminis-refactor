@@ -7,7 +7,6 @@ import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,7 +28,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Schedule
@@ -45,7 +43,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -116,13 +114,13 @@ internal fun ScheduledTaskDetailSheet(
     val context = LocalContext.current
     val manager = remember { ScheduledTaskManager(context.applicationContext) }
     val tasksFlow = remember { manager.store().observe() }
-    val tasks by tasksFlow.collectAsState(initial = remember { manager.store().all() })
+    val tasks by tasksFlow.collectAsStateWithLifecycle(initialValue = remember { manager.store().all() })
     val task = tasks.firstOrNull { it.id == marker.taskId }
 
     // Whether the chat this card lives in is processing right now: with the
     // fire not yet recorded, that means this fire is still running.
     val hostVm = remember(hostSessionId) { hostSessionId?.let { ChatViewModelStore.existing(it) } }
-    val hostStreaming = hostVm?.isStreaming?.collectAsState()?.value == true
+    val hostStreaming = hostVm?.isStreaming?.collectAsStateWithLifecycle()?.value == true
 
     // One-second clock for the countdown; only runs while the page is open.
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }

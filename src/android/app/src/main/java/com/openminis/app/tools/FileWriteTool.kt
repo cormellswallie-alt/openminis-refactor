@@ -102,6 +102,11 @@ object FileWriteTool {
                 parent.mkdirs()
             }
 
+            val existedBefore = file.exists()
+            val previousContent = if (existedBefore && !append && file.length() <= 256 * 1024L) {
+                runCatching { file.readText() }.getOrNull()
+            } else null
+
             if (append) {
                 file.appendText(content)
             } else {
@@ -129,7 +134,11 @@ object FileWriteTool {
                     )
                 }
             }
-            ToolExecutionResult("Wrote to $path ($bytes bytes)", true, toolTitle = toolTitle)
+            val diffSuffix = if (previousContent != null && previousContent != content) {
+                val diff = UnifiedDiffGenerator.generate(path = path, before = previousContent, after = content)
+                if (diff.unifiedText.isNotEmpty()) " (${diff.statsSummary})\n\n${diff.unifiedText}" else ""
+            } else ""
+            ToolExecutionResult("Wrote to $path ($bytes bytes)$diffSuffix", true, toolTitle = toolTitle)
         } catch (e: Exception) {
             ToolExecutionResult("Error writing file: ${e.message}", false)
         }

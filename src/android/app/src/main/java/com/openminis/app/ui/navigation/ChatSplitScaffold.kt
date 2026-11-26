@@ -54,7 +54,7 @@ import androidx.compose.material3.adaptive.navigation.rememberListDetailPaneScaf
 import com.openminis.app.ui.theme.MaterialShapes
 import com.openminis.app.ui.theme.toShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -523,7 +523,7 @@ private fun NoConversationSelected(
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                val soulMeta by com.openminis.app.agent.SoulStore.cachedMetadata.collectAsState()
+                val soulMeta by com.openminis.app.agent.SoulStore.cachedMetadata.collectAsStateWithLifecycle()
                 val density = LocalDensity.current
                 val iconBitmap = remember(soulMeta.icon) {
                     com.openminis.app.agent.SoulIcon.decode(soulMeta.icon)

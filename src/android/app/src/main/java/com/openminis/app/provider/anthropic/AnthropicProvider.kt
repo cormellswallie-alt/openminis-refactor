@@ -1,6 +1,5 @@
 package com.openminis.app.provider.anthropic
 
-import android.util.Base64
 import com.openminis.app.data.model.AgentContentPart
 import com.openminis.app.data.model.AgentToolDefinition
 import com.openminis.app.data.model.sanitizeToolId
@@ -192,8 +191,9 @@ class AnthropicProvider(
             var line: String?
             while (reader.readLine().also { line = it } != null) {
                 val l = line ?: continue
-                if (!l.startsWith("data: ")) continue
-                val payload = l.removePrefix("data: ")
+                if (!l.startsWith("data:")) continue
+                val payload = l.removePrefix("data:").trimStart()
+                if (payload.isEmpty()) continue
                 if (payload == "[DONE]") break
 
                 val event = try { JSONObject(payload) } catch (_: Exception) { continue }

@@ -316,6 +316,7 @@ dependencies {
     // Core
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     // ProcessLifecycleOwner — used by XAIOAuthManager to detect Custom
     // Tab dismissal (T-xai-oauth-stop-resume port iOS d1dbdd5d).
@@ -424,3 +425,68 @@ dependencies {
     androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     androidTestImplementation("junit:junit:4.13.2")
 }
+
+// Static code quality guardrail run as part of `:app:check` (and manually via `:app:verifyCodeQuality`).
+val verifyCodeQuality by tasks.registering {
+    group = "verification"
+    description = "Enforces baseline static quality & architecture rules on main Kotlin sources."
+    val mainJavaDir = layout.projectDirectory.dir("src/main/java")
+    inputs.dir(mainJavaDir)
+    doLast {
+        val violations = mutableListOf<String>()
+        val root = mainJavaDir.asFile
+
+        // Line-count ceilings for refactored orchestrator files to prevent god-file regressions.
+        val maxFileLines = mapOf(
+            "com/openminis/app/MinisApp.kt" to 900,
+            "com/openminis/app/MainActivity.kt" to 750,
+            "com/openminis/app/ui/chat/ChatViewModel.kt" to 850,
+            "com/openminis/app/ui/chat/ChatScreen.kt" to 900,
+            "com/openminis/app/ui/chat/ChatScreenComposer.kt" to 500,
+            "com/openminis/app/ui/navigation/AppNavigation.kt" to 500,
+        )
+        val forbiddenFiles = setOf(
+            "com/openminis/app/ui/chat/ChatViewModelSlashExt.kt",
+            "com/openminis/app/ui/chat/ChatViewModelMentionExt.kt",
+        )
+
+        root.walkTopDown().filter { it.isFile && it.extension == "kt" }.forEach { file ->
+            val rel = file.relativeTo(root).path
+            if (rel in forbiddenFiles) {
+                violations += "$rel: Deprecated extension monolith re-introduced; use ChatComposerMenuStore instead."
+            }
+            val lines = file.readLines()
+            maxFileLines[rel]?.let { cap ->
+                if (lines.size > cap) {
+                    violations += "$rel: ${lines.size} lines exceeds architectural ceiling of $cap lines."
+                }
+            }
+            lines.forEachIndexed { idx, line ->
+                val trimmed = line.trim()
+                if (trimmed.startsWith("//") || trimmed.startsWith("*")) return@forEachIndexed
+                if (line.contains("GlobalScope.")) {
+                    violations += "$rel:${idx + 1}: Avoid GlobalScope; use structured concurrency or a managed CoroutineScope."
+                }
+                if (rel.startsWith("com/openminis/app/ui/") &&
+                    !rel.endsWith("MarkdownBlockParser.kt") &&
+                    Regex("""\brunBlocking\b""").containsMatchIn(line)
+                ) {
+                    violations += "$rel:${idx + 1}: Avoid runBlocking in UI package; use suspend/LaunchedEffect."
+                }
+                if (line.contains(".collectAsState(")) {
+                    violations += "$rel:${idx + 1}: Use collectAsStateWithLifecycle() instead of collectAsState()."
+                }
+                if (Regex("""\bfun\s+ProviderRepository\.""").containsMatchIn(line)) {
+                    violations += "$rel:${idx + 1}: Do not add ProviderRepository extension functions; add methods to collaborator classes."
+                }
+            }
+        }
+        if (violations.isNotEmpty()) {
+            throw GradleException(
+                "verifyCodeQuality failed with ${violations.size} violation(s):\n" +
+                    violations.joinToString("\n") { "  - $it" },
+            )
+        }
+    }
+}
+tasks.named("check") { dependsOn(verifyCodeQuality) }

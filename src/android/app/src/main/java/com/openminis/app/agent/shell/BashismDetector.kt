@@ -116,14 +116,25 @@ object BashismDetector {
      */
     fun shellLayerLines(script: String): List<Pair<Int, String?>> {
         val lines = script.split("\n")
-        val out = ArrayList<Pair<Int, String?>>()
+        val out = ArrayList<Pair<Int, String?>>(lines.size)
+        if ("<<" !in script) {
+            for (i in lines.indices) {
+                out.add((i + 1) to lines[i])
+            }
+            return out
+        }
         var i = 0
         while (i < lines.size) {
             val line = lines[i]
             out.add((i + 1) to line) // opening line IS shell-layer
-            val delims = ArrayList<String>()
-            val m = heredocOpen.matcher(line)
-            while (m.find()) delims.add(m.group(1)!!)
+            val delims = if ("<<" in line) {
+                val found = ArrayList<String>(2)
+                val m = heredocOpen.matcher(line)
+                while (m.find()) found.add(m.group(1)!!)
+                found
+            } else {
+                emptyList()
+            }
             i++
             for (delim in delims) {
                 while (i < lines.size && lines[i].trim() != delim) {
@@ -140,32 +151,54 @@ object BashismDetector {
     }
 
     fun detect(script: String, fuseMs: Long = 50): Result {
-        if (rules.isEmpty()) return Result(emptyList())
+        val activeRules = rules
+        if (activeRules.isEmpty() || script.isEmpty()) return Result(emptyList())
         val start = System.currentTimeMillis()
         val hits = ArrayList<Hit>()
+        // Fast path for the common single-line command without heredocs: skip split & Pair list.
+        if ('\n' !in script && "<<" !in script) {
+            val scan = if (script.length > 4096) script.substring(0, 4096) else script
+            scanLine(1, scan, activeRules, start, fuseMs, hits)
+            return Result(hits)
+        }
         for ((lineNo, maybeText) in shellLayerLines(script)) {
             val text = maybeText ?: continue
             if (text.isEmpty()) continue
             val scan = if (text.length > 4096) text.substring(0, 4096) else text
-            for (rule in rules) {
-                if (System.currentTimeMillis() - start > fuseMs) {
-                    Log.i(TAG, "scan fuse tripped at ${hits.size} hits — fail-open")
-                    return Result(hits)
-                }
-                if (rule.regex.matcher(scan).find()) {
-                    hits.add(
-                        Hit(
-                            line = lineNo,
-                            ruleName = rule.name,
-                            tier = rule.tier,
-                            matchedText = scan.trim(),
-                            behaviorNote = rule.behaviorNote,
-                            fixHint = rule.fixHint,
-                        )
-                    )
-                }
+            if (!scanLine(lineNo, scan, activeRules, start, fuseMs, hits)) {
+                return Result(hits)
             }
         }
         return Result(hits)
+    }
+
+    private fun scanLine(
+        lineNo: Int,
+        scan: String,
+        activeRules: List<Rule>,
+        startMs: Long,
+        fuseMs: Long,
+        hits: MutableList<Hit>,
+    ): Boolean {
+        for (idx in activeRules.indices) {
+            if ((idx and 7) == 0 && System.currentTimeMillis() - startMs > fuseMs) {
+                Log.i(TAG, "scan fuse tripped at ${hits.size} hits — fail-open")
+                return false
+            }
+            val rule = activeRules[idx]
+            if (rule.regex.matcher(scan).find()) {
+                hits.add(
+                    Hit(
+                        line = lineNo,
+                        ruleName = rule.name,
+                        tier = rule.tier,
+                        matchedText = scan.trim(),
+                        behaviorNote = rule.behaviorNote,
+                        fixHint = rule.fixHint,
+                    ),
+                )
+            }
+        }
+        return true
     }
 }

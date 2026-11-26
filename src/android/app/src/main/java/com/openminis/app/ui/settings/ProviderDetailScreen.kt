@@ -16,10 +16,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.IosShare
@@ -37,7 +35,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SegmentedButton
@@ -46,7 +43,8 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -74,7 +72,6 @@ import com.openminis.app.ui.components.MinisOutlinedButton
 import com.openminis.app.ui.components.MinisSmallButton
 import com.openminis.app.ui.components.MinisSmallOutlinedButton
 import com.openminis.app.ui.components.MinisSmallTextButton
-import com.openminis.app.ui.components.MinisTextButton
 import com.openminis.app.ui.components.SectionTextField
 
 private const val TAG = "ProviderDetail"
@@ -89,7 +86,7 @@ fun ProviderDetailScreen(
     onAddCustomModel: () -> Unit = {},
     onVoiceServiceClick: (String) -> Unit = {},
 ) {
-    val config by providerRepository.config.collectAsState()
+    val config by providerRepository.config.collectAsStateWithLifecycle()
     val instance = config.instances.find { it.id == instanceId }
     var showDeleteDialog by remember { mutableStateOf(false) }
     // T143: long-press → confirm delete on a single model entry. Built-in
@@ -103,14 +100,17 @@ fun ProviderDetailScreen(
     // the CURRENT entry after a hide toggle — holding a stale copy would leave
     // the item labelled "Hide" right after hiding it.
     var menuEntryId by remember { mutableStateOf<String?>(null) }
-    var deleted by remember { mutableStateOf(false) }
+    var deleted by remember(instanceId) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    if (instance == null && !deleted) { onBack(); return }
+    if (instance == null && !deleted) {
+        LaunchedEffect(instanceId) { onBack() }
+        return
+    }
     if (instance == null) return
 
-    var label by remember { mutableStateOf(instance.label) }
-    val labelChanged = label != instance.label
+    var label by remember(instanceId) { mutableStateOf(instance.label) }
+    val labelChanged = label.trim() != instance.label && label.isNotBlank()
 
     // [T-android-provider-apikey-save-stale] Hold the stored API key in Compose
     // state, NOT as a plain val that re-reads EncryptedSharedPreferences on every
@@ -152,24 +152,25 @@ fun ProviderDetailScreen(
                 ?: if (oauthConnected) OAUTH_CONNECTED_PLACEHOLDER else "",
         )
     }
-    var isEditingKey by remember { mutableStateOf(false) }
-    var editKeyValue by remember { mutableStateOf("") }
-    var keyVisible by remember { mutableStateOf(false) }
+    var isEditingKey by remember(instanceId) { mutableStateOf(false) }
+    var editKeyValue by remember(instanceId) { mutableStateOf("") }
+    var keyVisible by remember(instanceId) { mutableStateOf(false) }
 
-    var isEnabled by remember { mutableStateOf(instance.isEnabled) }
-    var customBaseURL by remember { mutableStateOf(instance.customBaseURL ?: "") }
-    var appendV1Suffix by remember { mutableStateOf(instance.appendV1Suffix) }
+    var isEnabled by remember(instanceId) { mutableStateOf(instance.isEnabled) }
+    var customBaseURL by remember(instanceId) { mutableStateOf(instance.customBaseURL ?: "") }
+    var appendV1Suffix by remember(instanceId) { mutableStateOf(instance.appendV1Suffix) }
     // [T-provider-custom-user-agent] Per-provider UA override input. Only the
     // OpenAI-/Anthropic-compat custom-base section surfaces it (see gate below).
-    var customUserAgent by remember { mutableStateOf(instance.customUserAgent ?: "") }
+    var customUserAgent by remember(instanceId) { mutableStateOf(instance.customUserAgent ?: "") }
 
     val entries = providerRepository.entriesFor(instanceId)
-    var isRefreshing by remember { mutableStateOf(false) }
+    var isRefreshing by remember(instanceId) { mutableStateOf(false) }
+    var refreshError by remember(instanceId) { mutableStateOf<String?>(null) }
     // [T-codex-dynamic-discovery GH#319] Set when the Codex discovery endpoint
     // rejects the stored credential. Shown as a dialog rather than silently
     // leaving the old list on screen, which would read as a successful refresh
     // while the account is signed out.
-    var refreshAuthError by remember { mutableStateOf(false) }
+    var refreshAuthError by remember(instanceId) { mutableStateOf(false) }
 
     val exportContext = androidx.compose.ui.platform.LocalContext.current
 
@@ -199,8 +200,12 @@ fun ProviderDetailScreen(
                     if (labelChanged) {
                         Spacer(modifier = Modifier.width(8.dp))
                         MinisSmallButton(onClick = {
-                            providerRepository.updateInstance(instance.copy(label = label))
-                            AppLogger.info(TAG, "Updated label for ${instance.id}: '$label'")
+                            val trimmedLabel = label.trim()
+                            if (trimmedLabel.isNotEmpty()) {
+                                label = trimmedLabel
+                                providerRepository.updateInstance(instance.copy(label = trimmedLabel))
+                                AppLogger.info(TAG, "Updated label for ${instance.id}: '$trimmedLabel'")
+                            }
                         }) {
                             Text(stringResource(R.string.common_save))
                         }
@@ -245,16 +250,24 @@ fun ProviderDetailScreen(
                             keyVisible = false
                         },
                         onSave = {
-                            providerRepository.saveApiKey(instanceId, editKeyValue)
+                            val trimmedKey = editKeyValue.trim()
+                            if (trimmedKey.isNotEmpty()) {
+                                providerRepository.saveApiKey(instanceId, trimmedKey)
+                            } else if (instance.allowsEmptyAPIKey) {
+                                providerRepository.deleteApiKey(instanceId)
+                            }
+                            providerRepository.invalidateModelCache(instanceId)
                             // [T-android-provider-apikey-save-stale] Reflect the
                             // just-saved value in UI state immediately rather than
                             // re-reading the async-written prefs on recomposition.
-                            storedKey = editKeyValue
+                            storedKey = trimmedKey
+                            refreshError = null
                             AppLogger.info(TAG, "Saved API key for ${instance.id}")
                             isEditingKey = false
                             editKeyValue = ""
                             keyVisible = false
                         },
+                        allowEmptySave = instance.allowsEmptyAPIKey,
                     )
                 }
             }
@@ -277,6 +290,7 @@ fun ProviderDetailScreen(
                     ManualBearerTokenSection(
                         instance = instance,
                         context = androidx.compose.ui.platform.LocalContext.current,
+                        onTokenChanged = { providerRepository.invalidateModelCache(instance.id) },
                     )
                 }
             }
@@ -284,6 +298,8 @@ fun ProviderDetailScreen(
 
         // ─── Custom Base URL ────────────────────────────────────────
         if (instance.providerType != ProviderType.openRouter) {
+            val baseUrlValidationError = com.openminis.app.data.model.ProviderBaseUrlNormalizer
+                .validateInput(customBaseURL, azureMode = instance.azureMode)
             SettingsSection(header = stringResource(R.string.provider_detail_custom_api_base)) {
                 // URL input row — tighter vertical padding to match T226's
                 // SectionTextField height shrink (~-20%).
@@ -295,6 +311,14 @@ fun ProviderDetailScreen(
                         placeholder = stringResource(R.string.provider_detail_https_api_example_placeholder),
                         fieldModifier = Modifier.bringIntoViewOnFocus(),
                     )
+                    if (baseUrlValidationError != null) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = baseUrlValidationError,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                 }
                 if (instance.providerType != ProviderType.gemini) {
                     HorizontalDivider(
@@ -336,6 +360,7 @@ fun ProviderDetailScreen(
                 // gateways reject Minis' default UA and only allow official
                 // clients. Blank → default UA.
                 val showUserAgentField = instance.providerType == ProviderType.openAI ||
+                    instance.providerType == ProviderType.openAIResponses ||
                     instance.providerType == ProviderType.anthropic ||
                     instance.providerType == ProviderType.gemini
                 if (showUserAgentField) {
@@ -362,24 +387,33 @@ fun ProviderDetailScreen(
                 // row rather than a floating filled button inside the card.
                 MinisSmallTextButton(
                     onClick = {
+                        val trimmedBase = com.openminis.app.data.model.ProviderBaseUrlNormalizer
+                            .sanitizeInput(customBaseURL, azureMode = instance.azureMode)
+                        val trimmedUa = customUserAgent.trim()
+                        customBaseURL = trimmedBase
+                        customUserAgent = trimmedUa
+                        refreshError = null
                         providerRepository.updateInstance(
                             instance.copy(
-                                customBaseURL = customBaseURL.ifBlank { null },
+                                customBaseURL = trimmedBase.ifEmpty { null },
                                 appendV1Suffix = if (instance.providerType == ProviderType.gemini) false else appendV1Suffix,
-                                // [T-provider-custom-user-agent] Blank → null →
-                                // default UA. Only the gated providers can edit
-                                // this; for others customUserAgent equals the
-                                // unchanged instance value, so the copy is inert.
-                                customUserAgent = customUserAgent.ifBlank { null },
+                                customUserAgent = trimmedUa.ifEmpty { null },
                             )
                         )
+                        providerRepository.invalidateModelCache(instance.id)
+                        android.widget.Toast.makeText(
+                            detailContext,
+                            detailContext.getString(R.string.provider_detail_url_saved_toast),
+                            android.widget.Toast.LENGTH_SHORT,
+                        ).show()
                         AppLogger.info(
                             TAG,
                             "Saved base URL for ${instance.id}: " +
-                                "url='${customBaseURL.ifBlank { "<default>" }}', appendV1=$appendV1Suffix, " +
-                                "ua='${customUserAgent.ifBlank { "<default>" }}'",
+                                "url='${trimmedBase.ifEmpty { "<default>" }}', appendV1=$appendV1Suffix, " +
+                                "ua='${trimmedUa.ifEmpty { "<default>" }}'",
                         )
                     },
+                    enabled = baseUrlValidationError == null,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(stringResource(R.string.provider_detail_save_url_settings))
@@ -406,6 +440,7 @@ fun ProviderDetailScreen(
                             onClick = {
                                 if (instance.useResponsesAPI) {
                                     providerRepository.updateInstance(instance.copy(useResponsesAPI = false))
+                                    providerRepository.invalidateModelCache(instance.id)
                                 }
                             },
                             shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
@@ -415,6 +450,7 @@ fun ProviderDetailScreen(
                             onClick = {
                                 if (!instance.useResponsesAPI) {
                                     providerRepository.updateInstance(instance.copy(useResponsesAPI = true))
+                                    providerRepository.invalidateModelCache(instance.id)
                                 }
                             },
                             shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
@@ -439,6 +475,7 @@ fun ProviderDetailScreen(
                     checked = instance.azureMode,
                     onCheckedChange = { on ->
                         providerRepository.updateInstance(instance.copy(azureMode = on))
+                        providerRepository.invalidateModelCache(instance.id)
                         AppLogger.info(TAG, "Set azureMode=$on for ${instance.id}")
                     },
                     showDivider = false,
@@ -573,25 +610,67 @@ fun ProviderDetailScreen(
             // tap-to-refresh affordance in the section header area.
             SettingsRow(
                 title = if (isRefreshing) "Refreshing…" else "Refresh model list",
+                subtitle = refreshError,
                 onClick = if (isRefreshing) {
                     null
                 } else {
                     {
-                        isRefreshing = true
-                        refreshAuthError = false
-                        scope.launch {
-                            try {
-                                // [T-codex-dynamic-discovery GH#319]
-                                // forceRefresh: this is the manual Refresh tap,
-                                // which must bypass the discovery cache — a
-                                // Refresh that returns a cached list is not one.
-                                providerRepository.refreshModels(instance, forceRefresh = true)
-                                AppLogger.info(TAG, "Refreshed models for ${instance.id}")
-                            } catch (e: com.openminis.app.data.repository.CodexDiscoveryAuthException) {
-                                AppLogger.warning(TAG, "Refresh rejected credential: ${e.message}")
-                                refreshAuthError = true
-                            } finally {
-                                isRefreshing = false
+                        // Persist pending URL / v1 / User-Agent edits first so Refresh uses what the user typed.
+                        val urlErr = if (instance.providerType != ProviderType.openRouter) {
+                            com.openminis.app.data.model.ProviderBaseUrlNormalizer
+                                .validateInput(customBaseURL, azureMode = instance.azureMode)
+                        } else null
+                        if (urlErr != null) {
+                            refreshError = urlErr
+                        } else {
+                            isRefreshing = true
+                            refreshAuthError = false
+                            refreshError = null
+                            val trimmedBase = com.openminis.app.data.model.ProviderBaseUrlNormalizer
+                                .sanitizeInput(customBaseURL, azureMode = instance.azureMode)
+                            val trimmedUa = customUserAgent.trim()
+                            val effectiveAppendV1 = if (instance.providerType == ProviderType.gemini) false else appendV1Suffix
+                            val targetInstance = if (
+                                instance.providerType != ProviderType.openRouter && (
+                                    (instance.customBaseURL ?: "") != trimmedBase ||
+                                        instance.appendV1Suffix != effectiveAppendV1 ||
+                                        (instance.customUserAgent ?: "") != trimmedUa
+                                    )
+                            ) {
+                                customBaseURL = trimmedBase
+                                customUserAgent = trimmedUa
+                                instance.copy(
+                                    customBaseURL = trimmedBase.ifEmpty { null },
+                                    appendV1Suffix = effectiveAppendV1,
+                                    customUserAgent = trimmedUa.ifEmpty { null },
+                                ).also {
+                                    providerRepository.updateInstance(it)
+                                    providerRepository.invalidateModelCache(it.id)
+                                }
+                            } else {
+                                instance
+                            }
+                            scope.launch {
+                                var vendorErr: String? = null
+                                try {
+                                    providerRepository.refreshModels(
+                                        targetInstance,
+                                        forceRefresh = true,
+                                        onVendorError = { vendorErr = it },
+                                    )
+                                    refreshError = vendorErr
+                                    AppLogger.info(TAG, "Refreshed models for ${targetInstance.id} (vendorErr=$vendorErr)")
+                                } catch (e: kotlinx.coroutines.CancellationException) {
+                                    throw e
+                                } catch (e: com.openminis.app.data.repository.CodexDiscoveryAuthException) {
+                                    AppLogger.warning(TAG, "Refresh rejected credential: ${e.message}")
+                                    refreshAuthError = true
+                                } catch (e: Exception) {
+                                    AppLogger.warning(TAG, "Refresh models failed: ${e.message}")
+                                    refreshError = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+                                } finally {
+                                    isRefreshing = false
+                                }
                             }
                         }
                     }
@@ -878,12 +957,16 @@ private fun OAuthCredentialBlock(
     // failure was only written to the log — after authorizing Anthropic in the
     // browser the user came back to an unchanged screen and no explanation.
     var authError by remember(instance.id) { mutableStateOf<String?>(null) }
-    val oauthPhase by com.openminis.app.auth.OAuthForegroundGate.phase.collectAsState()
+    val oauthPhase by com.openminis.app.auth.OAuthForegroundGate.phase.collectAsStateWithLifecycle()
     // [T-kimi-oauth] Device-code dialog state for Kimi re-auth (see
     // AddProviderScreen.OAuthConfigSection for the rationale).
     var kimiDeviceAuth by remember(instance.id) {
         mutableStateOf<com.openminis.app.auth.KimiDeviceFlow.DeviceAuthorization?>(null)
     }
+    var copilotDeviceAuth by remember(instance.id) {
+        mutableStateOf<com.openminis.app.auth.CopilotDeviceFlow.DeviceAuthorization?>(null)
+    }
+    var showCopilotDisclaimer by remember(instance.id) { mutableStateOf(false) }
     var kimiLoginJob by remember(instance.id) { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     kimiDeviceAuth?.let { auth ->
         KimiDeviceLoginDialog(
@@ -895,6 +978,18 @@ private fun OAuthCredentialBlock(
             },
         )
     }
+    copilotDeviceAuth?.let { auth ->
+        KimiDeviceLoginDialog(
+            userCode = auth.userCode,
+            verificationUrl = auth.verificationUri,
+            onCancel = {
+                kimiLoginJob?.cancel()
+                copilotDeviceAuth = null
+            },
+            title = stringResource(R.string.copilot_login_title),
+            instructions = stringResource(R.string.copilot_login_instructions),
+        )
+    }
 
     // [T-oauth-keep-credentials] Refresh rejected: the credential is kept (never
     // auto-deleted) but unusable until the user signs in again.
@@ -903,7 +998,7 @@ private fun OAuthCredentialBlock(
     }
 
     // Shared by the Sign In button and, for a rejected refresh, Sign In Again.
-    fun startSignIn() {
+    fun beginSignIn() {
         if (isAuthenticating) return
         isAuthenticating = true
         authError = null
@@ -916,11 +1011,17 @@ private fun OAuthCredentialBlock(
                             context, instance.id, providerRepository,
                             onDeviceCode = { auth -> kimiDeviceAuth = auth },
                         ).also { kimiDeviceAuth = null }
+                    ProviderType.githubCopilot ->
+                        com.openminis.app.auth.CopilotOAuthManager.login(
+                            context, instance.id,
+                            onDeviceCode = { auth -> copilotDeviceAuth = auth },
+                        ).also { copilotDeviceAuth = null }
                     ProviderType.anthropic ->
                         com.openminis.app.auth.ClaudeOAuthManager.login(
                             context, instance.id, providerRepository,
                         )
-                    ProviderType.openAI ->
+                    ProviderType.openAI,
+                    ProviderType.openAIResponses ->
                         com.openminis.app.auth.OpenAIOAuthManager.login(
                             context, instance.id, providerRepository,
                         )
@@ -934,20 +1035,17 @@ private fun OAuthCredentialBlock(
                         )
                     else -> null
                 }
-                // login() persists the token via providerRepository.saveApiKey;
-                // reflect it locally so the UI flips to the connected state
-                // without needing the parent to recompose.
+                // login() persists the token via providerRepository.saveApiKey
+                // (or CopilotOAuthManager's own two-tier store); reflect it locally
+                // so the UI flips to connected immediately.
                 if (token != null) {
-                    displayedKey = providerRepository.loadApiKey(instance.id) ?: token
+                    displayedKey = if (instance.providerType == ProviderType.githubCopilot) {
+                        OAUTH_CONNECTED_PLACEHOLDER
+                    } else {
+                        providerRepository.loadApiKey(instance.id) ?: token
+                    }
                     needsReauth = false
                     AppLogger.info(TAG, "OAuth signed in for ${instance.id}")
-                    // [T-provider-refresh-outlives-screen] (GH#265) A fresh
-                    // sign-in (including Sign In Again after a rejected refresh)
-                    // is when the account's real catalog becomes reachable —
-                    // reconcile it now instead of waiting for a manual Refresh.
-                    // Forced, so a cached discovery result cannot stand in for
-                    // the new account's list. Repository scope: the user may
-                    // leave this screen straight after signing in.
                     providerRepository.triggerAsyncModelReconcile(instance.id, forceRefresh = true)
                 }
             } catch (e: Exception) {
@@ -966,9 +1064,31 @@ private fun OAuthCredentialBlock(
             } finally {
                 isAuthenticating = false
                 kimiDeviceAuth = null
+                copilotDeviceAuth = null
                 com.openminis.app.auth.OAuthForegroundGate.end()
             }
         }
+    }
+
+    fun startSignIn() {
+        if (instance.providerType == ProviderType.githubCopilot &&
+            !com.openminis.app.util.CopilotFeatureFlag.hasAcceptedConsent(context)
+        ) {
+            showCopilotDisclaimer = true
+        } else {
+            beginSignIn()
+        }
+    }
+
+    if (showCopilotDisclaimer) {
+        CopilotDisclaimerDialog(
+            onAccept = {
+                com.openminis.app.util.CopilotFeatureFlag.recordConsent(context)
+                showCopilotDisclaimer = false
+                beginSignIn()
+            },
+            onCancel = { showCopilotDisclaimer = false },
+        )
     }
 
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1111,6 +1231,7 @@ private fun ApiKeyCredentialBlock(
     onBeginEdit: () -> Unit,
     onCancelEdit: () -> Unit,
     onSave: () -> Unit,
+    allowEmptySave: Boolean = false,
 ) {
     if (isEditing) {
         SectionTextField(
@@ -1147,22 +1268,35 @@ private fun ApiKeyCredentialBlock(
                 Text(stringResource(R.string.common_cancel))
             }
             Spacer(modifier = Modifier.width(8.dp))
-            MinisSmallButton(onClick = onSave, enabled = editValue.isNotBlank()) {
+            MinisSmallButton(onClick = onSave, enabled = allowEmptySave || editValue.isNotBlank()) {
                 Text(stringResource(R.string.provider_detail_save_key))
             }
         }
     } else {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = if (keyVisible) storedKey else maskedKey(storedKey),
-                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = onToggleVisibility) {
-                Icon(
-                    if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                    contentDescription = if (keyVisible) "Hide" else "Show",
+            if (storedKey.isEmpty()) {
+                Text(
+                    text = if (allowEmptySave) {
+                        stringResource(R.string.provider_no_key_required)
+                    } else {
+                        stringResource(R.string.provider_list_no_api_key)
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
                 )
+            } else {
+                Text(
+                    text = if (keyVisible) storedKey else maskedKey(storedKey),
+                    style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = onToggleVisibility) {
+                    Icon(
+                        if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                        contentDescription = if (keyVisible) "Hide" else "Show",
+                    )
+                }
             }
             MinisSmallTextButton(onClick = onBeginEdit) {
                 Text(stringResource(R.string.common_edit))
@@ -1224,6 +1358,7 @@ private fun exportProviderInstance(
 private fun ManualBearerTokenSection(
     instance: com.openminis.app.data.model.ProviderInstance,
     context: android.content.Context,
+    onTokenChanged: () -> Unit = {},
 ) {
     val manager = remember(instance.id) {
         com.openminis.app.auth.OAuthManager.forInstance(context, instance)
@@ -1265,6 +1400,7 @@ private fun ManualBearerTokenSection(
                     val cleaned = draft.replace(Regex("\\s+"), "")
                     if (cleaned.isNotEmpty() && manager != null) {
                         manager.saveManualBearerToken(cleaned)
+                        onTokenChanged()
                         AppLogger.info(TAG, "Manual bearer token set for ${instance.id}")
                         draft = ""
                         isEditing = false
@@ -1305,6 +1441,7 @@ private fun ManualBearerTokenSection(
             MinisSmallOutlinedButton(
                 onClick = {
                     manager?.deleteManualBearerToken()
+                    onTokenChanged()
                     AppLogger.info(TAG, "Manual bearer token removed for ${instance.id}")
                     reloadTick++
                 },
