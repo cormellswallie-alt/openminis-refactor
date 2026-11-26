@@ -677,8 +677,10 @@ class AdvancedMemoryEngine(
             buildList(arr.length()) {
                 for (i in 0 until arr.length()) {
                     val o = arr.optJSONObject(i) ?: continue
-                    val id = o.optString("id", "").ifEmpty { continue }
-                    val content = o.optString("content", "").ifBlank { continue }
+                    val id = o.optString("id", "")
+                    if (id.isEmpty()) continue
+                    val content = o.optString("content", "")
+                    if (content.isBlank()) continue
                     val tagsArr = o.optJSONArray("tags")
                     val tags = buildList {
                         if (tagsArr != null) {
