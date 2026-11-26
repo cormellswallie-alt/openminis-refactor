@@ -105,8 +105,10 @@ object FileEditTool {
 
             file.writeText(newContent)
             val replacements = if (replaceAll) count else 1
+            val diff = UnifiedDiffGenerator.generate(path = path, before = content, after = newContent)
+            val diffBlock = if (diff.unifiedText.isNotEmpty()) "\n\n${diff.unifiedText}" else ""
             ToolExecutionResult(
-                "Edited $path ($replacements replacement(s), ${newContent.length} bytes)",
+                "Edited $path ($replacements replacement(s), ${diff.statsSummary}, ${newContent.length} bytes)$diffBlock",
                 true, toolTitle = toolTitle
             )
         } catch (e: Exception) {

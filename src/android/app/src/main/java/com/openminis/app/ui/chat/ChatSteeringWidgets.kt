@@ -25,6 +25,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.EditNote
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -214,6 +216,150 @@ internal fun ComposerSteeringTray(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Plan / Code mode toggle button in [ChatComposerActionBar].
+ * Compact icon circle in Code mode; highlighted tertiary pill in read-only Plan mode.
+ */
+@Composable
+internal fun ComposerPlanModePill(
+    isPlanMode: Boolean,
+    onToggle: () -> Unit,
+) {
+    if (!isPlanMode) {
+        InputCircleButton(
+            onClick = onToggle,
+            isActive = false,
+        ) {
+            Icon(
+                imageVector = Icons.Default.EditNote,
+                contentDescription = stringResource(R.string.chat_plan_toggle_label),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(19.dp),
+            )
+        }
+    } else {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.tertiaryContainer,
+            modifier = Modifier
+                .clip(CircleShape)
+                .clickable(onClick = onToggle),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.EditNote,
+                    contentDescription = stringResource(R.string.chat_plan_toggle_label),
+                    tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(modifier = Modifier.width(5.dp))
+                Text(
+                    text = stringResource(R.string.chat_plan_toggle_label),
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp,
+                    ),
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Compact Plan Mode status banner with one-tap "Approve & Execute" transition to Code mode.
+ */
+@Composable
+internal fun ComposerPlanModeBanner(
+    visible: Boolean,
+    isStreaming: Boolean,
+    onApproveAndExecute: () -> Unit,
+    onExitPlanMode: () -> Unit,
+) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = expandVertically() + fadeIn(),
+        exit = shrinkVertically() + fadeOut(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 4.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f))
+                .padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Default.EditNote,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.size(15.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = stringResource(R.string.chat_plan_banner_active),
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (!isStreaming) {
+                Spacer(modifier = Modifier.width(6.dp))
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable(onClick = onApproveAndExecute),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onTertiary,
+                            modifier = Modifier.size(13.dp),
+                        )
+                        Spacer(modifier = Modifier.width(2.dp))
+                        Text(
+                            text = stringResource(R.string.chat_plan_approve_button),
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 11.sp,
+                            ),
+                            color = MaterialTheme.colorScheme.onTertiary,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.width(4.dp))
+            Box(
+                modifier = Modifier
+                    .size(22.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onExitPlanMode),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = stringResource(R.string.chat_plan_exit_cd),
+                    tint = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.75f),
+                    modifier = Modifier.size(14.dp),
+                )
             }
         }
     }

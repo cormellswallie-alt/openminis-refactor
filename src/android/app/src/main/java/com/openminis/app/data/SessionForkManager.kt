@@ -53,13 +53,30 @@ class SessionForkManager(
      *   - `lastMessage` (createSession seeds it; refreshed by appendMessage)
      *   - `id` / `createdAt` / `updatedAt` (new identity, current timestamps)
      */
-    suspend fun duplicateSession(sessionId: String): String? {
+    suspend fun duplicateSession(sessionId: String): String? =
+        duplicateSessionUpTo(sessionId = sessionId, upToMessageId = null, titleSuffix = "(Copy)")
+
+    /**
+     * Turn-level session fork: clones [sessionId] up to and including [upToMessageId]
+     * (or all messages when [upToMessageId] is null) into an independent local session.
+     */
+    suspend fun duplicateSessionUpTo(
+        sessionId: String,
+        upToMessageId: String? = null,
+        titleSuffix: String = "(Fork)",
+    ): String? {
         val source = chatRepository.getSession(sessionId) ?: run {
             AppLogger.warning(TAG, "duplicateSession: $sessionId not found")
             return null
         }
-        val messages = chatRepository.loadMessages(sessionId)
-        val dupTitle = "${source.title ?: "Chat"} (Copy)"
+        val allMessages = chatRepository.loadMessages(sessionId)
+        val messages = if (upToMessageId.isNullOrBlank()) {
+            allMessages
+        } else {
+            val cutIdx = allMessages.indexOfFirst { it.id == upToMessageId }
+            if (cutIdx >= 0) allMessages.subList(0, cutIdx + 1) else allMessages
+        }
+        val dupTitle = "${source.title ?: "Chat"} $titleSuffix".trim()
         val new = chatRepository.createSession(
             modelId = source.modelId,
             title = dupTitle,
@@ -164,6 +181,41 @@ class SessionForkManager(
                 "memoryEnabled=${source.memoryEnabled})",
         )
         return new.id
+    }
+
+    /**
+     * Amp-style Session Handoff: creates a fresh, clean session carrying the
+     * source session's model binding, category, memory toggle, and thinking
+     * override, seeded with a concise handoff note as its opening user message.
+     */
+    suspend fun createHandoffSession(
+        sourceSessionId: String,
+        title: String,
+        handoffPrompt: String,
+    ): String? {
+        val source = chatRepository.getSession(sourceSessionId) ?: return null
+        val created = chatRepository.createSession(
+            modelId = source.modelId,
+            title = title.trim().ifEmpty { "Handoff" },
+        )
+        if (source.category != null) {
+            chatRepository.updateSessionTitleAndCategory(created.id, created.title ?: title, source.category)
+        }
+        if (source.modelBinding != null) {
+            chatRepository.updateSessionBinding(created.id, source.modelBinding, source.modelId)
+        }
+        if (source.memoryEnabled == 0) {
+            chatRepository.dao.updateMemoryEnabled(created.id, 0)
+        }
+        source.thinkingOverride?.let { override ->
+            chatRepository.dao.updateThinkingOverride(created.id, override)
+        }
+        if (handoffPrompt.isNotBlank()) {
+            val partsJson = com.openminis.app.ui.chat.ChatPayloadCodec.singleTextPartsJson(handoffPrompt)
+            chatRepository.appendMessage(created.id, "user", partsJson)
+        }
+        AppLogger.info(TAG, "created handoff session $sourceSessionId → ${created.id}")
+        return created.id
     }
 
     /**

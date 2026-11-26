@@ -1,6 +1,7 @@
 package com.openminis.app.data.repository
 
 import android.util.Log
+import com.openminis.app.data.memory.AdvancedMemoryEngine
 import com.openminis.app.logging.AppLogger
 import java.io.File
 import java.text.SimpleDateFormat
@@ -22,14 +23,6 @@ class MemoryRepository(private val memoryDir: File) {
         private const val TAG = "MemoryRepository"
         private const val GLOBAL_FILE = "GLOBAL.md"
         private const val MAX_INJECT_LINES = 200
-        // memory_get full-dump (no keywords): cap at 500 lines — matches iOS
-        // `maxTotalLines = 500` in AIChatViewModel+MemoryTools.swift.
-        private const val MAX_DUMP_LINES = 500
-        // memory_get keyword search: cap at 60 lines. iOS caps at 60 *entries*
-        // (timestamp-delimited memory_write blocks); Android's keyword search
-        // is line-based with ±2 context windows, so we keep the same algorithm
-        // and align on the 60 magnitude as the line budget.
-        private const val MAX_SEARCH_LINES = 60
         private const val MAX_LOOKBACK_DAYS = 30
         private const val MAX_RECENT_FILES = 3
 
@@ -54,194 +47,167 @@ class MemoryRepository(private val memoryDir: File) {
         private const val MAX_OUTPUT_BYTES = 30 * 1024  // 30 KB
     }
 
+    private val advancedEngine = AdvancedMemoryEngine(memoryDir)
+
     init {
         memoryDir.mkdirs()
     }
 
-    // -- memory_write --
+    // -- memory_write (upgraded with typed memory, tags, importance & supersede) --
 
     /**
-     * Append a timestamped entry to today's daily log.
-     * New entries are prepended (newest first).
-     * Returns a success/error message string.
+     * Append a timestamped entry to today's daily log and upsert it into
+     * [AdvancedMemoryEngine] (typed index + near-duplicate superseding + A-MEM linking).
      */
-    fun writeMemory(content: String): String {
-        if (content.isBlank()) return "Error: Missing required 'content' parameter"
+    fun writeMemory(
+        content: String,
+        type: String? = null,
+        tags: List<String> = emptyList(),
+        importance: Int = 3,
+        topicKey: String? = null,
+        action: String = "save",
+    ): String {
+        return when (action.trim().lowercase()) {
+            "forget", "delete", "remove" -> {
+                val target = topicKey?.takeIf { it.isNotBlank() } ?: content.trim()
+                if (target.isEmpty()) return "Error: Provide 'content' or 'topic_key' to forget"
+                val removed = advancedEngine.forget(target)
+                if (removed > 0) "Forgot $removed memory entry(ies) matching '$target'."
+                else "No active structured memory matched '$target'."
+            }
+            "consolidate", "compact" -> {
+                val report = advancedEngine.consolidate()
+                "Memory consolidated: ${report.beforeCount} -> ${report.afterCount} active nodes " +
+                    "(pruned ${report.removedSuperseded} superseded, merged ${report.mergedDuplicates} duplicate(s), " +
+                    "MEMORY.md=${report.indexLines} lines)."
+            }
+            else -> {
+                if (content.isBlank()) return "Error: Missing required 'content' parameter"
 
-        val dateFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-        val fileName = "${dateFmt.format(Date())}.md"
-        val file = File(memoryDir, fileName)
+                val resolvedType = type?.takeIf { it.isNotBlank() }?.let { AdvancedMemoryEngine.MemoryType.fromWire(it) }
+                val outcome = runCatching {
+                    advancedEngine.upsert(
+                        content = content,
+                        type = resolvedType,
+                        tags = tags,
+                        importance = importance,
+                        topicKey = topicKey,
+                    )
+                }.getOrNull()
 
-        val timeFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
-        val timestamp = timeFmt.format(Date())
-        val entry = "<!-- $timestamp -->\n$content\n\n"
+                val dateFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+                val fileName = "${dateFmt.format(Date())}.md"
+                val file = File(memoryDir, fileName)
 
-        val existing = if (file.exists()) file.readText() else ""
-        val newContent = entry + existing
+                val timeFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+                val timestamp = timeFmt.format(Date())
+                val entry = "<!-- $timestamp -->\n$content\n\n"
 
-        return try {
-            file.writeText(newContent)
-            Log.i(TAG, "Memory written to $fileName (${content.length} chars)")
-            "Memory saved to $fileName (${content.length} chars)"
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to write memory", e)
-            "Error writing memory: ${e.message}"
+                val existing = if (file.exists()) file.readText() else ""
+                val newContent = entry + existing
+
+                try {
+                    file.writeText(newContent)
+                    Log.i(TAG, "Memory written to $fileName (${content.length} chars, type=${outcome?.node?.type?.wire ?: "daily"})")
+                    val extra = if (outcome != null) {
+                        val parts = mutableListOf("type=${outcome.node.type.wire}", "id=${outcome.node.id}", outcome.action)
+                        if (outcome.supersededCount > 0) parts.add("superseded=${outcome.supersededCount}")
+                        if (outcome.linkedIds.isNotEmpty()) parts.add("linked=${outcome.linkedIds.size}")
+                        " [${parts.joinToString(", ")}]"
+                    } else ""
+                    "Memory saved to $fileName (${content.length} chars)$extra"
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to write memory", e)
+                    "Error writing memory: ${e.message}"
+                }
+            }
         }
     }
 
-    // -- memory_get --
+    // -- memory_get (upgraded with Hybrid BM25 + CJK + Temporal Decay + Type Filtering) --
 
     /**
-     * Fuzzy keyword search across memory files.
-     * @param keywords space-separated, case-insensitive, ALL must match
-     * @param scope "daily" (logs only) or "all" (include GLOBAL.md)
-     * @return search results with context lines
+     * Hybrid ranked retrieval across structured memory nodes, `GLOBAL.md`, and
+     * daily logs (`YYYY-MM-DD.md`). Combines BM25, CJK/code tokenization,
+     * tag/importance boosts, and type-aware temporal decay.
      */
-    fun getMemory(keywords: String, scope: String): String {
-        val keywordList = keywords.trim()
-            .lowercase()
-            .split(Regex("\\s+"))
-            .filter { it.isNotEmpty() }
-
-        val filesToSearch = mutableListOf<Pair<String, File>>() // label to file
-
+    fun getMemory(
+        keywords: String,
+        scope: String,
+        typeFilter: String? = null,
+        limit: Int = AdvancedMemoryEngine.DEFAULT_SEARCH_LIMIT,
+    ): String {
+        val filesToSearch = mutableListOf<Pair<String, File>>()
         if (scope == "all") {
             val globalFile = File(memoryDir, GLOBAL_FILE)
             if (globalFile.exists() && globalFile.length() > 0) {
                 filesToSearch.add(GLOBAL_FILE to globalFile)
             }
         }
-
-        // Daily logs sorted descending
         val dailyFiles = memoryDir.listFiles()
-            ?.filter { it.extension == "md" && it.name != GLOBAL_FILE }
+            ?.filter {
+                it.extension == "md" &&
+                    it.name != GLOBAL_FILE &&
+                    it.name != AdvancedMemoryEngine.INDEX_FILE
+            }
             ?.sortedByDescending { it.name }
             ?: emptyList()
-
         for (file in dailyFiles) {
             filesToSearch.add(file.name to file)
         }
 
-        if (filesToSearch.isEmpty()) {
+        val resolvedType = typeFilter
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && !it.equals("all", ignoreCase = true) }
+            ?.let { AdvancedMemoryEngine.MemoryType.fromWire(it) }
+
+        val hits = advancedEngine.search(
+            query = keywords,
+            scope = scope,
+            typeFilter = resolvedType,
+            limit = limit,
+            legacyFiles = filesToSearch,
+        )
+
+        if (hits.isNotEmpty()) {
+            val dateFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+            val sb = StringBuilder()
+            var totalBytes = 0
+            var included = 0
+            for (hit in hits) {
+                val datePart = if (hit.updatedAtMs > 0L) " · ${dateFmt.format(Date(hit.updatedAtMs))}" else ""
+                val tagPart = if (hit.tags.isNotEmpty()) " · tags:${hit.tags.joinToString(",")}" else ""
+                val relPart = if (hit.relatedSummaries.isNotEmpty()) {
+                    "\n  Related: ${hit.relatedSummaries.joinToString(" | ")}"
+                } else ""
+                val block = "[${hit.source} | ${hit.type.wire}$datePart$tagPart]\n${hit.content}$relPart"
+                val blockBytes = block.toByteArray(Charsets.UTF_8).size + 2
+                if (included > 0 && totalBytes + blockBytes > MAX_OUTPUT_BYTES) break
+                if (included > 0) sb.append("\n\n")
+                sb.append(block)
+                totalBytes += blockBytes
+                included++
+            }
+            if (included < hits.size) {
+                sb.append("\n\n[Truncated at ${MAX_OUTPUT_BYTES / 1024}KB cap; showed $included of ${hits.size} ranked memories.]")
+            }
+            return sb.toString()
+        }
+
+        if (filesToSearch.isEmpty() && advancedEngine.activeNodeCount() == 0) {
             return "No memory files found."
         }
-
-        val results = mutableListOf<String>()
-        var totalLines = 0
-        // [T-memory-get-truncate-android] UTF-8 byte tally — see
-        // MAX_OUTPUT_BYTES rationale in the companion object. Bytes are
-        // accumulated AFTER appending each result entry; the line check is
-        // still consulted first so we never over-allocate slicing windows.
-        var totalBytes = 0
-        // Total ranges/files matched vs. files actually included in the
-        // returned output. Reported in the truncation note so the caller
-        // can tell whether the cap dropped further matches.
-        var totalMatchedFiles = 0
-        var includedFiles = 0
-        var byteCapHit = false
-        // Two separate caps so a full dump (no keywords) gets enough room to
-        // show recent daily logs while keyword searches stay tight enough not
-        // to flood agent context.
-        val lineCap = if (keywordList.isEmpty()) MAX_DUMP_LINES else MAX_SEARCH_LINES
-
-        for ((label, file) in filesToSearch) {
-            if (totalLines >= lineCap || byteCapHit) break
-            val content = try { file.readText() } catch (_: Exception) { continue }
-            if (content.isEmpty()) continue
-            val budget = lineCap - totalLines
-
-            val entry: String? = if (keywordList.isEmpty()) {
-                // Return file preview
-                val lines = content.lines()
-                val take = minOf(lines.size, budget)
-                val preview = lines.take(take).joinToString("\n")
-                val truncated = if (lines.size > take) " (showing first $take of ${lines.size} lines)" else ""
-                totalLines += take
-                totalMatchedFiles += 1
-                "[$label$truncated]\n$preview"
-            } else {
-                // Keyword search with ±2 context window
-                val lines = content.lines()
-                val matchedRanges = mutableListOf<IntRange>()
-
-                for (i in lines.indices) {
-                    val windowStart = maxOf(0, i - 2)
-                    val windowEnd = minOf(lines.size - 1, i + 2)
-                    val windowText = lines.subList(windowStart, windowEnd + 1)
-                        .joinToString(" ").lowercase()
-
-                    if (keywordList.all { windowText.contains(it) }) {
-                        matchedRanges.add(windowStart..windowEnd)
-                    }
-                }
-
-                if (matchedRanges.isEmpty()) {
-                    null
-                } else {
-                    totalMatchedFiles += 1
-                    val merged = mergeRanges(matchedRanges)
-                    val fileMatches = mutableListOf<String>()
-
-                    for (range in merged) {
-                        val chunkLines = range.last - range.first + 1
-                        if (totalLines + chunkLines > lineCap) {
-                            val remaining = lineCap - totalLines
-                            if (remaining > 0) {
-                                fileMatches.add(lines.subList(range.first, range.first + remaining).joinToString("\n"))
-                                totalLines += remaining
-                            }
-                            break
-                        }
-                        fileMatches.add(lines.subList(range.first, range.last + 1).joinToString("\n"))
-                        totalLines += chunkLines
-                    }
-
-                    if (fileMatches.isNotEmpty())
-                        "[$label — ${fileMatches.size} match(es)]\n${fileMatches.joinToString("\n---\n")}"
-                    else null
-                }
-            }
-
-            if (entry != null) {
-                results.add(entry)
-                includedFiles += 1
-                // Byte accounting is conservative: count the entry itself
-                // PLUS the "\n\n" separator between entries (added at the
-                // joinToString tail). We break AFTER appending so a single
-                // large entry never gets silently dropped — the cap acts as
-                // a "this was the last one we'll show" gate, not a guillotine
-                // on the current entry.
-                totalBytes += entry.toByteArray(Charsets.UTF_8).size + 2
-                if (totalBytes >= MAX_OUTPUT_BYTES) byteCapHit = true
-            }
+        return if (keywords.isBlank()) {
+            "No memory entries matched scope='$scope'."
+        } else {
+            "No matches found for keywords: ${keywords.trim()}"
         }
-
-        if (results.isEmpty()) {
-            return "No matches found for keywords: ${keywordList.joinToString(", ")}"
-        }
-
-        // Compose the truncation note. Line-cap and byte-cap can both fire;
-        // include whichever applies. Counts use "files" because the loop is
-        // file-by-file — for the agent the distinction between "matched file"
-        // and "matched entry" is fine here, the keyword scope is unambiguous.
-        val notes = mutableListOf<String>()
-        if (byteCapHit && includedFiles < totalMatchedFiles) {
-            val totalKb = totalBytes / 1024
-            notes.add(
-                "[Truncated: $totalMatchedFiles file(s) matched, showing first " +
-                    "$includedFiles, ~${totalKb}KB. Use more specific keywords " +
-                    "to narrow results.]",
-            )
-        } else if (byteCapHit) {
-            val totalKb = totalBytes / 1024
-            notes.add("[Truncated at ${MAX_OUTPUT_BYTES / 1024}KB byte cap (~${totalKb}KB returned).]")
-        }
-        if (totalLines >= lineCap) {
-            notes.add("[Output truncated at $lineCap lines]")
-        }
-        val truncatedNote = if (notes.isNotEmpty()) "\n\n" + notes.joinToString("\n") else ""
-        return results.joinToString("\n\n") + truncatedNote
     }
+
+    /** Load the Claude Code-style bounded `MEMORY.md` typed index for system prompt injection. */
+    fun loadStructuredMemoryIndexFragment(): String? = advancedEngine.loadStructuredIndexFragment()
+
+    fun consolidateMemory(): AdvancedMemoryEngine.ConsolidationReport = advancedEngine.consolidate()
 
     // -- System Prompt Fragment --
 
@@ -465,6 +431,7 @@ class MemoryRepository(private val memoryDir: File) {
                 val newContent = content.removeRange(match.range.first, entryEnd)
                 return try {
                     file.writeText(newContent)
+                    runCatching { advancedEngine.forget(trimmedTarget) }
                     Log.i(TAG, "Revoked memory entry from $dateStr.md")
                     EntryMutationResult.Success(dateStr)
                 } catch (e: Exception) {
@@ -507,6 +474,7 @@ class MemoryRepository(private val memoryDir: File) {
                 val newFileContent = content.replaceRange(bodyStart, entryEnd, replacement)
                 return try {
                     file.writeText(newFileContent)
+                    runCatching { advancedEngine.replaceByContent(trimmedOld, trimmedNew) }
                     Log.i(TAG, "Replaced memory entry body in $dateStr.md")
                     EntryMutationResult.Success(dateStr)
                 } catch (e: Exception) {
@@ -539,21 +507,5 @@ class MemoryRepository(private val memoryDir: File) {
             .firstOrNull { it.isNotBlank() && !it.startsWith("<!--") }
             ?.take(100)
             ?: ""
-    }
-
-    private fun mergeRanges(ranges: List<IntRange>): List<IntRange> {
-        if (ranges.isEmpty()) return emptyList()
-        val sorted = ranges.sortedBy { it.first }
-        val result = mutableListOf(sorted[0])
-        for (i in 1 until sorted.size) {
-            val last = result.last()
-            val current = sorted[i]
-            if (current.first <= last.last + 1) {
-                result[result.lastIndex] = last.first..maxOf(last.last, current.last)
-            } else {
-                result.add(current)
-            }
-        }
-        return result
     }
 }

@@ -2364,4 +2364,13 @@
     <string name="steps_expand_cd">Expand checklist</string>
     <string name="steps_collapse_cd">Collapse checklist</string>
     <string name="steps_dismiss_cd">Hide checklist</string>
+
+    <!-- Plan / Code Dual Execution Mode -->
+    <string name="chat_plan_toggle_label">Plan</string>
+    <string name="chat_plan_banner_active">Plan Mode · read-only exploration</string>
+    <string name="chat_plan_approve_button">Approve &amp; Run</string>
+    <string name="chat_plan_approve_prompt">Plan approved. Proceed to implement the changes in Code mode.</string>
+    <string name="chat_plan_exit_cd">Exit Plan Mode</string>
+    <string name="slash_plan_on">Plan Mode: ON (read-only exploration)</string>
+    <string name="slash_plan_off">Plan Mode: OFF (full Code execution)</string>
 </resources>

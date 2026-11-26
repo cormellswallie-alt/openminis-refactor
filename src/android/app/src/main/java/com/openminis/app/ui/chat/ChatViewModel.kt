@@ -281,6 +281,7 @@ class ChatViewModel(
         onMentionOpened = { anchor, filter ->
             Log.i(TAG, "mention menu open anchor=$anchor filter=\"$filter\"")
         },
+        dynamicMentionsProvider = DynamicContextMentions::matchingEntries,
     )
 
     internal val subAgentCoordinator by lazy {
@@ -322,6 +323,8 @@ class ChatViewModel(
             clearQuestionnaire = { runState.clearQuestionnaireIfMatches(it) },
             recordMemory = { runState.appendMemoryToolRecord(it) },
             publishStepChecklist = { runState.publishStepChecklist(it) },
+            blocksFileWriteTools = { runState.blocksFileWriteTools },
+            enforcesReadOnlyShell = { runState.enforcesReadOnlyShell },
         )
     }
 
@@ -474,6 +477,7 @@ class ChatViewModel(
             delegateEnabled = AgentToolSwitch.AGENTS.isEnabled(context),
             browserEnabled = AgentToolSwitch.BROWSER.isEnabled(context),
             updateStepsEnabled = AgentToolSwitch.TASK_STEPS.isEnabled(context),
+            readOnlyMode = runState.blocksFileWriteTools,
             askUserEnabled = AgentToolSwitch.ASK_USER.isEnabled(context),
             rosterNames = providerRepository.subAgents.map { it.name },
         )
@@ -530,6 +534,17 @@ class ChatViewModel(
                     isMcp = true,
                 )
             }.orEmpty()
+        val customCmdRows = com.openminis.app.agent.CustomSlashCommandsLoader
+            .loadForSession(context, fsSessionId)
+            .map { cc ->
+                SlashCommand(
+                    id = cc.slashId,
+                    icon = Icons.Outlined.Build,
+                    title = cc.name,
+                    subtitle = "[${cc.sourceLabel}] ${cc.description}",
+                    isSkill = true,
+                )
+            }
         return menuStore.filteredSlashCommands(
             compactSubtitle = context.getString(R.string.slash_compact_subtitle),
             memorySubtitle = context.getString(
@@ -548,6 +563,11 @@ class ChatViewModel(
                 if (runState.steeringModeEnabled.value) R.string.slash_steer_on
                 else R.string.slash_steer_off,
             ),
+            planSubtitle = context.getString(
+                if (runState.executionMode.value.isReadOnly) R.string.slash_plan_on
+                else R.string.slash_plan_off,
+            ),
+            customCommandRows = customCmdRows,
         )
     }
 
@@ -606,6 +626,10 @@ class ChatViewModel(
     val activeStepChecklist: StateFlow<UpdateStepsTool.StepChecklist?> get() = runState.activeStepChecklist
     val stepChecklistDismissed: StateFlow<Boolean> get() = runState.stepChecklistDismissed
     fun dismissStepChecklist() = runState.dismissStepChecklist()
+
+    val executionMode: StateFlow<com.openminis.app.agent.AgentExecutionMode> get() = runState.executionMode
+    fun togglePlanMode() = togglePlanModeImpl()
+    fun approvePlanAndExecute() = approvePlanAndExecuteImpl()
 
     fun toggleBrowserSheet() = overlaysStore.toggleBrowserSheet { browserTabPool.ensureTabForUI() }
     fun dismissBrowserSheet() = overlaysStore.dismissBrowserSheet()
@@ -738,6 +762,7 @@ class ChatViewModel(
             mcpRepository = mcpRepository,
             memoryRepository = memoryRepository,
             fsSessionId = fsSessionId,
+            executionMode = runState.executionMode.value,
         )
 
     // ── Legacy tool compatibility methods ─────────────────────────────────

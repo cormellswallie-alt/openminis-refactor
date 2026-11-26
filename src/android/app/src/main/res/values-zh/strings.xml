@@ -2170,4 +2170,13 @@
     <string name="steps_expand_cd">展开任务清单</string>
     <string name="steps_collapse_cd">收起任务清单</string>
     <string name="steps_dismiss_cd">隐藏任务清单</string>
+
+    <!-- Plan / Code Dual Execution Mode -->
+    <string name="chat_plan_toggle_label">规划</string>
+    <string name="chat_plan_banner_active">规划模式 · 仅允许只读排查与方案设计</string>
+    <string name="chat_plan_approve_button">批准执行</string>
+    <string name="chat_plan_approve_prompt">方案已批准，请切换为代码模式并按规划开始实施改动。</string>
+    <string name="chat_plan_exit_cd">退出规划模式</string>
+    <string name="slash_plan_on">规划模式：已开启（只读探索与方案设计）</string>
+    <string name="slash_plan_off">规划模式：已关闭（恢复代码编辑执行）</string>
 </resources>

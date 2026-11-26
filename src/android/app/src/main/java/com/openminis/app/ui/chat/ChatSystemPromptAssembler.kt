@@ -1,6 +1,7 @@
 package com.openminis.app.ui.chat
 
 import android.content.Context
+import com.openminis.app.agent.AgentExecutionMode
 import com.openminis.app.agent.ProjectInstructionsLoader
 import com.openminis.app.agent.SystemPromptBuilder
 import com.openminis.app.agent.jobs.AgentSettings
@@ -91,6 +92,7 @@ object ChatSystemPromptAssembler {
         mcpRepository: MCPRepository?,
         memoryRepository: MemoryRepository?,
         fsSessionId: String = activeSessionId,
+        executionMode: AgentExecutionMode = AgentExecutionMode.CODE,
     ): String {
         val isHelper = helperConfig != null
         val today = LocalDate.now()
@@ -193,6 +195,7 @@ Available tools:
 - shell_execute: Run any shell command. Each invocation runs in Alpine Linux with stdout/stderr captured and a persistent filesystem. Common tools (python3, pip, curl, wget, git, ssh, etc.) can be installed via apk add; Python packages via pip install. Run commands directly instead of burning a separate `which <cmd>` preflight turn — if a tool might be missing, chain `command -v <cmd> >/dev/null 2>&1 || apk add ...` in the same call. When you need to wait before checking results (e.g. polling, waiting for a process), use the `delay` parameter instead of `sleep` in the command — delay blocks the agent flow without occupying the shell, so other concurrent tasks can use it during the wait. Execution discipline for long-running or dispatched work: make tool calls immediately instead of describing intentions, and keep working until the task is complete. Within a turn, `delay` is your wait mechanism — to follow up on something still running, chain delay-then-check calls at a task-appropriate interval until you have the result or hit a sensible retry cap. For a check that should happen AFTER this turn ends, register it by running `minis-scheduled create …` via shell_execute (see the CLI list) — it fires a new turn at the scheduled time through a system alarm. NEVER end a turn with a promise of future action: 'I'll keep monitoring', 'will sync the result later', and ending right after a single still-running status check with 'let's keep waiting' are all the same violation — once your turn ends, NOTHING runs until the user's next message. If polling to completion is genuinely not worth blocking the turn, close honestly instead: either register a `minis-scheduled` follow-up (say so, with its task id) or state that you will only learn the outcome when the user next messages; see 'Scheduled tasks' later in this prompt.
 - file_read: Read file contents directly on host (instant, zero shell startup). Batch multiple file_read calls in parallel when inspecting several files.
 - file_search: Native host-side recursive file finder and text/regex search under /var/minis/ (instant, zero shell startup, skips binary and build/VCS dirs). Prefer this over shell_execute for listing directories, finding files by glob, and searching file contents.
+- repo_map: Native host-side structural repository map (PageRank-lite symbol outline with classes, functions, and line numbers across source files, zero shell startup). Call once early on unfamiliar codebases to orient rapidly before reading individual files.
 - file_write: Create new files or overwrite existing files atomically (faster than echo/tee).
 - file_edit: Edit existing files with exact string replacement (old_string → new_string). Preferred over file_write for modifications — always file_read first.
 ${browserPromptBullet}
@@ -285,6 +288,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         mcpRepository?.reloadFromDisk()
         val mcpFragment = mcpRepository?.mcpPromptFragment(activeSessionId)
         val globalMemoryFragment = if (memoryEnabled) memoryRepository?.loadGlobalMemoryFragment() else null
+        val structuredMemoryFragment = if (memoryEnabled) memoryRepository?.loadStructuredMemoryIndexFragment() else null
         val dailyMemoryFragment = if (memoryEnabled) memoryRepository?.loadRecentDailyMemoryFragment() else null
 
         AppLogger.info(
@@ -315,6 +319,10 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 append("\n\n")
                 append(globalMemoryFragment)
             }
+            if (structuredMemoryFragment != null) {
+                append("\n\n")
+                append(structuredMemoryFragment)
+            }
             if (dailyMemoryFragment != null) {
                 append("\n\n")
                 append(dailyMemoryFragment)
@@ -323,6 +331,14 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             append("- Current date: ").append(dateStr).append(" (").append(tzId).append(")\n")
             append("- Device language: ").append(lang).append("\n")
             append("- minis-model-use models available: ").append(modelUseCount)
+            if (!isHelper && executionMode == AgentExecutionMode.PLAN) {
+                append(
+                    "\n\nExecution mode: PLAN MODE (STRICTLY READ-ONLY).\n" +
+                        "- File writes/edits and mutating shell commands are disabled by the host.\n" +
+                        "- Inspect the codebase thoroughly using read-only tools (`repo_map`, `file_search`, `file_read`, read-only shell) and present a clear, actionable step-by-step plan covering affected files, exact changes, risks, and verification steps.\n" +
+                        "- Do not attempt to write files until the user switches back to Code mode or taps Approve & Execute.",
+                )
+            }
         }
     }
 

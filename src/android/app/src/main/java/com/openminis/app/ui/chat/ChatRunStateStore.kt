@@ -1,5 +1,6 @@
 package com.openminis.app.ui.chat
 
+import com.openminis.app.agent.AgentExecutionMode
 import com.openminis.app.agent.jobs.HelperConfig
 import com.openminis.app.data.model.ThinkingLevel
 import com.openminis.app.provider.ImageBudget
@@ -55,6 +56,18 @@ internal class ChatRunStateStore(initialMemoryEnabled: Boolean) {
 
     private val _promptQueue = MutableStateFlow<List<QueuedPrompt>>(emptyList())
     val promptQueue: StateFlow<List<QueuedPrompt>> = _promptQueue.asStateFlow()
+
+    /** Primary chat execution mode (`CODE` default vs. read-only `PLAN` mode). */
+    private val _executionMode = MutableStateFlow(AgentExecutionMode.CODE)
+    val executionMode: StateFlow<AgentExecutionMode> = _executionMode.asStateFlow()
+
+    /** True when file_write / file_edit must be omitted & blocked (Plan Mode or scoped helper). */
+    val blocksFileWriteTools: Boolean
+        get() = _executionMode.value.isReadOnly || (helperConfig?.accessMode?.blocksFileWriteTools == true)
+
+    /** True when shell_execute must enforce [com.openminis.app.agent.ReadOnlyCommandGuard]. */
+    val enforcesReadOnlyShell: Boolean
+        get() = _executionMode.value.isReadOnly || (helperConfig?.accessMode?.enforcesReadOnlyShell == true)
 
     /** Opt-in live mid-loop steering mode (user manually toggles on/off; default OFF). */
     private val _steeringModeEnabled = MutableStateFlow(false)
@@ -212,6 +225,20 @@ internal class ChatRunStateStore(initialMemoryEnabled: Boolean) {
 
     fun setSteeringModeEnabled(enabled: Boolean) {
         _steeringModeEnabled.value = enabled
+    }
+
+    fun setExecutionMode(mode: AgentExecutionMode) {
+        _executionMode.value = mode
+    }
+
+    fun togglePlanMode(): AgentExecutionMode {
+        val next = if (_executionMode.value == AgentExecutionMode.PLAN) {
+            AgentExecutionMode.CODE
+        } else {
+            AgentExecutionMode.PLAN
+        }
+        _executionMode.value = next
+        return next
     }
 
     fun toggleSteeringMode(): Boolean {

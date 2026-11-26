@@ -111,7 +111,7 @@ internal object StreamThrottlePolicy {
  * overlapping I/O with the remainder of the LLM stream.
  */
 internal object EarlyToolDispatchPolicy {
-    val READ_ONLY_TOOLS: Set<String> = setOf("file_read", "file_search", "read_image", "memory_get")
+    val READ_ONLY_TOOLS: Set<String> = setOf("file_read", "file_search", "repo_map", "read_image", "memory_get")
 
     fun isEligible(
         toolName: String,

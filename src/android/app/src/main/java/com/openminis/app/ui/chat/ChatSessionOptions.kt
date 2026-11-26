@@ -142,7 +142,10 @@ internal fun ChatViewModel.executeSlashCommandImpl(cmd: SlashCommand, currentInp
         "memory" -> toggleMemoryEnabled()
         "thinking" -> toggleThinking()
         "clear" -> overlaysStore.requestClearChatConfirm()
+        "plan" -> togglePlanModeFromSlash()
         "steer" -> toggleSteeringModeFromSlash()
+        "handoff" -> runSessionHandoffImpl(goal = "")
+        "fork" -> runForkSessionImpl(upToMessageId = null)
         "stats" -> showSessionStats()
         else -> AppLogger.info(TAG, "[Slash] unrecognized id=${cmd.id} — no dispatch")
     }
@@ -159,6 +162,81 @@ internal fun ChatViewModel.toggleSteeringModeFromSlash() {
         ),
         iconKind = "steer",
     )
+}
+
+internal fun ChatViewModel.togglePlanModeImpl(): com.openminis.app.agent.AgentExecutionMode =
+    runState.togglePlanMode()
+
+internal fun ChatViewModel.togglePlanModeFromSlash() {
+    val mode = runState.togglePlanMode()
+    appendSystemInfo(
+        text = context.getString(
+            if (mode.isReadOnly) com.openminis.app.R.string.slash_plan_on
+            else com.openminis.app.R.string.slash_plan_off,
+        ),
+        iconKind = "info",
+    )
+}
+
+internal fun ChatViewModel.approvePlanAndExecuteImpl() {
+    runState.setExecutionMode(com.openminis.app.agent.AgentExecutionMode.CODE)
+    if (!runState.isStreaming.value) {
+        sendMessageImpl(context.getString(com.openminis.app.R.string.chat_plan_approve_prompt))
+    }
+}
+
+internal fun ChatViewModel.runSessionHandoffImpl(goal: String) {
+    viewModelScope.launch {
+        val sid = realSessionId.ifEmpty { activeSessionId }
+        if (sid.isEmpty()) {
+            appendSystemInfo("Start a conversation before running /handoff.", iconKind = "info")
+            return@launch
+        }
+        val checklistSummary = runState.activeStepChecklist.value?.let { cl ->
+            cl.steps.joinToString("\n") { "- [${it.status.wire}] ${it.title}" }
+        }
+        val draft = SessionHandoffManager.buildHandoffDraft(
+            sourceTitle = runState.sessionTitle.value,
+            nextGoal = goal,
+            messages = _messages.value,
+            activeChecklistSummary = checklistSummary,
+        )
+        val forkMgr = com.openminis.app.data.SessionForkManager(context, chatRepository, skillRepository)
+        val newId = forkMgr.createHandoffSession(
+            sourceSessionId = sid,
+            title = draft.sessionTitle,
+            handoffPrompt = draft.promptText,
+        )
+        if (newId != null) {
+            appendSystemInfo(
+                text = "Handoff ready: \"${draft.sessionTitle}\" (${draft.referencedPaths.size} file(s)). Open it from Sessions to continue cleanly.",
+                iconKind = "info",
+                payload = draft.promptText,
+            )
+        } else {
+            appendSystemInfo("Could not create handoff session.", iconKind = "info")
+        }
+    }
+}
+
+internal fun ChatViewModel.runForkSessionImpl(upToMessageId: String? = null) {
+    viewModelScope.launch {
+        val sid = realSessionId.ifEmpty { activeSessionId }
+        if (sid.isEmpty()) {
+            appendSystemInfo("Nothing to fork yet.", iconKind = "info")
+            return@launch
+        }
+        val forkMgr = com.openminis.app.data.SessionForkManager(context, chatRepository, skillRepository)
+        val newId = forkMgr.duplicateSessionUpTo(sid, upToMessageId = upToMessageId, titleSuffix = "(Fork)")
+        if (newId != null) {
+            appendSystemInfo(
+                text = "Forked session into a parallel branch (${newId.take(8)}). Open it from Sessions anytime.",
+                iconKind = "steer",
+            )
+        } else {
+            appendSystemInfo("Could not fork this session.", iconKind = "info")
+        }
+    }
 }
 
 internal fun ChatViewModel.showSessionStats() {
@@ -226,6 +304,12 @@ internal fun ChatViewModel.persistThinkingOverride(level: ThinkingLevel) {
 }
 
 internal fun ChatViewModel.tryExecuteInputAsSlashCommandImpl(text: String): Boolean {
+    val trimmed = text.trim()
+    if (trimmed.startsWith("/handoff ", ignoreCase = true) || trimmed.startsWith("／handoff ", ignoreCase = true)) {
+        val goal = trimmed.substringAfter(' ').trim()
+        runSessionHandoffImpl(goal)
+        return true
+    }
     val cmd = menuStore.matchBuiltInSlashLiteral(text) ?: return false
     executeSlashCommand(cmd)
     return true

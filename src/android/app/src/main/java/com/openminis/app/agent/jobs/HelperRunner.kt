@@ -2,6 +2,8 @@ package com.openminis.app.agent.jobs
 
 import android.content.Context
 import com.openminis.app.R
+import com.openminis.app.agent.SubAgentAccessMode
+import com.openminis.app.data.model.ThinkingLevel
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -38,6 +40,8 @@ data class HelperConfig(
      * to the child's system prompt. Empty = nothing appended.
      */
     val agentInstructions: String = "",
+    /** Claude Code / Codex-style role & tool-scoping mode (defaults to full workspace_write). */
+    val accessMode: SubAgentAccessMode = SubAgentAccessMode.WORKSPACE_WRITE,
 )
 
 data class DelegateTaskArgs(
@@ -63,6 +67,12 @@ data class DelegateTaskArgs(
     val wait: Boolean,
     /** none | frequent | moderate (background only). */
     val progressLevel: String,
+    /** Role & tool-scoping mode: workspace_write | read_only | plan | verify. */
+    val accessMode: SubAgentAccessMode = SubAgentAccessMode.WORKSPACE_WRITE,
+    /** Optional per-delegation thinking effort override (off/low/medium/high/xhigh). */
+    val effortOverride: ThinkingLevel? = null,
+    /** Optional per-delegation turn ceiling override (2..MAX_TURNS). */
+    val maxTurnsOverride: Int? = null,
 )
 
 enum class HelperWrapUpReason { TURNS, BUDGET }
@@ -194,6 +204,13 @@ object HelperRunner {
         val modelChoice = SubAgentModelChoice.parse(o.optString("model_choice", "").trim())
         val minutesRaw = if (o.has("max_minutes")) o.optDouble("max_minutes", DEFAULT_MINUTES.toDouble()).toInt() else DEFAULT_MINUTES
         val level = o.optString("progress_report", "none").trim().lowercase()
+        val accessMode = SubAgentAccessMode.parse(o.optString("mode", "").trim())
+        val effortRaw = o.optString("effort", "").trim()
+        val effortOverride = effortRaw.takeIf { it.isNotEmpty() }?.let { ThinkingLevel.decoded(it) }
+        val maxTurnsOverride = if (o.has("max_turns") && !o.isNull("max_turns")) {
+            val raw = o.optDouble("max_turns", Double.NaN)
+            if (!raw.isNaN() && !raw.isInfinite()) raw.toInt().coerceIn(2, MAX_TURNS) else null
+        } else null
         return DelegateTaskArgs(
             title = title.ifEmpty { task.take(40) },
             task = task,
@@ -207,6 +224,9 @@ object HelperRunner {
             // the opt-in for "the next step needs this result".
             wait = if (o.has("wait")) o.optBoolean("wait", false) else false,
             progressLevel = if (level in setOf("none", "frequent", "moderate")) level else "none",
+            accessMode = accessMode,
+            effortOverride = effortOverride,
+            maxTurnsOverride = maxTurnsOverride,
         )
     }
 
@@ -289,6 +309,7 @@ object HelperRunner {
             "A parent agent delegated ONE focused task to you: \"${cfg.title}\". You cannot see the parent conversation and it cannot see yours; everything you need is in the task text. Work the task to completion using your tools, then finish with a single clear final answer — that final message is returned verbatim to the parent agent as the result, and it is the ONLY thing the parent receives. So the final message must contain the complete deliverable itself: the full report, document, list, code or answer the task asked for, in full — never a summary of what you did, a pointer to a file you wrote, or \"see above\". If you produced a file, paste its full content into the final message as well. Do not ask the parent or the user questions; make reasonable assumptions and state them. Do not restate the task or add meta-commentary. Do not create scheduled tasks or delegate further.\n" +
             browserSharingSection(browserEnabled) +
             "You have at most ${cfg.maxTurns} tool rounds; on the last one tools are withdrawn and you are asked to write the deliverable from what you have, so start writing before you run out. If the task genuinely exceeds what you can do at your capability level, end your final message with a line `[ESCALATE] <one-line reason>` so the parent can rerun it on a stronger model.\n\n" +
+            SubAgentPresets.roleGuidance(cfg.accessMode) +
             subAgentInstructionsSection(cfg.agentInstructions)
 
     /**

@@ -103,9 +103,17 @@ class SubAgentToolSchemaTest {
             listOf(
                 "tool_title", "action", "task", "agent", "model_choice", "context",
                 "max_minutes", "wait", "progress_report", "job_id", "message",
-                "child_session_id",
+                "child_session_id", "mode", "effort", "max_turns",
             ),
             subAgentTool()!!.propertyOrdering,
+        )
+        assertEquals(
+            listOf("workspace_write", "read_only", "plan", "verify"),
+            subAgentTool()!!.parameters["mode"]!!.enumValues,
+        )
+        assertEquals(
+            listOf("off", "low", "medium", "high", "xhigh"),
+            subAgentTool()!!.parameters["effort"]!!.enumValues,
         )
     }
 

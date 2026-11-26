@@ -1,6 +1,7 @@
 package com.openminis.app.ui.chat
 
 import android.content.Context
+import com.openminis.app.agent.ReadOnlyCommandGuard
 import com.openminis.app.agent.jobs.HelperRunner
 import com.openminis.app.agent.shell.BashismDetector
 import com.openminis.app.agent.shell.BashismReminder
@@ -25,6 +26,7 @@ import com.openminis.app.tools.FileSearchTool
 import com.openminis.app.tools.FileWriteTool
 import com.openminis.app.tools.MemoryTools
 import com.openminis.app.tools.ReadImageTool
+import com.openminis.app.tools.RepoMapTool
 import com.openminis.app.tools.ToolExecutionResult
 import com.openminis.app.tools.UpdateStepsTool
 import com.openminis.app.tools.VisionGroupResolver
@@ -55,6 +57,8 @@ internal class ChatToolDispatcher(
     private val clearQuestionnaire: (PendingQuestionnaire) -> Unit,
     private val recordMemory: (MemoryToolRecord) -> Unit,
     private val publishStepChecklist: (UpdateStepsTool.StepChecklist) -> Unit = {},
+    private val blocksFileWriteTools: () -> Boolean = { false },
+    private val enforcesReadOnlyShell: () -> Boolean = { false },
 ) {
     companion object {
         const val SHELL_TIMEOUT_MAX_SEC = 3600
@@ -94,12 +98,23 @@ internal class ChatToolDispatcher(
                 result
             }
             FileSearchTool.NAME -> FileSearchTool.execute(argsJson, fsSessionId(), context)
-            FileWriteTool.NAME -> FileWriteTool.execute(argsJson, fsSessionId(), context).also {
-                if (it.success) maybeReloadSkillsForPath(argsJson)
-            }
-            FileEditTool.NAME -> FileEditTool.execute(argsJson, fsSessionId(), context).also {
-                if (it.success) maybeReloadSkillsForPath(argsJson)
-            }
+            RepoMapTool.NAME -> RepoMapTool.execute(argsJson, fsSessionId(), context)
+            FileWriteTool.NAME ->
+                if (blocksFileWriteTools()) {
+                    readOnlyRefusal(FileWriteTool.NAME)
+                } else {
+                    FileWriteTool.execute(argsJson, fsSessionId(), context).also {
+                        if (it.success) maybeReloadSkillsForPath(argsJson)
+                    }
+                }
+            FileEditTool.NAME ->
+                if (blocksFileWriteTools()) {
+                    readOnlyRefusal(FileEditTool.NAME)
+                } else {
+                    FileEditTool.execute(argsJson, fsSessionId(), context).also {
+                        if (it.success) maybeReloadSkillsForPath(argsJson)
+                    }
+                }
             // T178: pass sessionId + context so read_image routes through
             // resolveSessionHostPath like file_read/write/edit do — without
             // these, the tool consults the global last-writer-wins
@@ -370,6 +385,17 @@ internal class ChatToolDispatcher(
             if (command.isBlank()) {
                 return ToolExecutionResult("Error: 'command' is required", false, toolTitle = toolTitle)
             }
+            if (enforcesReadOnlyShell()) {
+                val guard = ReadOnlyCommandGuard.check(command)
+                if (!guard.allowed) {
+                    return ToolExecutionResult(
+                        "Blocked in read-only / Plan mode: ${guard.reason} " +
+                            "Use read-only inspection commands only, or finish your plan so the user can approve switching to Code mode.",
+                        false,
+                        toolTitle = toolTitle,
+                    )
+                }
+            }
 
             // [T-android-overlay-finalize item 1] Removed the
             // shell-specific status hack ("shell: $toolTitle"). Since the
@@ -566,6 +592,14 @@ internal class ChatToolDispatcher(
      * to retry, so a refusal ends the attempt instead of provoking a loop. The
      * user is not shown an error — they turned the tool off on purpose.
      */
+    private fun readOnlyRefusal(name: String): ToolExecutionResult =
+        ToolExecutionResult(
+            "Blocked: `$name` is disabled in read-only / Plan mode. " +
+                "Do not attempt file mutations right now — complete your read-only analysis or plan first.",
+            false,
+            toolTitle = "$name (read-only)",
+        )
+
     private fun toolDisabledResult(name: String): ToolExecutionResult =
         ToolExecutionResult(
             "The $name tool is disabled in this app's settings and cannot be used. " +
@@ -716,15 +750,21 @@ internal class ChatToolDispatcher(
             return MemoryTools.ToolResult(disabledMessage, false, disabledTitle)
         }
         val result = MemoryTools.executeMemoryWrite(argsJson, repo)
-        val content = try {
-            JSONObject(argsJson).optString("content", "")
-        } catch (_: Exception) { "" }
+        val parsed = runCatching { JSONObject(argsJson) }.getOrNull()
+        val action = parsed?.optString("action", "save")?.trim()?.lowercase() ?: "save"
+        val content = parsed?.optString("content", "").orEmpty()
+        val isSave = action == "save" || action.isEmpty()
+        val preview = if (isSave) {
+            content.lines().firstOrNull { it.isNotBlank() }?.take(100) ?: result.output.take(100)
+        } else {
+            result.output.lines().firstOrNull { it.isNotBlank() }?.take(100) ?: ""
+        }
         recordMemory(MemoryToolRecord(
             title = result.toolTitle,
             isWrite = true,
-            preview = content.lines().firstOrNull { it.isNotBlank() }?.take(100) ?: "",
+            preview = preview,
             output = result.output,
-            writtenContent = content,
+            writtenContent = if (isSave) content else "",
         ))
         return result
     }

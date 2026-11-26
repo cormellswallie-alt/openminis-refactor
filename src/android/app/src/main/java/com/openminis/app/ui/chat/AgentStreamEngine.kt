@@ -1203,7 +1203,8 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
         for (parts in slotResults) parts?.let { rawResultParts.addAll(it) }
 
         val pendingToolSteers = host.drainPendingToolSteers()
-        val steerTexts = pendingToolSteers.map { it.text }
+        val helperMidToolSteers = if (host.isHelper) host.drainPendingSteers() else emptyList()
+        val steerTexts = pendingToolSteers.map { it.text } + helperMidToolSteers
         val resultParts = ToolResultSteering.attachToResults(rawResultParts, steerTexts)
         if (steerTexts.isNotEmpty()) {
             val steerBlock = AssistantBlock(
@@ -1217,7 +1218,7 @@ internal class AgentStreamEngine(private val host: AgentStreamHost) {
             synchronized(state.allToolBlocks) { state.allToolBlocks.add(steerBlock) }
             AppLogger.info(
                 TAG_STREAM,
-                "[ToolSteer] attached ${steerTexts.size} user steering note(s) to tool_result turn=${acc.turn}",
+                "[ToolSteer] attached ${steerTexts.size} steering note(s) (helper=${host.isHelper}) to tool_result turn=${acc.turn}",
             )
         }
 

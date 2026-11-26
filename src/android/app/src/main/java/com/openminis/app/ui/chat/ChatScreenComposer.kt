@@ -138,7 +138,8 @@ internal fun ChatScreenComposer(
         val memoryEnabled by viewModel.memoryEnabled.collectAsStateWithLifecycle()
         val thinkingLevel by viewModel.thinkingLevel.collectAsStateWithLifecycle()
         val steeringModeEnabled by viewModel.steeringModeEnabled.collectAsStateWithLifecycle()
-        val filteredSlashCommands = remember(showSlashMenu, slashFilter, memoryEnabled, thinkingLevel, steeringModeEnabled) {
+        val executionMode by viewModel.executionMode.collectAsStateWithLifecycle()
+        val filteredSlashCommands = remember(showSlashMenu, slashFilter, memoryEnabled, thinkingLevel, steeringModeEnabled, executionMode) {
             viewModel.filteredSlashCommands()
         }
 
@@ -216,6 +217,13 @@ internal fun ChatScreenComposer(
                 MoveToSessionOverlayCapsule(
                     visible = showMoveCapsule,
                     onClick = { showMoveSheet = true },
+                )
+
+                ComposerPlanModeBanner(
+                    visible = executionMode.isReadOnly,
+                    isStreaming = isStreaming,
+                    onApproveAndExecute = { viewModel.approvePlanAndExecute() },
+                    onExitPlanMode = { viewModel.togglePlanMode() },
                 )
 
                 ComposerSteeringTray(

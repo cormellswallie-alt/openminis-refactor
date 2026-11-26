@@ -190,6 +190,7 @@ object ChatPayloadCodec {
         "shell_execute" -> "Execute Shell"
         "file_read" -> "Read File"
         "file_search" -> "Search Files"
+        "repo_map" -> "Repo Map"
         "file_write" -> "Write File"
         "file_edit" -> "Edit File"
         "browser_use" -> "Browse Web"

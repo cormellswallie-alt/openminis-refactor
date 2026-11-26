@@ -242,7 +242,20 @@ internal fun ChatViewModel.submitPromptImpl(
             // T132 [T-android-paste-mediaref] build the user contentParts in iOS order — caption first (only
             // if non-empty), then per image emit text("[attached image: /var/minis/attachments/uploads/<f>]")
             // ImageData(<bytes>,…
-            val modelBody = pasted?.modelText ?: trimmed
+            val baseBody = pasted?.modelText ?: trimmed
+            val customSlashExpanded = if (!headless && (baseBody.startsWith("/") || baseBody.startsWith("／"))) {
+                val customCmds = com.openminis.app.agent.CustomSlashCommandsLoader.loadForSession(context, fsSessionId)
+                com.openminis.app.agent.CustomSlashCommandsLoader.resolveAndExpand(baseBody, customCmds)
+            } else null
+            val modelBody = customSlashExpanded ?: baseBody
+            val dynamicMentionsXml = if (!headless) {
+                DynamicContextMentions.resolveForPrompt(
+                    text = modelBody,
+                    messages = _messages.value,
+                    sessionId = activeSessionId,
+                    fsSessionId = fsSessionId,
+                )
+            } else null
 
             val userContentParts = mutableListOf<AgentContentPart>()
             if (modelBody.isNotEmpty()) userContentParts.add(AgentContentPart.Text(modelBody))
@@ -250,6 +263,7 @@ internal fun ChatViewModel.submitPromptImpl(
                 userContentParts.addModelImage(part, prepared.imageUploadPaths.getOrNull(idx), prepared.imageModelNotes.getOrNull(idx))
             }
             prepared.attachedFilesXml?.let { userContentParts.add(AgentContentPart.Text(it)) }
+            dynamicMentionsXml?.let { userContentParts.add(AgentContentPart.Text(it)) }
 
             agentHistory.add(LLMMessage(
                 role = LLMMessage.Role.USER,

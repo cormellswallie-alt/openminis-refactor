@@ -213,9 +213,10 @@ private fun MentionCandidateRow(
             modifier = Modifier.size(16.dp),
         )
         Spacer(modifier = Modifier.width(10.dp))
+        val dynamicKind = DynamicContextMentions.kindFor(entry)
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = entry.basename,
+                text = if (dynamicKind != null) "@${dynamicKind.token}" else entry.basename,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Medium,
                 color = ChatColors.primaryText,
@@ -223,7 +224,7 @@ private fun MentionCandidateRow(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = entry.displayPath,
+                text = dynamicKind?.description ?: entry.displayPath,
                 fontSize = 11.sp,
                 color = ChatColors.secondaryText,
                 maxLines = 1,

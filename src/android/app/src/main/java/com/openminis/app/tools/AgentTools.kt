@@ -45,6 +45,9 @@ object AgentTools {
         // Live task checklist (`update_steps`); omitted for helpers because
         // sub-agents do not render onto the primary chat's pinned checklist bar.
         updateStepsEnabled: Boolean = true,
+        // Read-only scoping (Plan Mode or read_only/plan/verify sub-agent):
+        // removes `file_write` and `file_edit` from the tool schema entirely.
+        readOnlyMode: Boolean = false,
         // [T-sub-agents-v1] The names of the enabled sub agents, in roster
         // order. These become `subagent_task.agent`'s enum, and the caller
         // rebuilds them every turn: the schema is not cached, so a rename takes
@@ -56,8 +59,11 @@ object AgentTools {
         add(shellExecuteDefinition())
         add(FileReadTool.definition())
         add(FileSearchTool.definition())
-        add(FileWriteTool.definition())
-        add(FileEditTool.definition())
+        add(RepoMapTool.definition())
+        if (!readOnlyMode) {
+            add(FileWriteTool.definition())
+            add(FileEditTool.definition())
+        }
         if (supportsImageInput || visionGroupConfigured) {
             add(ReadImageTool.definition())
         }
@@ -122,12 +128,15 @@ object AgentTools {
             "job_id" to AgentToolParam("string", "action=status/steer/cancel. The job_id this tool returned when it started the sub agent (a prefix is accepted). Required for steer and cancel; omit on status to list every sub agent of this conversation."),
             "message" to AgentToolParam("string", "action=steer only, required. The correction, phrased as an instruction to the running sub agent (e.g. 'focus on pricing, skip the migration notes'). Use when new information changes what it should do — it keeps the work already done, unlike cancelling and re-delegating. Read at its next turn, so a running tool call is not interrupted; if the run finishes first the result reports the steer as missed."),
             "child_session_id" to AgentToolParam("string", "action=resume only, optional. The child_session_id of one interrupted sub agent to restart. Omit to resume every interrupted sub agent in this conversation."),
+            "mode" to AgentToolParam("string", "action=delegate only. Claude Code / Codex-style role & tool scoping: \"workspace_write\" (default, full tools), \"read_only\" (Explore: strictly read-only file & shell reconnaissance), \"plan\" (Plan: strictly read-only architectural blueprint), or \"verify\" (Verifier: blocks source edits while allowing test/build verification).", enumValues = listOf("workspace_write", "read_only", "plan", "verify")),
+            "effort" to AgentToolParam("string", "action=delegate only. Optional reasoning effort override for this sub agent run (e.g. 'off'/'low' for fast exploration, 'high' for deep audit/planning).", enumValues = listOf("off", "low", "medium", "high", "xhigh")),
+            "max_turns" to AgentToolParam("integer", "action=delegate only. Optional tight turn-round cap (2..200) to bound exploratory sub agents."),
             ),
             required = listOf("tool_title"),
             propertyOrdering = listOf(
                 "tool_title", "action", "task", "agent", "model_choice", "context",
                 "max_minutes", "wait", "progress_report", "job_id", "message",
-                "child_session_id",
+                "child_session_id", "mode", "effort", "max_turns",
             ),
         )
 
@@ -211,33 +220,37 @@ object AgentTools {
         propertyOrdering = listOf("tool_title", "action", "tab_id", "url", "selector", "text", "coordinate_x", "coordinate_y", "direction", "amount", "scroll_count", "item_selector", "script", "user_agent", "max_depth", "keywords", "fuzzy", "cookies", "timeout", "viewport_width", "viewport_height", "reset", "full_page"),
     )
 
-    // Aligned with iOS AIChatViewModel.swift:5059-5067
+    // Upgraded typed memory_write (Claude Code Auto-Memory + Mem0 supersede + A-MEM tags)
     private fun memoryWriteDefinition(): AgentToolDefinition = AgentToolDefinition(
         name = "memory_write",
-        description = "Write a memory entry to today's daily log (YYYY-MM-DD.md). Memories persist across all sessions. " +
-            "Each entry is prepended with a timestamp. " +
-            "Save: user preferences, recurring patterns, key facts, project conventions, reusable knowledge. " +
-            "Avoid saving passwords, API keys, tokens, or secrets unless the user explicitly confirms after being warned. " +
-            "Keep entries concise and general-purpose. GLOBAL.md is read-only (user-maintained via Settings).",
+        description = "Save, update, forget, or consolidate persistent cross-session memories (indexed into MEMORY.md + daily logs). " +
+            "Supports typed memories (user/feedback/project/reference/episodic), tags, importance (1-5), and topic_key upserts that automatically supersede stale facts without creating contradictions. " +
+            "Avoid saving passwords, API keys, tokens, or secrets unless the user explicitly confirms after being warned. GLOBAL.md is read-only (user-maintained via Settings).",
         parameters = mapOf(
-            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of what this tool call does, shown to the user (e.g. 'Save user preference for Python', 'Note today's project context'). Use the same language as the user."),
-            "content" to AgentToolParam("string", "The memory content to write. Use concise Markdown with a short heading (## Topic) and context about what was done/learned."),
-        ),
-        required = listOf("tool_title", "content"),
-        propertyOrdering = listOf("tool_title", "content"),
-    )
-
-    // Aligned with iOS AIChatViewModel.swift:5069-5078
-    private fun memoryGetDefinition(): AgentToolDefinition = AgentToolDefinition(
-        name = "memory_get",
-        description = "Retrieve memories from persistent storage. Supports keyword-based fuzzy search across memory files. " +
-            "Returns matching lines with surrounding context. Use this to recall previous knowledge, user preferences, or past notes.",
-        parameters = mapOf(
-            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of what this tool call does, shown to the user (e.g. 'Recall user preferences', 'Search past notes'). Use the same language as the user."),
-            "scope" to AgentToolParam("string", "Memory scope to search: 'daily' for daily logs only, 'all' for daily logs + GLOBAL.md.", enumValues = listOf("daily", "all")),
-            "keywords" to AgentToolParam("string", "Space-separated keywords for fuzzy matching (e.g. 'python preference' or 'API key setup'). All keywords must appear in a line or its surrounding context for a match. Leave empty to return full memory files."),
+            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of what this tool call does, shown to the user (e.g. 'Save user preference for Python', 'Record project build rule'). Use the same language as the user."),
+            "content" to AgentToolParam("string", "The concise memory content to save (or text to forget when action='forget')."),
+            "type" to AgentToolParam("string", "Optional memory category: 'user' (preferences/profile), 'feedback' (corrections/rules), 'project' (repo conventions/decisions), 'reference' (URLs/resources), or 'episodic' (session notes). Auto-inferred if omitted.", enumValues = listOf("user", "feedback", "project", "reference", "episodic")),
+            "topic_key" to AgentToolParam("string", "Optional stable key (e.g. 'pkg_manager', 'ci_workflow') so updating the same topic supersedes the older memory cleanly."),
+            "tags" to AgentToolParam("array", "Optional short keyword tags for A-MEM auto-linking and faster recall.", items = AgentToolParam("string", "A concise lowercase tag.")),
+            "importance" to AgentToolParam("integer", "Retention priority 1-5 (default 3; 5 = critical durable rule)."),
+            "action" to AgentToolParam("string", "Operation: 'save' (default), 'forget' (delete matching memory), or 'consolidate' (dedupe & refresh MEMORY.md).", enumValues = listOf("save", "forget", "consolidate")),
         ),
         required = listOf("tool_title"),
-        propertyOrdering = listOf("tool_title", "scope", "keywords"),
+        propertyOrdering = listOf("tool_title", "content", "type", "topic_key", "tags", "importance", "action"),
+    )
+
+    // Upgraded hybrid BM25 + temporal-decay memory_get
+    private fun memoryGetDefinition(): AgentToolDefinition = AgentToolDefinition(
+        name = "memory_get",
+        description = "Retrieve persistent memories using hybrid BM25 + bilingual CJK/code ranking, tag boosts, and temporal decay across structured memories (MEMORY.md), GLOBAL.md, and daily logs. Returns ranked hits plus linked related memories.",
+        parameters = mapOf(
+            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of what this tool call does, shown to the user (e.g. 'Recall user preferences', 'Search project decisions'). Use the same language as the user."),
+            "scope" to AgentToolParam("string", "Memory scope to search: 'daily' for episodic logs only, 'all' for structured memories + GLOBAL.md + daily logs.", enumValues = listOf("daily", "all")),
+            "keywords" to AgentToolParam("string", "Natural query or keywords (English/Chinese/code symbols supported; ranked by hybrid BM25 relevance rather than strict-AND). Leave empty to list highest-priority recent memories."),
+            "type" to AgentToolParam("string", "Optional memory type filter.", enumValues = listOf("all", "user", "feedback", "project", "reference", "episodic")),
+            "limit" to AgentToolParam("integer", "Maximum ranked entries to return (default 8, max 20)."),
+        ),
+        required = listOf("tool_title"),
+        propertyOrdering = listOf("tool_title", "scope", "keywords", "type", "limit"),
     )
 }

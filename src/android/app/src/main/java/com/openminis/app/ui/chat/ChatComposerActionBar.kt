@@ -130,9 +130,15 @@ internal fun ChatComposerActionBar(
                 )
             }
         } else if (!VoiceModePrefs.isVoiceActive) {
+            val executionMode by viewModel.executionMode.collectAsStateWithLifecycle()
             val steeringModeEnabled by viewModel.steeringModeEnabled.collectAsStateWithLifecycle()
             val pendingToolSteers by viewModel.pendingToolSteers.collectAsStateWithLifecycle()
             Spacer(modifier = Modifier.width(8.dp))
+            ComposerPlanModePill(
+                isPlanMode = executionMode.isReadOnly,
+                onToggle = { viewModel.togglePlanMode() },
+            )
+            Spacer(modifier = Modifier.width(6.dp))
             ComposerSteerTogglePill(
                 enabled = steeringModeEnabled,
                 pendingCount = pendingToolSteers.size,
