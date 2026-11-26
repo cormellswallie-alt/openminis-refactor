@@ -130,15 +130,15 @@ class AdvancedMemoryEngineTest {
         val dir = tmp.newFolder("mem_search")
         val engine = AdvancedMemoryEngine(dir, clock = { now })
 
-        // Old episodic note vs recent episodic note with identical text relevance.
+        // Two distinct episodic notes (Jaccard << 0.72) sharing equal BM25 match on ChatViewModel + streaming.
         engine.upsert(
-            content = "Debugging ChatViewModel streaming stall issue alpha",
+            content = "Archived alpha experiment: ChatViewModel streaming timeout under slow LTE network",
             type = AdvancedMemoryEngine.MemoryType.EPISODIC,
             importance = 3,
         )
         now += 60 * dayMs
         engine.upsert(
-            content = "Debugging ChatViewModel streaming stall issue beta",
+            content = "Current beta rollout: ChatViewModel streaming latency metrics over office fiber",
             type = AdvancedMemoryEngine.MemoryType.EPISODIC,
             importance = 3,
         )
@@ -149,9 +149,9 @@ class AdvancedMemoryEngineTest {
             importance = 5,
         )
 
-        // Temporal decay ranks recent episodic note ahead of 60-day-old episodic note.
-        val codeHits = engine.search("viewmodel streaming", limit = 5)
-        assertTrue(codeHits.size >= 2)
+        // Temporal decay + camelCase splitting ranks recent episodic note ahead of 60-day-old note.
+        val codeHits = engine.search("ViewModel streaming", limit = 5)
+        assertEquals(2, codeHits.size)
         assertTrue(codeHits[0].content.contains("beta"))
         assertTrue(codeHits[1].content.contains("alpha"))
 
