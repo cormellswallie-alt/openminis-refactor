@@ -85,7 +85,8 @@ class UpdateStepsToolTest {
         val rawSteps = (1..15).joinToString(",") {
             """{"title":"Step item $it","status":"pending"}"""
         }
-        val args = """{"steps":"[{\"title\":\"   \",\"status\":\"pending\"},$rawSteps]"}"""
+        val stringifiedArray = """[{"title":"   ","status":"pending"},$rawSteps]"""
+        val args = org.json.JSONObject().put("steps", stringifiedArray).toString()
         val parsed = UpdateStepsTool.parseSteps(args)
         assertNotNull(parsed)
         assertEquals(UpdateStepsTool.MAX_STEPS, parsed!!.totalCount)
