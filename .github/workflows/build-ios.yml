@@ -62,16 +62,23 @@ jobs:
 
       - name: Install native build tools
         run: |
-          HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install meson ninja llvm libarchive pkg-config
-          echo "/opt/homebrew/opt/llvm/bin" >> "$GITHUB_PATH"
+          HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install meson ninja llvm lld libarchive pkg-config
+          # Expose lld for iSH VDSO cross-linking WITHOUT shadowing Apple Xcode clang in PATH
+          echo "/opt/homebrew/opt/lld/bin" >> "$GITHUB_PATH"
+          if [ -x /opt/homebrew/opt/lld/bin/ld.lld ] && [ -d /opt/homebrew/opt/llvm/bin ]; then
+            ln -sf /opt/homebrew/opt/lld/bin/ld.lld /opt/homebrew/opt/llvm/bin/ld.lld
+            ln -sf /opt/homebrew/opt/lld/bin/lld /opt/homebrew/opt/llvm/bin/lld
+          fi
           echo "PKG_CONFIG_PATH=/opt/homebrew/opt/libarchive/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
           echo "LIBRARY_PATH=/opt/homebrew/opt/libarchive/lib:${LIBRARY_PATH:-}" >> "$GITHUB_ENV"
           echo "CPATH=/opt/homebrew/opt/libarchive/include:${CPATH:-}" >> "$GITHUB_ENV"
+          which clang && clang --version | head -n 1
+          which ld.lld && ld.lld --version | head -n 1
 
-      # ---------- 1. LAME + FFmpeg (cached) ----------
-      - name: Cache LAME & FFmpeg frameworks
+      # ---------- 1. LAME + FFmpeg (restore + immediate save) ----------
+      - name: Restore LAME & FFmpeg cache
         id: cache-ffmpeg
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             deps/lame-build
@@ -99,14 +106,36 @@ jobs:
           ./deps/build_ffmpeg.sh
           ls -la deps/frameworks/
 
-      # ---------- 2. iSH-ARM64 + AOT stub (cached) ----------
+      - name: Save LAME & FFmpeg cache
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            deps/lame-build
+            deps/frameworks/FFmpeg.framework
+            deps/frameworks/libavcodec.framework
+            deps/frameworks/libavformat.framework
+            deps/frameworks/libavutil.framework
+            deps/frameworks/libavfilter.framework
+            deps/frameworks/libswresample.framework
+            deps/frameworks/libswscale.framework
+            deps/frameworks/FFmpeg.xcframework
+            deps/frameworks/libavcodec.xcframework
+            deps/frameworks/libavformat.xcframework
+            deps/frameworks/libavutil.xcframework
+            deps/frameworks/libavfilter.xcframework
+            deps/frameworks/libswresample.xcframework
+            deps/frameworks/libswscale.xcframework
+          key: ${{ steps.cache-ffmpeg.outputs.cache-primary-key }}
+
+      # ---------- 2. iSH-ARM64 + AOT stub (restore + immediate save) ----------
       - name: Resolve iSH submodule commit
         id: ish-rev
         run: echo "rev=$(git rev-parse HEAD:deps/ish)" >> "$GITHUB_OUTPUT"
 
-      - name: Cache iSH static libraries & headers
+      - name: Restore iSH cache
         id: cache-ish
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             deps/libs
@@ -122,10 +151,21 @@ jobs:
           ./deps/build_ish.sh release
           ls -la deps/libs/ deps/resources/
 
-      # ---------- 3. Alpine rootfs (cached) ----------
-      - name: Cache Alpine rootfs
+      - name: Save iSH cache
+        if: steps.cache-ish.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            deps/libs
+            deps/include
+            deps/resources/libvdso.so.elf
+            deps/resources/RootfsPatch.bundle
+          key: ${{ steps.cache-ish.outputs.cache-primary-key }}
+
+      # ---------- 3. Alpine rootfs (restore + immediate save) ----------
+      - name: Restore Alpine rootfs cache
         id: cache-rootfs
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: deps/resources/alpine-rootfs.zip
           key: ios-rootfs-v1-${{ steps.ish-rev.outputs.rev }}-${{ hashFiles('deps/prepare_alpine_rootfs.sh') }}
@@ -137,10 +177,17 @@ jobs:
           ./deps/prepare_alpine_rootfs.sh
           ls -lh deps/resources/alpine-rootfs.zip
 
-      # ---------- 4. Rclone.xcframework (cached) ----------
-      - name: Cache Rclone XCFramework
+      - name: Save Alpine rootfs cache
+        if: steps.cache-rootfs.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: deps/resources/alpine-rootfs.zip
+          key: ${{ steps.cache-rootfs.outputs.cache-primary-key }}
+
+      # ---------- 4. Rclone.xcframework (restore + immediate save) ----------
+      - name: Restore Rclone XCFramework cache
         id: cache-rclone
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: deps/frameworks/Rclone.xcframework
           key: ios-rclone-v1-${{ hashFiles('deps/rclone-mobile/**', 'deps/build_rclone_ios.sh') }}
@@ -158,6 +205,13 @@ jobs:
           chmod +x deps/build_rclone_ios.sh
           ./deps/build_rclone_ios.sh
           ls -la deps/frameworks/Rclone.xcframework
+
+      - name: Save Rclone XCFramework cache
+        if: steps.cache-rclone.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: deps/frameworks/Rclone.xcframework
+          key: ${{ steps.cache-rclone.outputs.cache-primary-key }}
 
       # ---------- 5. Build-time customization ----------
       - name: Provider customization
