@@ -176,8 +176,8 @@ object FeatureTutorialCatalog {
             titleEn = "Project Custom Markdown Slash Commands",
             summaryZh = "把常用 Prompt 存成 .minis/commands/*.md，输入 /命令名 一键展开并传参。",
             summaryEn = "Define reusable slash commands in .minis/commands/ or .claude/commands/ with argument expansion.",
-            detailsZh = "兼容 Claude Code 习惯：在工作区、共享目录或外部挂载目录的 .minis/commands/ 或 .claude/commands/ 中放置 .md 文件，即可在 / 菜单自动出现。支持 YAML frontmatter description 以及 $ARGUMENTS、{{arguments}}、$1..$9 占位符。",
-            detailsEn = "Place .md prompt templates in .minis/commands/ or .claude/commands/ under workspace, shared, or mounted folders. Supports frontmatter descriptions and $ARGUMENTS / {{arguments}} / $1..$9 placeholders.",
+            detailsZh = "兼容 Claude Code 习惯：在工作区、共享目录或外部挂载目录的 .minis/commands/ 或 .claude/commands/ 中放置 .md 文件，即可在 / 菜单自动出现。支持 YAML frontmatter description 以及 \$ARGUMENTS、{{arguments}}、\$1..\$9 占位符。",
+            detailsEn = "Place .md prompt templates in .minis/commands/ or .claude/commands/ under workspace, shared, or mounted folders. Supports frontmatter descriptions and \$ARGUMENTS / {{arguments}} / \$1..\$9 placeholders.",
             stepsZh = listOf(
                 "在项目根目录创建 .minis/commands/review.md（或复用 .claude/commands/）。",
                 "正文写好提示词模板，用 \$ARGUMENTS 或 \$1 \$2 接收参数。",
