@@ -1,0 +1,278 @@
+name: Build & Test iOS IPA
+
+on:
+  push:
+    branches: ["main", "feat/ios-next"]
+    tags: ["v*"]
+    paths:
+      - "src/ios/**"
+      - "src/shared/**"
+      - "deps/**"
+      - "scripts/ios-next-tests.sh"
+      - ".github/workflows/build-ios.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "src/ios/**"
+      - "src/shared/**"
+      - "deps/**"
+      - "scripts/ios-next-tests.sh"
+      - ".github/workflows/build-ios.yml"
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: "Xcode build configuration"
+        type: choice
+        options: [Release, Debug]
+        default: Release
+      run_swift_tests:
+        description: "Run OpenMinis Next Swift unit tests"
+        type: boolean
+        default: true
+
+concurrency:
+  group: build-ios-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-ios:
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select Xcode & inspect toolchain
+        run: |
+          echo "=== Available Xcode installations ==="
+          ls -d /Applications/Xcode*.app || true
+          BEST_XCODE=$(ls -d /Applications/Xcode_26*.app /Applications/Xcode.app 2>/dev/null | sort -V | tail -n 1 || true)
+          if [ -n "$BEST_XCODE" ]; then
+            sudo xcode-select -s "$BEST_XCODE/Contents/Developer"
+          fi
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i iphone || true
+          swift --version
+          xcrun -sdk iphoneos metal --version || echo "::warning::Metal toolchain not installed; FFmpeg will skip Metal filters"
+
+      - name: Install native build tools
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install meson ninja llvm libarchive pkg-config
+          echo "/opt/homebrew/opt/llvm/bin" >> "$GITHUB_PATH"
+          echo "PKG_CONFIG_PATH=/opt/homebrew/opt/libarchive/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=/opt/homebrew/opt/libarchive/lib:${LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "CPATH=/opt/homebrew/opt/libarchive/include:${CPATH:-}" >> "$GITHUB_ENV"
+
+      # ---------- 1. LAME + FFmpeg (cached) ----------
+      - name: Cache LAME & FFmpeg frameworks
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps/lame-build
+            deps/frameworks/FFmpeg.framework
+            deps/frameworks/libavcodec.framework
+            deps/frameworks/libavformat.framework
+            deps/frameworks/libavutil.framework
+            deps/frameworks/libavfilter.framework
+            deps/frameworks/libswresample.framework
+            deps/frameworks/libswscale.framework
+            deps/frameworks/FFmpeg.xcframework
+            deps/frameworks/libavcodec.xcframework
+            deps/frameworks/libavformat.xcframework
+            deps/frameworks/libavutil.xcframework
+            deps/frameworks/libavfilter.xcframework
+            deps/frameworks/libswresample.xcframework
+            deps/frameworks/libswscale.xcframework
+          key: ios-ffmpeg-v1-${{ hashFiles('deps/build_lame.sh', 'deps/build_ffmpeg.sh', 'deps/ffmpeg-patch/**') }}
+
+      - name: Build LAME & FFmpeg (iOS arm64)
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+        run: |
+          chmod +x deps/build_lame.sh deps/build_ffmpeg.sh
+          ./deps/build_lame.sh
+          ./deps/build_ffmpeg.sh
+          ls -la deps/frameworks/
+
+      # ---------- 2. iSH-ARM64 + AOT stub (cached) ----------
+      - name: Resolve iSH submodule commit
+        id: ish-rev
+        run: echo "rev=$(git rev-parse HEAD:deps/ish)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache iSH static libraries & headers
+        id: cache-ish
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps/libs
+            deps/include
+            deps/resources/libvdso.so.elf
+            deps/resources/RootfsPatch.bundle
+          key: ios-ish-v1-${{ steps.ish-rev.outputs.rev }}-${{ hashFiles('deps/build_ish.sh', 'deps/build_aot.sh') }}
+
+      - name: Build iSH-ARM64 (iOS arm64)
+        if: steps.cache-ish.outputs.cache-hit != 'true'
+        run: |
+          chmod +x deps/build_ish.sh deps/build_aot.sh
+          ./deps/build_ish.sh release
+          ls -la deps/libs/ deps/resources/
+
+      # ---------- 3. Alpine rootfs (cached) ----------
+      - name: Cache Alpine rootfs
+        id: cache-rootfs
+        uses: actions/cache@v4
+        with:
+          path: deps/resources/alpine-rootfs.zip
+          key: ios-rootfs-v1-${{ steps.ish-rev.outputs.rev }}-${{ hashFiles('deps/prepare_alpine_rootfs.sh') }}
+
+      - name: Prepare Alpine rootfs for iSH
+        if: steps.cache-rootfs.outputs.cache-hit != 'true'
+        run: |
+          chmod +x deps/prepare_alpine_rootfs.sh
+          ./deps/prepare_alpine_rootfs.sh
+          ls -lh deps/resources/alpine-rootfs.zip
+
+      # ---------- 4. Rclone.xcframework (cached) ----------
+      - name: Cache Rclone XCFramework
+        id: cache-rclone
+        uses: actions/cache@v4
+        with:
+          path: deps/frameworks/Rclone.xcframework
+          key: ios-rclone-v1-${{ hashFiles('deps/rclone-mobile/**', 'deps/build_rclone_ios.sh') }}
+
+      - name: Set up Go for Rclone
+        if: steps.cache-rclone.outputs.cache-hit != 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: deps/rclone-mobile/go.mod
+          cache-dependency-path: deps/rclone-mobile/go.sum
+
+      - name: Build Rclone XCFramework
+        if: steps.cache-rclone.outputs.cache-hit != 'true'
+        run: |
+          chmod +x deps/build_rclone_ios.sh
+          ./deps/build_rclone_ios.sh
+          ls -la deps/frameworks/Rclone.xcframework
+
+      # ---------- 5. Build-time customization ----------
+      - name: Provider customization
+        env:
+          OAUTH_PROMPT: ${{ secrets.ANTHROPIC_OAUTH_IDENTIFIER_PROMPT }}
+        run: |
+          f=src/ios/Configs/ProviderCustomization.xcconfig
+          cp src/ios/Configs/ProviderCustomization.xcconfig.example "$f"
+          if [ -n "$OAUTH_PROMPT" ]; then
+            printf '\nANTHROPIC_OAUTH_IDENTIFIER_PROMPT = %s\n' "$OAUTH_PROMPT" >> "$f"
+          fi
+
+      # ---------- 6. Run OpenMinis Next Swift Unit Tests ----------
+      - name: Run OpenMinis Next Swift Unit Tests
+        if: github.event_name != 'workflow_dispatch' || inputs.run_swift_tests == true
+        run: |
+          if [ -f scripts/ios-next-tests.sh ]; then
+            chmod +x scripts/ios-next-tests.sh
+            bash scripts/ios-next-tests.sh
+          else
+            echo "No scripts/ios-next-tests.sh yet (baseline build)"
+          fi
+
+      # ---------- 7. Resolve SPM packages & build Minis.app ----------
+      - name: Cache Swift Package dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/SourcePackages
+          key: ios-spm-v1-${{ hashFiles('src/ios/Minis.xcodeproj/project.pbxproj', 'src/ios/Minis.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: |
+            ios-spm-v1-
+
+      - name: Resolve Swift Package dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project src/ios/Minis.xcodeproj \
+            -scheme Minis \
+            -clonedSourcePackagesDirPath build/SourcePackages
+
+      - name: Build iOS App (arm64 unsigned)
+        run: |
+          CFG="${{ inputs.configuration }}"
+          [ -z "$CFG" ] && CFG="Release"
+          echo "BUILD_CONFIG=$CFG" >> "$GITHUB_ENV"
+          set -o pipefail
+          xcodebuild \
+            -project src/ios/Minis.xcodeproj \
+            -scheme Minis \
+            -configuration "$CFG" \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData-ios \
+            -clonedSourcePackagesDirPath build/SourcePackages \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            build 2>&1 | tee build/xcodebuild.log | tail -n 120
+
+      # ---------- 8. Package & verify unsigned IPA ----------
+      - name: Package & verify unsigned IPA
+        run: |
+          CFG="${BUILD_CONFIG}"
+          APP="build/DerivedData-ios/Build/Products/${CFG}-iphoneos/Minis.app"
+          if [ ! -d "$APP" ]; then
+            echo "::error::Minis.app not found at $APP"
+            find build/DerivedData-ios/Build/Products -maxdepth 3 || true
+            exit 1
+          fi
+
+          echo "=== Verifying Minis.app bundle integrity ==="
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist")
+          DISPLAY_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" "$APP/Info.plist" 2>/dev/null || true)
+          SHORT_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist")
+          echo "Bundle ID: $BUNDLE_ID | Display Name: $DISPLAY_NAME | Version: $SHORT_VER"
+          [ "$BUNDLE_ID" = "com.openminis.next" ] || { echo "::error::Unexpected Bundle ID: $BUNDLE_ID"; exit 1; }
+          [ -f "$APP/Minis" ] || { echo "::error::Main binary missing"; exit 1; }
+          [ -f "$APP/alpine-rootfs.zip" ] || { echo "::error::alpine-rootfs.zip missing"; exit 1; }
+          [ -d "$APP/Frameworks/FFmpeg.framework" ] || { echo "::error::FFmpeg.framework missing"; exit 1; }
+          file "$APP/Minis"
+          ls -la "$APP/PlugIns" || true
+          ls -la "$APP/Frameworks" || true
+
+          rm -rf out Payload
+          mkdir -p out Payload
+          cp -R "$APP" Payload/Minis.app
+          VER=$(sed -n 's/.*releaseVersion = "\(.*\)".*/\1/p' src/ios/Next/OpenMinisNextInfo.swift | head -1)
+          [ -z "$VER" ] && VER="$SHORT_VER"
+          SHORT=$(git rev-parse --short HEAD)
+          CFG_LOWER=$(echo "$CFG" | tr '[:upper:]' '[:lower:]')
+          IPA="out/OpenMinisNext-${VER}-ios-${CFG_LOWER}-${SHORT}-unsigned.ipa"
+          zip -qry "$IPA" Payload
+          shasum -a 256 "$IPA" | tee "${IPA}.sha256"
+          ls -lh out/
+
+      - name: Upload iOS IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenMinisNext-ios-${{ env.BUILD_CONFIG }}-${{ github.run_number }}
+          path: |
+            out/*.ipa
+            out/*.sha256
+          retention-days: 30
+
+      - name: Upload xcodebuild log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-log-${{ github.run_number }}
+          path: build/xcodebuild.log
+          retention-days: 7
+
+      - name: Publish iOS IPA to Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/*.ipa
+            out/*.sha256
