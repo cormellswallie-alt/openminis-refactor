@@ -267,6 +267,7 @@ class AgentUpgradeSuiteTest {
                 content = "",
                 toolBlocks = listOf(
                     AssistantBlock(
+                        id = "b1",
                         kind = "tool_use",
                         toolName = "shell_execute",
                         toolTitle = "Run unit tests",
@@ -302,13 +303,15 @@ class AgentUpgradeSuiteTest {
                 content = "Found NPE in /var/minis/workspace/src/Repo.kt.",
                 toolBlocks = listOf(
                     AssistantBlock(
+                        id = "b2",
                         kind = "tool_use",
                         toolName = "file_read",
                         toolArgs = """{"path":"/var/minis/workspace/src/Config.kt"}""",
                         content = "ok",
-                        toolStatus = ToolBlockStatus.SUCCEEDED,
+                        toolStatus = ToolBlockStatus.SUCCESS,
                     ),
                     AssistantBlock(
+                        id = "b3",
                         kind = "tool_use",
                         toolName = "shell_execute",
                         toolTitle = "Compile",

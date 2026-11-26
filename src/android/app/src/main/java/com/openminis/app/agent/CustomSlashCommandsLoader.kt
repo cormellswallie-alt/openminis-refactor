@@ -7,9 +7,9 @@ import java.io.File
 
 /**
  * Discovers project-level and shared custom Markdown slash commands from
- * `.minis/commands/*.md` and `.claude/commands/*.md` (Claude Code / Gemini CLI
- * parity) and expands `$ARGUMENTS`, `{{arguments}}`, and positional `$1`..`$9`
- * template placeholders cleanly.
+ * `.minis/commands/` and `.claude/commands/` (`*.md` files; Claude Code /
+ * Gemini CLI parity) and expands `$ARGUMENTS`, `{{arguments}}`, and positional
+ * `$1`..`$9` template placeholders cleanly.
  */
 object CustomSlashCommandsLoader {
 
