@@ -574,7 +574,9 @@ struct StorageManagementView: View {
     private var filteredSessions: [StorageManagementViewModel.SessionStorage] {
         let q = sessionSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !q.isEmpty else { return vm.sessions }
-        return vm.sessions.filter { $0.title.lowercased().contains(q) || $0.id.lowercased().contains(q) }
+        return vm.sessions.filter {
+            ($0.title ?? "").lowercased().contains(q) || $0.id.lowercased().contains(q)
+        }
     }
 
     /// A clear/delete waiting for its confirmation.

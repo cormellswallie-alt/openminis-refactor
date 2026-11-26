@@ -441,7 +441,7 @@ extension AIChatViewModel {
                     : "Configured environment variable names (values redacted): " + names.joined(separator: ", ")
                 blocks.append((.env, summary))
             case .gitDiff, .gitStatus, .gitLog:
-                if let cmd = kind.shellCommand, kernelStatus == .ready {
+                if let cmd = kind.shellCommand, kernelStatus == .booted {
                     let wrapped = "cd /var/minis/workspace 2>/dev/null; \(cmd)"
                     if let res = try? await executeCommand(wrapped, timeout: 15, lineCallback: { _ in }) {
                         let (safe, _) = EnvVarRedactor.redactIfEnabled(res.output)
