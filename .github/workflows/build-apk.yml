@@ -31,6 +31,9 @@ env:
   UPDATE_REPO: ${{ github.repository }}
   GOMOBILE_VERSION: v0.0.0-20260813181013-1960c775504c
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
